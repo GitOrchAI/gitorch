@@ -694,6 +694,7 @@ export async function runQaMissionViaRails(
     // régua de HOJE. Uma vez só, e nunca depois do corte — senão isto viraria
     // segunda chance permanente, que é a trava que ninguém pode afrouxar.
     let legadoMereceUmaChance = false
+    let legadoMereceExplicacao = false
     if (
       veredito.delegado &&
       aindaPodeTentarMesclar &&
@@ -702,30 +703,54 @@ export async function runQaMissionViaRails(
       !foiAprovacao &&
       p.head?.sha
     ) {
+      const { estado, culpado } = await (async () => {
+        try {
+          const checks = (await gh(
+            'GET',
+            `/repos/${options.repository}/commits/${p.head?.sha}/check-runs`
+          )) as {
+            check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
+          }
+          const checkRuns = checks.check_runs ?? []
+
+          const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
+            const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
+              steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
+            }
+            return (job.steps ?? []).map((s) => ({
+              name: s.name ?? '',
+              conclusion: s.conclusion ?? null,
+              completedAt: s.completed_at ?? null,
+            }))
+          }).catch(() => ({
+            estado: estadoDoCi(checkRuns),
+            culpado: { encontrado: false as const },
+          }))
+          return investigado
+        } catch {
+          return { estado: 'unknown' as const, culpado: { encontrado: false as const } }
+        }
+      })()
       const decisao = decidirSobreLegado({
         numero: p.number,
         headAtual: p.head.sha,
         headJulgado: reviewMarcadaNesteHead.commit_id ?? null,
         reprovadaEm: dataDaReview(reviewMarcadaNesteHead),
-        ciHoje: await (async () => {
-          try {
-            const checks = (await gh(
-              'GET',
-              `/repos/${options.repository}/commits/${p.head?.sha}/check-runs`
-            )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
-            return estadoDoCi(checks.check_runs ?? [])
-          } catch {
-            // Não saber o estado é "não sei", e "não sei" nunca destrava.
-            return 'unknown' as const
-          }
-        })(),
+        ciHoje: estado,
+        culpadoDoCancelamento: culpado,
         delegada: veredito.delegado,
         jaRejulgada: temMarcaDeRejulgamentoDeLegado(reviewMarcadaNesteHead),
       })
       legadoMereceUmaChance = decisao.acao === 'rejulgar'
+      legadoMereceExplicacao = decisao.acao === 'explicar-falha'
+
       if (legadoMereceUmaChance) {
         options.onWarn?.(
           `[qa] PR #${p.number}: ${decisao.motivo} — dando o rejulgamento único do legado`
+        )
+      } else if (legadoMereceExplicacao) {
+        options.onWarn?.(
+          `[qa] PR #${p.number}: ${decisao.motivo} — reescrevendo o parecer para explicar a falha de cancelamento`
         )
       }
     }
@@ -810,6 +835,7 @@ export async function runQaMissionViaRails(
             parecerSobPremissaErrada ||
             reprovadoPeloPortaoComCiVerdeAgora ||
             legadoMereceUmaChance ||
+            legadoMereceExplicacao ||
             entregaVaziaAindaNaoCobrada)))
 
     // A entrega que TRAVOU no teto de tentativas de mescla.
@@ -854,9 +880,12 @@ export async function runQaMissionViaRails(
     // justamente para os PRs mais antigos.
     retomandoAprovacaoMesmoCommit = Boolean(
       reviewMarcadaNesteHead &&
-      (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora || legadoMereceUmaChance)
+      (foiAprovacao ||
+        reprovadoPeloPortaoComCiVerdeAgora ||
+        legadoMereceUmaChance ||
+        legadoMereceExplicacao)
     )
-    retomouLegado = legadoMereceUmaChance
+    retomouLegado = legadoMereceUmaChance || legadoMereceExplicacao
     break
   }
   // O RESGATE das entregas que travaram no teto de mescla.

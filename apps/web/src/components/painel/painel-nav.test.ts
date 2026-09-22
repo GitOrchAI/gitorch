@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { NAV, PLANO, TABS, telasDaFolha, tituloDaTela } from './painel-nav'
 
 describe('painel-nav', () => {
-  it('10 telas no total', () => {
-    expect(PLANO).toHaveLength(10)
+  it('11 telas no total', () => {
+    expect(PLANO).toHaveLength(11)
   })
   it('3 grupos na ordem certa', () => {
     expect(NAV.map((g) => g.g)).toEqual(['Operação', 'Recursos', 'Conta'])
@@ -14,9 +14,10 @@ describe('painel-nav', () => {
   it('a barra mobile tem 4 destinos terminando em "mais"', () => {
     expect(TABS).toEqual(['visao', 'decisoes', 'pedidos', 'mais'])
   })
-  it('a folha "Mais" traz as 7 telas fora dos 3 destinos fixos', () => {
+  it('a folha "Mais" traz as 8 telas fora dos 3 destinos fixos', () => {
     expect(telasDaFolha().map((i) => i.id)).toEqual([
       'entregas',
+      'repositorio',
       'custos',
       'motores',
       'projetos',

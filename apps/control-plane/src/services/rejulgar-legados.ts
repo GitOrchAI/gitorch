@@ -37,6 +37,14 @@
  */
 export const REGUA_MUDOU_EM = new Date('2026-08-24T05:00:00Z')
 
+/**
+ * Segundo corte de régua (L4-T17): deploy do reconhecimento do culpado pelo
+ * cancelamento em cadeia no CI.
+ */
+export const REGUA_MUDOU_L4_T17 = new Date('2026-09-08T05:00:00Z')
+
+import type { ResultadoDoCulpado } from './causa-do-cancelamento.js'
+
 export interface EntregaPresa {
   numero: number
   /** O commit no topo do PR AGORA. */
@@ -51,6 +59,8 @@ export interface EntregaPresa {
    * linhas abaixo, então não muda a decisão, só o rótulo no motivo.
    */
   ciHoje: 'green' | 'red' | 'pending' | 'no checks' | 'unknown' | 'cancelado'
+  /** O culpado identificado do cancelamento em cadeia (se houver). */
+  culpadoDoCancelamento?: ResultadoDoCulpado | undefined
   /** O produto encomendou esta entrega? Só ela é nossa para mesclar. */
   delegada: boolean
   /** Já recebeu o rejulgamento de cortesia? */
@@ -58,7 +68,9 @@ export interface EntregaPresa {
 }
 
 export type DecisaoSobreLegado =
-  { acao: 'rejulgar'; motivo: string } | { acao: 'deixar'; motivo: string }
+  | { acao: 'rejulgar'; motivo: string }
+  | { acao: 'deixar'; motivo: string }
+  | { acao: 'explicar-falha'; motivo: string }
 
 /**
  * Esta entrega merece UM rejulgamento?
@@ -83,11 +95,6 @@ export function decidirSobreLegado(entrega: EntregaPresa): DecisaoSobreLegado {
     return { acao: 'deixar', motivo: 'não dá para saber quando foi reprovada' }
   }
 
-  // Depois do corte já foi julgada pela régua nova.
-  if (entrega.reprovadaEm.getTime() >= REGUA_MUDOU_EM.getTime()) {
-    return { acao: 'deixar', motivo: 'reprovada já sob a régua de hoje' }
-  }
-
   // O CÓDIGO PRECISA SER O MESMO. Se o dev empurrou commit depois da
   // reprovação, o caminho normal já reabre a entrega — e rejulgar aqui seria
   // opinar sobre um código que ninguém reprovou.
@@ -97,17 +104,40 @@ export function decidirSobreLegado(entrega: EntregaPresa): DecisaoSobreLegado {
 
   // Verde pela régua de HOJE é a evidência inteira: a reprovação de então foi
   // escrita sobre uma leitura que o produto já corrigiu.
-  if (entrega.ciHoje !== 'green') {
+  if (entrega.ciHoje === 'green' && entrega.reprovadaEm.getTime() < REGUA_MUDOU_EM.getTime()) {
     return {
-      acao: 'deixar',
-      motivo: `a verificação continua "${entrega.ciHoje}" pela régua de hoje`,
+      acao: 'rejulgar',
+      motivo:
+        'reprovada antes da correção da leitura do CI, no mesmo commit, e hoje a verificação está verde',
     }
   }
 
+  if (
+    entrega.reprovadaEm.getTime() < REGUA_MUDOU_L4_T17.getTime() &&
+    entrega.ciHoje === 'red' &&
+    entrega.culpadoDoCancelamento?.encontrado
+  ) {
+    return {
+      acao: 'explicar-falha',
+      motivo:
+        'reprovada antes do conserto da identificação do cancelamento em cadeia (L4-T17), o CI continua vermelho e agora sabemos a causa legível',
+    }
+  }
+
+  // Depois do corte já foi julgada pela régua nova. (Para o corte REGUA_MUDOU_EM e o ciHoje sendo diferente de green, e para REGUA_MUDOU_L4_T17 não sendo aplicável)
+  // Como temos 2 cortes, we only fallback to deixar after checking both.
+
+  if (entrega.reprovadaEm.getTime() >= REGUA_MUDOU_L4_T17.getTime()) {
+    return { acao: 'deixar', motivo: 'reprovada já sob as réguas de hoje' }
+  }
+
+  if (entrega.reprovadaEm.getTime() >= REGUA_MUDOU_EM.getTime() && entrega.ciHoje === 'green') {
+    return { acao: 'deixar', motivo: 'reprovada já sob a régua de hoje' }
+  }
+
   return {
-    acao: 'rejulgar',
-    motivo:
-      'reprovada antes da correção da leitura do CI, no mesmo commit, e hoje a verificação está verde',
+    acao: 'deixar',
+    motivo: `a verificação continua "${entrega.ciHoje}" pela régua de hoje`,
   }
 }
 
@@ -117,14 +147,17 @@ export function decidirSobreLegado(entrega: EntregaPresa): DecisaoSobreLegado {
  */
 export function trocarLegadosPorRejulgamento(entregas: EntregaPresa[]): {
   rejulgar: number[]
+  explicarFalha: number[]
   deixadas: Array<{ numero: number; motivo: string }>
 } {
   const rejulgar: number[] = []
+  const explicarFalha: number[] = []
   const deixadas: Array<{ numero: number; motivo: string }> = []
   for (const e of entregas) {
     const d = decidirSobreLegado(e)
     if (d.acao === 'rejulgar') rejulgar.push(e.numero)
+    else if (d.acao === 'explicar-falha') explicarFalha.push(e.numero)
     else deixadas.push({ numero: e.numero, motivo: d.motivo })
   }
-  return { rejulgar, deixadas }
+  return { rejulgar, explicarFalha, deixadas }
 }

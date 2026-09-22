@@ -1799,6 +1799,59 @@ export const painelRoutes = async (
       return reply.send({ cuidaPorOrigem, janelaEmConstrucaoHoras })
     }
   )
+
+  // GET /api/v1/painel/repositorio — cada ficha com dono, próximo passo e nota de segurança.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/repositorio',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { id: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      const fichas = await app.prisma.repoItem.findMany({
+        where: { projectId: row.id },
+        orderBy: { atualizadoEm: 'desc' },
+        take: 200,
+      })
+
+      // O próximo passo é o último evento de auditoria do motor para este
+      // item (registrarNoPainelUmaVez, Tarefa 3.11) — nunca recalculado
+      // aqui: a tela mostra o que JÁ foi decidido, não uma segunda opinião.
+      const eventos = await app.prisma.event.findMany({
+        where: { projectId: row.id, type: 'audit' },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      })
+      const ultimoTextoPorChave = new Map<string, string>()
+      for (const ev of eventos) {
+        const payload = ev.payload as { chave?: string; texto?: string }
+        if (payload.chave && !ultimoTextoPorChave.has(payload.chave)) {
+          ultimoTextoPorChave.set(payload.chave, payload.texto ?? '')
+        }
+      }
+
+      return reply.send({
+        itens: fichas.map((f) => ({
+          tipo: f.tipo,
+          numero: f.numero,
+          origem: f.origem,
+          proximoPasso:
+            [...ultimoTextoPorChave.entries()].find(
+              ([chave]) =>
+                chave.startsWith(`motor-do-proximo-passo:`) && chave.includes(`:${f.numero}:`)
+            )?.[1] ?? null,
+        })),
+      })
+    }
+  )
 }
 
 /**

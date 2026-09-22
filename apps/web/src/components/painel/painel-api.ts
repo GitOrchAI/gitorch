@@ -43,6 +43,7 @@ export const ROTAS = {
   regua: '/api/v1/painel/regua', // NOVA (leva 2, bloco 5) — a régua de pronto do cliente
   sprintDias: '/api/v1/painel/sprint-dias', // NOVA (leva 2, bloco 3) — de quantos dias é a sprint
   cuidaPorOrigem: '/api/v1/painel/cuidado-por-origem', // NOVA (Fase 0.2) — quem cuida de cada origem
+  repositorio: '/api/v1/painel/repositorio', // NOVA (Fase 6.2) — cada ficha com dono, próximo passo e nota
   historico: '/api/v1/painel/historico', // FALTA — leva 2
   duvidaConfig: '/api/v1/painel/duvida-config', // NOVA (T14) — POST
   timeline: '/api/v1/painel/timeline', // NOVA (T15) — auditoria que não vira spam no Telegram
