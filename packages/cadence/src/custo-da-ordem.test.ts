@@ -6,6 +6,7 @@ import {
   MIN_PEDIDOS_PARA_AVALIAR,
   LIMIAR_PONTOS_MINIMOS,
   LIMIAR_RAZAO,
+  verificarLimiteQuotaConvidado,
   type PedidoNaFila,
 } from './custo-da-ordem'
 
@@ -171,5 +172,31 @@ describe('analisarCustoDaOrdem — diferença pequena é silêncio (limiar de ru
     const analise = analisarCustoDaOrdem(fila)
     expect(analise.custaCaro).toBe(false)
     expect(analise.candidato).toBeNull()
+  })
+})
+
+describe('verificarLimiteQuotaConvidado', () => {
+  it('allows execution when within both tokens and cost budget', () => {
+    const quota = { maxTokens: 1000, maxCost: 50 }
+    const budget = { consumedTokens: 500, consumedCost: 20 }
+    expect(verificarLimiteQuotaConvidado(10, 200, quota, budget)).toBe(true)
+  })
+
+  it('allows execution when only maxTokens is checked and within limits', () => {
+    const quota = { maxTokens: 1000 }
+    const budget = { consumedTokens: 800 }
+    expect(verificarLimiteQuotaConvidado(0, 100, quota, budget)).toBe(true)
+  })
+
+  it('denies execution when token limit is exceeded', () => {
+    const quota = { maxTokens: 1000, maxCost: 50 }
+    const budget = { consumedTokens: 900, consumedCost: 20 }
+    expect(verificarLimiteQuotaConvidado(10, 200, quota, budget)).toBe(false)
+  })
+
+  it('denies execution when cost limit is exceeded', () => {
+    const quota = { maxTokens: 1000, maxCost: 50 }
+    const budget = { consumedTokens: 500, consumedCost: 40 }
+    expect(verificarLimiteQuotaConvidado(20, 200, quota, budget)).toBe(false)
   })
 })
