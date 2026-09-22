@@ -1,5 +1,8 @@
 import { lerCuidaPorOrigem, lerJanelaEmConstrucaoHoras } from '../services/cuidado-por-origem.js'
 import { decidirProximoPasso } from '../services/motor-do-proximo-passo.js'
+import { calcularExigeRevisaoDeSeguranca } from '../services/exigir-revisao-de-seguranca.js'
+import { planoPermiteMelhoria } from '../services/aplicar-melhoria-de-seguranca.js'
+
 import { decidirMergeDoDependabot } from '../services/dependabot-auto-merge.js'
 import { mesclarPr } from '../services/merge-do-pr.js'
 import { lerFichaDoItem } from '../services/ficha-do-item.js'
@@ -7092,8 +7095,34 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               }
             }
 
+            let repoPrivado = true
+            try {
+              const repoInfo = (await ghGet(`/repos/${projeto.wingId}`, token)) as {
+                private?: boolean
+              }
+              if (repoInfo && typeof repoInfo.private === 'boolean') {
+                repoPrivado = repoInfo.private
+              }
+            } catch (err) {
+              app.log.warn(err, `[Scheduler] falha ao buscar visibilidade de ${projeto.wingId}`)
+            }
+
+            const planoPermite = planoPermiteMelhoria(
+              'secret-scanning',
+              (projeto.devPlan ||
+                'free') as import('../services/aplicar-melhoria-de-seguranca.js').PlanoDoGithub,
+              repoPrivado
+            )
+            const exigeRevisaoDeSeguranca = await calcularExigeRevisaoDeSeguranca({
+              planoPermite,
+              wingId: projeto.wingId,
+              ghGet: (path) => ghGet(path, token),
+              onWarn: (msg) => app.log.warn(msg),
+            })
+
             const acaoMotor = decidirProximoPasso({
               ...depsVigia,
+              exigeRevisaoDeSeguranca,
               origem,
               cuidaPorOrigem,
               emConstrucaoHa,
