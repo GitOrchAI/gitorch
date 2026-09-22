@@ -59,6 +59,7 @@ import {
 } from '../services/aviso-de-custo-da-ordem.js'
 import { lerEstadoBrutoDoAvisoDeCustoDaOrdem } from '../services/custo-da-ordem-do-projeto.js'
 import { duvidaDeSeguimentoComoPublica } from '../services/duvidas-do-projeto.js'
+import { calcularTempoDeResolucao } from '@gitorch/cadence'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -1050,6 +1051,53 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
               await sendTelegramMessage({
                 botToken,
                 chatId: String(chatId),
+                text,
+              })
+            }
+            continue
+          }
+
+          if (update.message?.text?.trim().startsWith('/entregas')) {
+            const chatId = update.message?.chat?.id
+            if (chatId !== undefined && chatId !== null) {
+              const strChatId = String(chatId)
+              const dono = await resolveDonoDoChat(app.prisma, strChatId)
+
+              if (dono.tipo !== 'unico') {
+                await sendTelegramMessage({
+                  botToken,
+                  chatId: strChatId,
+                  text: 'Acesso negado. Vínculo não encontrado ou ambíguo.',
+                })
+                continue
+              }
+
+              const entregasMescladas = await app.prisma.increment.findMany({
+                where: {
+                  project: { userId: dono.userId },
+                  mergedAt: { not: null },
+                },
+                orderBy: { mergedAt: 'desc' },
+                take: 10,
+              })
+
+              let text = ''
+              if (entregasMescladas.length === 0) {
+                text = '0 entregas concluídas.'
+              } else {
+                const lines = entregasMescladas.map((entrega) => {
+                  const leadTime = calcularTempoDeResolucao(entrega.wishCreatedAt, entrega.mergedAt)
+                  const titulo = entrega.titulo || `Issue #${entrega.issueNumber}`
+                  return leadTime
+                    ? `[Feito] ${titulo} - Lead time: ${leadTime}`
+                    : `[Feito] ${titulo}`
+                })
+                text = `${entregasMescladas.length} entregas concluídas:\n${lines.join('\n')}`
+              }
+
+              await sendTelegramMessage({
+                botToken,
+                chatId: strChatId,
                 text,
               })
             }
