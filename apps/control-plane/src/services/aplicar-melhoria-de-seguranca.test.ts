@@ -22,6 +22,43 @@ describe('planoPermiteMelhoria', () => {
 })
 
 describe('aplicarMelhoriaDeSeguranca', () => {
+  it('se plano não permite e autonomia é so_olhar, sugere alternativa gratuita e não escreve', async () => {
+    const aplicar = vi.fn()
+    const aplicarAlternativa = vi.fn()
+    const res = await aplicarMelhoriaDeSeguranca({
+      repository: 'dono/repo',
+      melhoria: 'secret-scanning',
+      plano: 'free',
+      repoPrivado: true,
+      autonomiaDeSeguranca: 'so_olhar',
+      aplicar,
+      aplicarAlternativa,
+    })
+    expect(res.aplicado).toBe(false)
+    expect(res.motivo).toMatch(/Sugestão de alternativa gratuita/)
+    expect(aplicar).not.toHaveBeenCalled()
+    expect(aplicarAlternativa).not.toHaveBeenCalled()
+  })
+
+  it('se plano não permite e autonomia é cuidar, grava alternativa gratuita e retorna aplicado', async () => {
+    const aplicar = vi.fn()
+    const aplicarAlternativa = vi.fn().mockResolvedValue(undefined)
+    const res = await aplicarMelhoriaDeSeguranca({
+      repository: 'dono/repo',
+      melhoria: 'secret-scanning',
+      plano: 'free',
+      repoPrivado: true,
+      autonomiaDeSeguranca: 'cuidar',
+      aplicar,
+      aplicarAlternativa,
+    })
+    expect(res.aplicado).toBe(true)
+    expect(res.motivo).toMatch(/alternativa gratuita gravada/)
+    expect(aplicar).not.toHaveBeenCalled()
+    expect(aplicarAlternativa).toHaveBeenCalledTimes(1)
+    expect(aplicarAlternativa).toHaveBeenCalledWith(expect.stringContaining('gitleaks'))
+  })
+
   it('devolve aplicado: false se o recurso é indisponível no plano, sem chamar aplicar', async () => {
     const aplicar = vi.fn()
     const res = await aplicarMelhoriaDeSeguranca({

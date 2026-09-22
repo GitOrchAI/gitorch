@@ -83,6 +83,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       depsVigia,
       prisma: getPrismaMock({ rascunho: false, ultimoCommitEm: null }),
       ghGet,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
     })
 
     expect(result).toEqual({
@@ -109,6 +112,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       depsVigia,
       prisma: getPrismaMock({ rascunho: false, ultimoCommitEm: null }),
       ghGet,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
     })
 
     expect(result).toEqual({
@@ -135,6 +141,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       depsVigia,
       prisma: getPrismaMock({ rascunho: false, ultimoCommitEm: null }),
       ghGet,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
     })
 
     expect(result).toEqual({
@@ -155,6 +164,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       depsVigia,
       prisma: getPrismaMock({ rascunho: false, ultimoCommitEm: null }),
       ghGet: vi.fn(),
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
     })
 
     expect(result).toEqual({
@@ -180,6 +192,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       } as unknown as Partial<Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]>),
       prisma: getPrismaMock({ rascunho: false, ultimoCommitEm: null }),
       ghGet: vi.fn(),
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
     })
     expect(result).toEqual({
       acao: 'ignorar',
@@ -201,6 +216,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       depsVigia: depsParaMesclar,
       prisma: getPrismaMock({ rascunho: false, ultimoCommitEm: null }),
       ghGet: vi.fn(),
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
     })
     expect(result).toEqual({
       acao: 'ignorar',

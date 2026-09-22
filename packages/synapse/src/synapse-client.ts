@@ -171,6 +171,23 @@ export class SynapseClient {
     return this.eventBus.allEvents()
   }
 
+  async recordStateCheckpoint(
+    missionId: string,
+    nodeId: string,
+    stateSnapshot: Record<string, unknown>
+  ): Promise<void> {
+    // Integração direta com o sistema de eventos do runtime para persistência assíncrona robusta
+    // de checkpoints do grafo de agentes sem violar o ledger de migração estático.
+    this.publishEvent(
+      'execution.completed',
+      { type: 'graph-node', wingId: missionId, targetId: nodeId },
+      { id: 'system', role: 'system' },
+      new Date().toISOString(),
+      { stateSnapshot }
+    )
+    return Promise.resolve()
+  }
+
   async queryContextualSimilarity(
     wingId: string,
     query: string,

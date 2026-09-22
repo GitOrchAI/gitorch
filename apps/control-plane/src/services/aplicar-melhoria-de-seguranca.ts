@@ -1,3 +1,4 @@
+import { workflowDeAlternativaGratuita } from './alternativa-gratuita-de-seguranca.js'
 // Fase 5.4: aplica melhoria de segurança sozinho SÓ quando o plano do GitHub
 // permite E autonomiaDeSeguranca === 'cuidar' (Tarefa 0.2). Quando não
 // permite, a Fase 5.5 (alternativa-gratuita-de-seguranca.ts) assume.
@@ -32,12 +33,32 @@ export interface AplicarMelhoriaDeps {
   repoPrivado: boolean
   autonomiaDeSeguranca: NivelDeAutonomia
   aplicar: () => Promise<void>
+  aplicarAlternativa?: (workflow: string) => Promise<void>
 }
 
 export async function aplicarMelhoriaDeSeguranca(
   deps: AplicarMelhoriaDeps
 ): Promise<{ aplicado: boolean; motivo: string }> {
   if (!planoPermiteMelhoria(deps.melhoria, deps.plano, deps.repoPrivado)) {
+    const decisaoAlt = podeEscrever(deps.autonomiaDeSeguranca, 'mesclar')
+    if (!decisaoAlt.pode) {
+      return {
+        aplicado: false,
+        motivo:
+          `o plano não permite a melhoria, e a autonomia é "${deps.autonomiaDeSeguranca}". Sugestão de alternativa gratuita:\n\n` +
+          workflowDeAlternativaGratuita(),
+      }
+    }
+
+    if (deps.aplicarAlternativa) {
+      try {
+        await deps.aplicarAlternativa(workflowDeAlternativaGratuita())
+        return { aplicado: true, motivo: 'alternativa gratuita gravada' }
+      } catch (err) {
+        return { aplicado: false, motivo: `falha na API: ${(err as Error).message}` }
+      }
+    }
+
     return {
       aplicado: false,
       motivo: `o plano "${deps.plano}" do GitHub não permite ${deps.melhoria} neste repositório`,

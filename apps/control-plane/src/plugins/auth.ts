@@ -271,6 +271,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
    * tenant-concurrency.test.ts). Num guard de isolamento isso é grave — código
    * que rode em seguida herdaria um dono que não é dele.
    */
+
   app.addHook('preHandler', (request, reply, done) => {
     if (isPublicPath(request.url)) {
       done()

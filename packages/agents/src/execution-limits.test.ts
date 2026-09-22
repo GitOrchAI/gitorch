@@ -2,7 +2,30 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isBinaryOnPath, resolveExecutionLimitsMode, wrapWithLimits } from './execution-limits'
+import {
+  isBinaryOnPath,
+  resolveExecutionLimitsMode,
+  wrapWithLimits,
+  isRecoverableFailure,
+} from './execution-limits'
+
+describe('isRecoverableFailure', () => {
+  test('returns true for exit code 124 (timeout)', () => {
+    expect(isRecoverableFailure(124)).toBe(true)
+  })
+
+  test('returns true for stderr containing timeout keywords', () => {
+    expect(isRecoverableFailure(1, 'Error: ETiMeDoUt error')).toBe(true)
+    expect(isRecoverableFailure(null, 'process timeout exceeded')).toBe(true)
+    expect(isRecoverableFailure(2, 'ECONNRESET occurred')).toBe(true)
+  })
+
+  test('returns false for other exit codes and unrelated stderr', () => {
+    expect(isRecoverableFailure(1)).toBe(false)
+    expect(isRecoverableFailure(0, 'success')).toBe(false)
+    expect(isRecoverableFailure(2, 'Unknown error ENOTFOUND')).toBe(false)
+  })
+})
 
 describe('resolveExecutionLimitsMode', () => {
   test('sem a variável, cai em none (preserva o comportamento anterior a esta mudança)', () => {

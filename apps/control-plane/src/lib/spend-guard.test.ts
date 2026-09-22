@@ -55,22 +55,32 @@ describe('withinTokenBudget', () => {
 
 describe('canRunMission', () => {
   it('bloqueia por quota crítica do motor', () => {
-    const r = canRunMission({ quotaRemaining: 0, tokensSpent: 0 })
+    const r = canRunMission({ orgId: 'org1', quotaRemaining: 0, tokensSpent: 0 })
     expect(r.ok).toBe(false)
     expect(r.reason).toBe('engine-quota-critical')
   })
   it('bloqueia por orçamento de tokens estourado', () => {
-    const r = canRunMission({ quotaRemaining: 1_000_000, tokensSpent: 100, tokenBudget: 100 })
+    const r = canRunMission({
+      orgId: 'org1',
+      quotaRemaining: 1_000_000,
+      tokensSpent: 100,
+      tokenBudget: 100,
+    })
     expect(r.ok).toBe(false)
     expect(r.reason).toBe('token-budget')
   })
   it('libera quando quota ok e dentro do orçamento', () => {
-    const r = canRunMission({ quotaRemaining: 1_000_000, tokensSpent: 10, tokenBudget: 100 })
+    const r = canRunMission({
+      orgId: 'org1',
+      quotaRemaining: 1_000_000,
+      tokensSpent: 10,
+      tokenBudget: 100,
+    })
     expect(r.ok).toBe(true)
     expect(r.health).toBe('ok')
   })
   it('quota desconhecida não bloqueia', () => {
-    const r = canRunMission({ quotaRemaining: null, tokensSpent: 0 })
+    const r = canRunMission({ orgId: 'org1', quotaRemaining: null, tokensSpent: 0 })
     expect(r.ok).toBe(true)
     expect(r.health).toBe('unknown')
   })

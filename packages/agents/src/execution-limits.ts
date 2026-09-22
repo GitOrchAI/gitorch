@@ -66,6 +66,25 @@ export interface WrapWithLimitsOptions {
 
 const SYSTEMD_RUN_BINARY = 'systemd-run'
 
+export function isRecoverableFailure(exitCode?: number | null, stderr?: string): boolean {
+  if (exitCode === 124) {
+    return true
+  }
+
+  if (stderr) {
+    const lowerStderr = stderr.toLowerCase()
+    if (
+      lowerStderr.includes('timeout') ||
+      lowerStderr.includes('etimedout') ||
+      lowerStderr.includes('econnreset')
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
 export function resolveExecutionLimitsMode(
   env: NodeJS.ProcessEnv = process.env
 ): ExecutionLimitsMode {

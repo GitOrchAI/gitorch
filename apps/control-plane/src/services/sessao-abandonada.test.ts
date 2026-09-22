@@ -17,6 +17,8 @@ function linha(over: Partial<LinhaParaJulgar> = {}): LinhaParaJulgar {
     lastProgressAt: new Date(AGORA.getTime() - HORA),
     createdAt: new Date(AGORA.getTime() - 2 * HORA),
     closedAt: null,
+    requeueCount: 0,
+    projectId: 'p1',
     ...over,
   }
 }

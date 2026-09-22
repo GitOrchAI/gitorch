@@ -110,3 +110,14 @@ describe('decidirProximoPasso — o que muda: nunca "alguém precisa olhar" sem 
     expect(d.acao).toBe('so-acompanhar')
   })
 })
+
+describe('motor-do-proximo-passo (escalar)', () => {
+  it('motor nunca devolve escalar como acao padrao', () => {
+    const d = decidirProximoPasso({
+      ...base(),
+      origem: 'desconhecido',
+      cuidaPorOrigem: { ...PADRAO_DE_CUIDADO },
+    })
+    expect(d.acao).not.toBe('escalar')
+  })
+})

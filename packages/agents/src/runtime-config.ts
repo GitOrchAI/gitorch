@@ -62,8 +62,8 @@ export interface TracingEnvironment {
 }
 
 export const BACKOFF_CONFIG = {
-  initialMs: 5000,
-  maxMs: 60000,
+  baseDelay: 5000,
+  maxDelay: 60000,
   factor: 2,
   maxRetries: 5,
 }

@@ -43,6 +43,15 @@ export function temNumeroDeCota(leitura: QuotaReading): boolean {
 }
 
 /**
+ * O retorno verdadeiro da leitura de cota para a rotina de espera (scheduler):
+ * se o motor tem número real de cota disponível ou não (não falhou, não vazio).
+ */
+export function temCotaDisponivel(leuCota: boolean): boolean {
+  // refreshQuota já devolve `true` quando sucesso (inclusive chamando temNumeroDeCota internamente) e `false` quando falha
+  return leuCota
+}
+
+/**
  * Lê a cota de um motor sem engolir o motivo do fracasso.
  *
  * Continua best-effort — falhar a leitura de cota NUNCA pode derrubar a

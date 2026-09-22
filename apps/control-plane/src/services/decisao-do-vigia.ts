@@ -3,6 +3,8 @@ import { decidirProximoPasso } from './motor-do-proximo-passo.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
+import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
+import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from './vigia-do-pr.js'
 
@@ -15,7 +17,7 @@ type AcaoDoVigia = ReturnType<
 export interface DecisaoDoVigiaDeps {
   runtimeConfig: unknown
   agora: Date
-  projeto: { id: string; wingId: string }
+  projeto: { id: string; wingId: string; devPlan?: string | null }
   token: string
   depsVigia: Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]
   prisma: PrismaClient
@@ -29,6 +31,8 @@ export interface DecisaoDoVigiaDeps {
   ) => Promise<unknown>
   /** Fase 5.3/#802: registra na timeline do painel que o merge expresso aconteceu. */
   registrarNoPainel: (projectId: string, chave: string, texto: string) => Promise<void>
+  /** Log de aviso não-fatal (falha ao buscar visibilidade do repo, falha na trava de parecer etc). */
+  onWarn: (mensagem: string) => void
 }
 
 export async function decidirAcaoNoPrOrfaoIntegrado({
@@ -41,6 +45,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   ghGet,
   ghSend,
   registrarNoPainel,
+  onWarn,
 }: DecisaoDoVigiaDeps): Promise<Awaited<AcaoDoVigia>> {
   const cuidaPorOrigem = lerCuidaPorOrigem(runtimeConfig, false)
   const janelaEmConstrucaoHoras = lerJanelaEmConstrucaoHoras(runtimeConfig)
@@ -113,11 +118,16 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           entendimentoPresente: true,
           merge: async () => {
             try {
-              await ghSend('PUT', `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`, token, {
-                sha: currentPr.head.sha,
-                commit_title: `Merge pull request #${depsVigia.numero} from Dependabot`,
-                commit_message: 'Auto-merged by GitOrch (Dependabot policy)',
-              })
+              await ghSend(
+                'PUT',
+                `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`,
+                token,
+                {
+                  sha: currentPr.head.sha,
+                  commit_title: `Merge pull request #${depsVigia.numero} from Dependabot`,
+                  commit_message: 'Auto-merged by GitOrch (Dependabot policy)',
+                }
+              )
               return true
             } catch (err) {
               return false
@@ -139,8 +149,35 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     }
   }
 
+  let repoPrivado = true
+  try {
+    const repoInfo = (await ghGet(`/repos/${projeto.wingId}`, token)) as {
+      private?: boolean
+    }
+    if (repoInfo && typeof repoInfo.private === 'boolean') {
+      repoPrivado = repoInfo.private
+    }
+  } catch (err) {
+    onWarn(
+      `[decisao-do-vigia] falha ao buscar visibilidade de ${projeto.wingId}: ${(err as Error).message}`
+    )
+  }
+
+  const planoPermite = planoPermiteMelhoria(
+    'secret-scanning',
+    (projeto.devPlan || 'free') as PlanoDoGithub,
+    repoPrivado
+  )
+  const exigeRevisaoDeSeguranca = await calcularExigeRevisaoDeSeguranca({
+    planoPermite,
+    wingId: projeto.wingId,
+    ghGet: (path) => ghGet(path, token),
+    onWarn,
+  })
+
   const acaoMotor = decidirProximoPasso({
     ...depsVigia,
+    exigeRevisaoDeSeguranca,
     origem,
     cuidaPorOrigem,
     emConstrucaoHa,

@@ -32,7 +32,9 @@ const SESSAO_LEGADA = {
   sessionName: 'sessions/legada',
   issueNumber: 46,
   answeredHash: marcarRespondida('hash123'),
-  updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS (24h)
+  updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+  requeueCount: 0,
+  projectId: 'proj1',
 }
 
 function prismaFalso(overrides: Partial<PrismaParaReconciliacao> = {}): PrismaParaReconciliacao {
@@ -64,7 +66,12 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
 
     expect(resumo).toEqual({ encontradas: 1, encerradas: 1, falhas: 0 })
     expect(deps.fecharSessao).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionName: 'sessions/legada' })
+      expect.objectContaining({
+        sessionName: 'sessions/legada',
+        issueNumber: 46,
+        requeueCount: 0,
+        projectId: 'proj1',
+      })
     )
   })
 
@@ -77,7 +84,13 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
     const prisma = prismaFalso({
       devSession: {
         findMany: vi.fn(async () => [
-          { ...SESSAO_LEGADA, answeredHash: marcarEscalada('hash123') },
+          {
+            ...SESSAO_LEGADA,
+            answeredHash: marcarEscalada('hash123'),
+            updatedAt: new Date(),
+            requeueCount: 0,
+            projectId: 'proj1',
+          },
         ]),
       },
     })
@@ -92,7 +105,15 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
   it('marca não é "respondida" (ex.: "tentando" ou "desisti"): não é o padrão do defeito, ignora', async () => {
     const prisma = prismaFalso({
       devSession: {
-        findMany: vi.fn(async () => [{ ...SESSAO_LEGADA, answeredHash: 'tentando:1:hash123' }]),
+        findMany: vi.fn(async () => [
+          {
+            ...SESSAO_LEGADA,
+            answeredHash: 'tentando:1:hash123',
+            updatedAt: new Date(),
+            requeueCount: 0,
+            projectId: 'proj1',
+          },
+        ]),
       },
     })
     const deps = depsFalso({ prisma })
@@ -126,7 +147,10 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
             sessionName: 'sessions/legada-2',
             issueNumber: 47,
             answeredHash: marcarRespondida('hash456'),
-            updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS (24h)
+            updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+            requeueCount: 0,
+            projectId: 'proj1',
+            // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS (24h)
           },
         ]),
       },
@@ -156,7 +180,12 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
     const prisma = prismaFalso({
       devSession: {
         findMany: vi.fn(async () => [
-          { ...SESSAO_LEGADA, updatedAt: new Date(Date.now() - 1000) }, // just 1 second ago
+          {
+            ...SESSAO_LEGADA,
+            updatedAt: new Date(Date.now() - 1000),
+            requeueCount: 0,
+            projectId: 'proj1',
+          }, // just 1 second ago
         ]),
       },
     })
