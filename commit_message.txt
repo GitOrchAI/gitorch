@@ -1,5 +1,0 @@
-feat(agents): implement retry with exponential backoff on quota errors
-
-- Updated BACKOFF_CONFIG in runtime-config.ts with baseDelay and maxDelay.
-- Created withBackoffRetry wrapper in runtime-adapter.ts with jitter logic.
-- Applied withBackoffRetry to orchestrator.ts core execution flow, omitting any new Synapse event types to reflect state via mission properties instead, honoring the system's explicit type constraint.
