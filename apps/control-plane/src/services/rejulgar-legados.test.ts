@@ -3,11 +3,14 @@ import {
   decidirSobreLegado,
   trocarLegadosPorRejulgamento,
   REGUA_MUDOU_EM,
+  REGUA_MUDOU_L4_T17,
   type EntregaPresa,
 } from './rejulgar-legados.js'
 
 const ANTES = new Date(REGUA_MUDOU_EM.getTime() - 24 * 60 * 60 * 1000)
 const DEPOIS = new Date(REGUA_MUDOU_EM.getTime() + 60 * 1000)
+const ANTES_T17 = new Date(REGUA_MUDOU_L4_T17.getTime() - 24 * 60 * 60 * 1000)
+const DEPOIS_T17 = new Date(REGUA_MUDOU_L4_T17.getTime() + 60 * 1000)
 
 function presa(over: Partial<EntregaPresa> = {}): EntregaPresa {
   return {
@@ -87,6 +90,25 @@ describe('decidirSobreLegado', () => {
     expect(decidirSobreLegado(presa({ reprovadaEm: new Date('nada') })).acao).toBe('deixar')
     expect(decidirSobreLegado(presa({ reprovadaEm: null })).acao).toBe('deixar')
   })
+
+  it('L4-T17: explica causa do cancelamento em PR antigo, se estiver vermelho com culpado', () => {
+    const d = decidirSobreLegado(presa({
+        ciHoje: 'red',
+        reprovadaEm: ANTES_T17,
+        culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' },
+    }))
+    expect(d.acao).toBe('explicar-falha')
+    expect(d.motivo).toMatch(/L4-T17/i)
+  })
+
+  it('L4-T17: reprovação posterior ao corte da L4-T17 (com CI vermelho e culpado) não explica (já explicada na época)', () => {
+      const d = decidirSobreLegado(presa({
+          ciHoje: 'red',
+          reprovadaEm: DEPOIS_T17,
+          culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' },
+      }))
+      expect(d.acao).toBe('deixar')
+  })
 })
 
 describe('trocarLegadosPorRejulgamento', () => {
@@ -96,14 +118,16 @@ describe('trocarLegadosPorRejulgamento', () => {
       presa({ numero: 3758 }),
       presa({ numero: 3762, ciHoje: 'red' }),
       presa({ numero: 999, delegada: false }),
+      presa({ numero: 100, ciHoje: 'red', reprovadaEm: ANTES_T17, culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' } }),
     ])
     expect(r.rejulgar).toEqual([3768, 3758])
+    expect(r.explicarFalha).toEqual([100])
     expect(r.deixadas.map((d) => d.numero)).toEqual([3762, 999])
     expect(r.deixadas[0]?.motivo).toContain('red')
   })
 
   it('lista vazia não quebra', () => {
-    expect(trocarLegadosPorRejulgamento([])).toEqual({ rejulgar: [], deixadas: [] })
+    expect(trocarLegadosPorRejulgamento([])).toEqual({ rejulgar: [], explicarFalha: [], deixadas: [] })
   })
 })
 
