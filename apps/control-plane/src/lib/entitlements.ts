@@ -47,6 +47,11 @@ export function remainingConcurrency(plan: PlanLike, activeMissions: number): nu
   return Math.max(0, plan.maxConcurrentMissions - activeMissions)
 }
 
+/** Pode iniciar mais uma missão hoje sem estourar o limite diário do plano? */
+export function canExecuteMissionToday(plan: PlanLike, missionsToday: number): boolean {
+  return missionsToday < plan.maxMissionsPerDay
+}
+
 export interface ProjectInvitationPayload {
   userId: string
   targetProjects: string[]
