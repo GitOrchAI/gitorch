@@ -187,7 +187,10 @@ test('wrapWithJulesGate throws with INTERNAL if API key is missing', async () =>
   const mockAction = vi.fn()
   const wrapped = wrapWithJulesGate(mockAction, undefined)
 
-  await expect(wrapped()).rejects.toMatchObject({ code: 'INTERNAL', message: 'Jules API key is missing.' })
+  await expect(wrapped()).rejects.toMatchObject({
+    code: 'INTERNAL',
+    message: 'Jules API key is missing.',
+  })
 })
 
 test('wrapWithJulesGate throws with RATE_LIMITED for 429 status', async () => {

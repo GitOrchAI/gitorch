@@ -159,7 +159,9 @@ describe('Autonomy Level Validation', () => {
   })
 
   test('allows execution if autonomy is sufficient', async () => {
-    const inner = vi.fn().mockResolvedValue({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 })
+    const inner = vi
+      .fn()
+      .mockResolvedValue({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 })
     const marker = process.env['GITORCH_LOCAL_PLUGIN_MARKER']
     const gated = wrapWithHostGitorchPluginGate(inner, marker, 'cuidar', 'mesclar')
     process.env['GITORCH_AGY_PLUGIN'] = '1'
@@ -170,12 +172,16 @@ describe('Autonomy Level Validation', () => {
   })
 
   test('throws EscritaNaoAutorizadaError if autonomy is insufficient', async () => {
-    const inner = vi.fn().mockResolvedValue({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 })
+    const inner = vi
+      .fn()
+      .mockResolvedValue({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 })
     const marker = process.env['GITORCH_LOCAL_PLUGIN_MARKER']
     const gated = wrapWithHostGitorchPluginGate(inner, marker, 'so_olhar', 'mesclar')
     process.env['GITORCH_AGY_PLUGIN'] = '1'
 
-    await expect(gated({ binary: 'agy', args: [], env: {} })).rejects.toThrow(EscritaNaoAutorizadaError)
+    await expect(gated({ binary: 'agy', args: [], env: {} })).rejects.toThrow(
+      EscritaNaoAutorizadaError
+    )
     expect(inner).not.toHaveBeenCalled()
   })
 })

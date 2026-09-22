@@ -70,6 +70,7 @@ function buildJulesAdjustmentComment(prNumber: number, unmetCriteria: string[]):
   ].join('\n')
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type JulesApiAction = (...args: any[]) => Promise<any>
 
 export function wrapWithJulesGate<T extends JulesApiAction>(
@@ -83,9 +84,13 @@ export function wrapWithJulesGate<T extends JulesApiAction>(
 
     try {
       return await action(...args)
-    } catch (err: any) {
-      if (err && err.status === 429) {
-        throw Object.assign(new Error('Limite de requisições da API do Jules excedido ou cota esgotada.'), { code: 'RATE_LIMITED' })
+    } catch (err: unknown) {
+      const error = err as { status?: number }
+      if (error && error.status === 429) {
+        throw Object.assign(
+          new Error('Limite de requisições da API do Jules excedido ou cota esgotada.'),
+          { code: 'RATE_LIMITED' }
+        )
       }
       throw err
     }
