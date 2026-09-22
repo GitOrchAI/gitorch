@@ -13,6 +13,13 @@ import type { LinhaDeSessao } from './dev-session-store.js'
 import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
 import type { EstadoDaJanela } from './aviso-por-janela.js'
 import { textoDeEntregaSemConteudo } from './entrega-sem-conteudo.js'
+import type { PrismaClient } from '@prisma/client'
+
+function prismaFake(count = 1) {
+  return {
+    repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count }) },
+  } as unknown as Pick<PrismaClient, 'repoItem'>
+}
 
 const RECON = JSON.stringify({
   ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
@@ -367,7 +374,7 @@ describe('runQaMissionViaRails', () => {
     )
     const prompts: string[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -393,7 +400,7 @@ describe('runQaMissionViaRails', () => {
   it('sem PR do Jules pendente: no-op', async () => {
     const f = fakeFetch([])
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -411,7 +418,7 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -435,7 +442,7 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
     ).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -456,7 +463,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 9, user: 'google-labs-jules[bot]' }])
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -478,7 +485,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 9, user: 'loureng' }], ['gitorch:task'])
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -496,7 +503,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 9, user: 'loureng' }], ['gitorch:task'])
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -522,7 +529,7 @@ describe('runQaMissionViaRails', () => {
     ])
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -543,7 +550,7 @@ describe('runQaMissionViaRails', () => {
     ])
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -567,7 +574,7 @@ describe('runQaMissionViaRails', () => {
       return `card #${issue} -> ${column} (set)`
     }
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -576,7 +583,7 @@ describe('runQaMissionViaRails', () => {
       fetchImpl: fakeFetch([{ number: 7, user: 'jules[bot]' }]),
     })
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -591,7 +598,7 @@ describe('runQaMissionViaRails', () => {
   it('sem PR aberta e mode "recon": produz o baseline de reconhecimento, não noOp', async () => {
     const f = fakeFetch([])
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -617,7 +624,7 @@ describe('runQaMissionViaRails', () => {
   it('sem PR aberta e SEM mode "recon": continua no-op (comportamento clássico preservado)', async () => {
     const f = fakeFetch([])
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -640,7 +647,7 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -664,7 +671,7 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -694,7 +701,7 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -722,7 +729,7 @@ describe('runQaMissionViaRails', () => {
       checkRuns: [],
     })
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -736,7 +743,7 @@ describe('runQaMissionViaRails', () => {
   it('com verificação verde, não registra lacuna', async () => {
     const f = fakeFetch([{ number: 7, user: 'jules[bot]' }]) // default: checkRuns 'success'
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -763,7 +770,7 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { reviews: unknown[]; comments: unknown[]; merges: unknown[] } }
     ).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -790,7 +797,7 @@ describe('runQaMissionViaRails', () => {
     })
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -809,7 +816,7 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { reviews: Array<{ event?: string }>; comments: unknown[] } }
     ).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -892,7 +899,7 @@ describe('runQaMissionViaRails', () => {
         f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
       ).posted
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
@@ -931,7 +938,7 @@ describe('runQaMissionViaRails', () => {
       )
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
@@ -970,7 +977,7 @@ describe('runQaMissionViaRails', () => {
       const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } })
         .posted
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
@@ -1024,7 +1031,7 @@ describe('runQaMissionViaRails', () => {
         }
       ).posted
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
@@ -1055,7 +1062,7 @@ describe('runQaMissionViaRails', () => {
     })
     const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } }).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1084,7 +1091,7 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const prompts: string[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1126,7 +1133,7 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const prompts: string[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1160,7 +1167,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1188,7 +1195,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1210,7 +1217,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1237,7 +1244,7 @@ describe('runQaMissionViaRails', () => {
     const enviadas: Array<{ sessionName: string; texto: string }> = []
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1270,7 +1277,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const guardadas: unknown[] = []
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1289,7 +1296,7 @@ describe('runQaMissionViaRails', () => {
   it('sem avisarSessao (opção ausente): comportamento clássico preservado, sem quebrar', async () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1304,7 +1311,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1328,7 +1335,7 @@ describe('runQaMissionViaRails', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const avisos: string[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1350,7 +1357,7 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1379,7 +1386,7 @@ describe('runQaMissionViaRails', () => {
     )
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1412,7 +1419,7 @@ describe('runQaMissionViaRails', () => {
     )
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1448,7 +1455,7 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const prompts: string[] = []
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1484,7 +1491,7 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
     ).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1511,7 +1518,7 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
     ).posted
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1532,7 +1539,7 @@ describe('runQaMissionViaRails', () => {
       issueNumber: number | null
     }> = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1570,7 +1577,7 @@ describe('runQaMissionViaRails', () => {
       issueNumber: number | null
     }> = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1594,7 +1601,7 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const mesclados: Array<{ numeroDoPr: number; mergeCommitSha: string }> = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1643,7 +1650,7 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     const r1 = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1672,7 +1679,7 @@ describe('runQaMissionViaRails', () => {
       f2 as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
     ).posted
     const r2 = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1702,7 +1709,7 @@ describe('runQaMissionViaRails', () => {
     ])
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -1759,7 +1766,7 @@ describe('runQaMissionViaRails', () => {
         f1 as unknown as { posted: { reviews: Array<{ body?: string }>; merges: unknown[] } }
       ).posted
       const r1 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         fetchImpl: f1,
@@ -1788,7 +1795,7 @@ describe('runQaMissionViaRails', () => {
       )
       const posted2 = (f2 as unknown as { posted: { merges: unknown[] } }).posted
       const r2 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         fetchImpl: f2,
@@ -1814,7 +1821,7 @@ describe('runQaMissionViaRails', () => {
       )
       const posted3 = (f3 as unknown as { posted: { merges: unknown[] } }).posted
       const r3 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         fetchImpl: f3,
@@ -1854,7 +1861,7 @@ describe('runQaMissionViaRails', () => {
       const posted4 = (f4 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
       const r4 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         fetchImpl: f4,
@@ -1883,7 +1890,7 @@ describe('runQaMissionViaRails', () => {
         { mergeFalha: true }
       )
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         fetchImpl: f5,
@@ -1947,7 +1954,7 @@ describe('runQaMissionViaRails', () => {
       const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
       const r1 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComFalha,
         fetchImpl: f1,
@@ -1966,7 +1973,7 @@ describe('runQaMissionViaRails', () => {
         { number: 8, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
       ])
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComFalha,
         fetchImpl: f2,
@@ -2005,7 +2012,7 @@ describe('runQaMissionViaRails', () => {
       const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
       const r1 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComSucesso,
         fetchImpl: f1,
@@ -2023,7 +2030,7 @@ describe('runQaMissionViaRails', () => {
         { number: 9, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
       ])
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComSucesso,
         fetchImpl: f2,
@@ -2066,7 +2073,7 @@ describe('runQaMissionViaRails', () => {
       const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
       const r1 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesSemNotificador,
         fetchImpl: f1,
@@ -2082,7 +2089,7 @@ describe('runQaMissionViaRails', () => {
         { number: 10, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
       ])
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesSemNotificador,
         fetchImpl: f2,
@@ -2126,7 +2133,7 @@ describe('runQaMissionViaRails', () => {
       const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
 
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2176,7 +2183,7 @@ describe('runQaMissionViaRails', () => {
       })
       const posted1 = (f1 as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
       const r1 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         execute: async () => APPROVE,
@@ -2208,7 +2215,7 @@ describe('runQaMissionViaRails', () => {
         f2 as unknown as { posted: { reviews: Array<{ body?: string }>; merges: unknown[] } }
       ).posted
       const r2 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         execute: async () => APPROVE,
@@ -2250,7 +2257,7 @@ describe('runQaMissionViaRails', () => {
         f3 as unknown as { posted: { reviews: unknown[]; comments: unknown[]; merges: unknown[] } }
       ).posted
       const r3 = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         ...opcoesComuns,
         execute: async () => {
@@ -2280,7 +2287,7 @@ describe('runQaMissionViaRails', () => {
         .posted
       const registradas: Array<{ sessionName: string; agora: Date }> = []
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2312,7 +2319,7 @@ describe('runQaMissionViaRails', () => {
       const avisos: string[] = []
       const registradas: unknown[] = []
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2371,7 +2378,7 @@ describe('runQaMissionViaRails', () => {
       const avisos1: string[] = []
       const marcas: Array<{ sessionName: string; hash: string }> = []
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2409,7 +2416,7 @@ describe('runQaMissionViaRails', () => {
       })
       const avisos2: string[] = []
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2444,7 +2451,7 @@ describe('runQaMissionViaRails', () => {
       const avisos1: string[] = []
       const marcas: Array<{ sessionName: string; hash: string }> = []
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2479,7 +2486,7 @@ describe('runQaMissionViaRails', () => {
       })
       const avisos2: string[] = []
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2509,7 +2516,7 @@ describe('runQaMissionViaRails', () => {
       const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
       const limpezas: Array<{ sessionName: string }> = []
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2545,7 +2552,7 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 10, user: 'jules[bot]' }])
       const limpezas: unknown[] = []
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2581,7 +2588,7 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 9, user: 'loureng' }])
       const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2599,7 +2606,7 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 9, user: 'loureng' }])
       const chamadas = (f as unknown as { calls?: string[] }).calls
       await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2615,7 +2622,7 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 9, user: 'jules[bot]' }])
       const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2636,7 +2643,7 @@ describe('runQaMissionViaRails', () => {
       ])
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
       const r = await runQaMissionViaRails({
-        prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+        prisma: prismaFake(1),
         projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
@@ -2723,7 +2730,7 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
     const { impl, chamadas } = githubFake({ recusaReview: false })
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'dono/repo',
       githubToken: 'ghs_app',
@@ -2739,7 +2746,7 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
     const { impl, chamadas } = githubFake({ recusaReview: true })
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'dono/repo',
       githubToken: 'ghs_app',
@@ -2773,7 +2780,7 @@ describe('teto de tempo (leva D)', () => {
     const base = fakeFetch([{ number: 7, user: 'google-labs-jules[bot]' }])
     const spy = vi.fn(base)
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -2843,7 +2850,7 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const avisosAoDev: Array<{ sessionName: string; texto: string }> = []
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -2874,7 +2881,7 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -2901,7 +2908,7 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -2923,7 +2930,7 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -2941,7 +2948,7 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -2969,7 +2976,7 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3021,7 +3028,7 @@ describe('rejulgar não pode virar licença para mesclar PR de humano', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3057,7 +3064,7 @@ describe('rejulgar não pode virar licença para mesclar PR de humano', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3128,7 +3135,7 @@ describe('rejulgar quando a tarefa mudou (Fase 3.2)', () => {
     }
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3167,7 +3174,7 @@ describe('rejulgar quando a tarefa mudou (Fase 3.2)', () => {
     const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3190,7 +3197,7 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
   it('PR delegado sem tarefa vinculada: o parecer marcado NÃO é re-julgado no ciclo seguinte', async () => {
     const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }])
     const r1 = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3214,7 +3221,7 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
       },
     ])
     const r2 = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3230,7 +3237,7 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
     const sessoes = [linha({ issueNumber: 50, pullRequestNumber: 7 })]
     const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }], ['jules', 'gitorch:task'], 50)
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3249,7 +3256,7 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
       50
     )
     const r2 = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3284,7 +3291,7 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3316,7 +3323,7 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3348,7 +3355,7 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3376,7 +3383,7 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3414,7 +3421,7 @@ describe('diff grande demais continua sendo reprovação FINAL', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3445,7 +3452,7 @@ describe('diff grande demais continua sendo reprovação FINAL', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3481,7 +3488,7 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3513,7 +3520,7 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3544,7 +3551,7 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
 
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3563,7 +3570,7 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3676,7 +3683,7 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
     // Próximo wake: como a janela nunca foi marcada, tenta avisar de novo —
     // "aviso que falha volta ao ciclo de sempre", não emudece a entrega.
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       ...opcoes,
       avisarDono: async (msg: string) => {
@@ -3722,7 +3729,7 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
     // histórico só roda no caminho de reprovação (é aqui, não numa aprovação
     // isolada, que o produto de fato relê o histórico); a marca limpa.
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       ...opcoesBarrado,
       lerHistoricoDoProjeto: async () => [{ peloPortao: false, quando: new Date() }],
@@ -3775,7 +3782,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     let motorChamado = false
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3815,7 +3822,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     let motorChamado = false
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3835,7 +3842,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const f = fakeFetch([{ number: 468, user: 'jules[bot]', changedFiles: 0 }])
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
     await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3875,7 +3882,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     )
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3935,7 +3942,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     let motorChamado = false
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -3999,7 +4006,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -4022,7 +4029,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -4044,7 +4051,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const guardados: Array<{ sessionName: string; texto: string }> = []
     const avisos: string[] = []
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -4072,7 +4079,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     let motorChamado = false
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -4099,7 +4106,7 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     let motorChamado = false
     const r = await runQaMissionViaRails({
-      prisma: { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any,
+      prisma: prismaFake(1),
       projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
@@ -4162,7 +4169,7 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
       const f = fakeFetch([{ number: 42, user: 'jules' }])
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
-      const prismaMock = { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) } } as any
+      const prismaMock = prismaFake(1)
       await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
@@ -4187,7 +4194,7 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
       const onWarnMock = vi.fn()
 
-      const prismaMock = { repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 0 }) } } as any
+      const prismaMock = prismaFake(0)
       await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
