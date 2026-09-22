@@ -86,7 +86,11 @@ jobs:
           PREFIX="${{ vars.GITORCH_PAGES_BASE_PATH || format('/{0}', github.event.repository.name) }}"
           fail=0
           for path in "/" "/setup" "/painel"; do
-            URL="$HOST$PREFIX$path"
+            if [ "$path" = "/" ]; then
+              URL="$HOST$PREFIX/"
+            else
+              URL="$HOST$PREFIX$path/"
+            fi
             HTML=""
             for i in 1 2 3 4 5 6 7 8; do
               HTML=$(curl -fsSL "$URL" 2>/dev/null) && [ -n "$HTML" ] && break

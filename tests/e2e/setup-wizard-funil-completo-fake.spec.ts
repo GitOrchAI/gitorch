@@ -30,7 +30,9 @@ import { EngineConnectionService } from '../../apps/control-plane/dist/services/
  * DATABASE_URL).
  */
 
-const BASE = process.env['E2E_BASE_URL'] ?? 'http://127.0.0.1:4010'
+const BASE =
+  (process.env['E2E_BASE_URL'] ?? 'http://127.0.0.1:4010') +
+  (process.env.NEXT_PUBLIC_BASE_PATH || '')
 const JWT_SECRET = process.env['JWT_SECRET'] ?? ''
 const FIXTURE_REPO = 'GitOrchIA/gitorch-e2e-fixture'
 const NS = 'e2e-funil-fake'
@@ -142,7 +144,7 @@ test('funil completo do setup wizard: login → termos → repo → diagnóstico
   await interceptGithubRepoListing(page)
 
   await test.step('passo 1-2: chegada + sessão já autenticada pula pro passo 3', async () => {
-    await page.goto(`${BASE}/setup`, { waitUntil: 'networkidle' })
+    await page.goto(`${BASE}/setup/`, { waitUntil: 'networkidle' })
     const getStarted = page.getByRole('button', { name: /get started|começar/i })
     if (await getStarted.isVisible({ timeout: 5000 }).catch(() => false)) {
       await getStarted.click()
