@@ -1,3 +1,4 @@
+import { MAX_REQUEUE } from '../services/sessao-terminal.js'
 import { lerCuidaPorOrigem, lerJanelaEmConstrucaoHoras } from '../services/cuidado-por-origem.js'
 import { decidirProximoPasso } from '../services/motor-do-proximo-passo.js'
 import { calcularExigeRevisaoDeSeguranca } from '../services/exigir-revisao-de-seguranca.js'
@@ -5491,10 +5492,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             : {}),
           onWarn: (m) => app.log.warn(m),
         })
-        app.log.info(
-          `[Scheduler] sessão abandonada devolvida: ${linha.sessionName} (issue #${linha.issueNumber}) ` +
-            'sem progresso além do teto — a vaga voltou para a fila'
-        )
+        if (linha.requeueCount >= MAX_REQUEUE) {
+          await registrarStatusNoPainel(
+            linha.projectId,
+            `desistencia:${linha.projectId}:${linha.issueNumber}`,
+            `GitOrch: a entrega da issue #${linha.issueNumber} falhou ${linha.requeueCount} vezes e bateu o teto de retentativas. A esteira não vai mais tentar sozinha.`
+          )
+          app.log.info(
+            `[Scheduler] sessão abandonada devolvida: ${linha.sessionName} (issue #${linha.issueNumber}) ` +
+              'bateu o teto de retentativas — desistiu'
+          )
+        } else {
+          app.log.info(
+            `[Scheduler] sessão abandonada devolvida: ${linha.sessionName} (issue #${linha.issueNumber}) ` +
+              'sem progresso além do teto — a vaga voltou para a fila'
+          )
+        }
       } catch (err) {
         // Uma que não fecha não pode impedir as outras: cada vaga devolvida já
         // destrava a esteira sozinha.
@@ -11501,7 +11514,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           { projectId: projeto.id, repository: projeto.wingId },
           {
             prisma: app.prisma as unknown as PrismaParaReconciliacao,
-            fecharSessao: async ({ sessionName, agora }) => {
+                        fecharSessao: async ({ sessionName, issueNumber, requeueCount, projectId, agora }) => {
               // A chave é da conta em que a sessão NASCEU (BYOK, D34), lida
               // linha a linha — MESMO padrão de `devolverVagasDeSessaoAbandonada`.
               const apiKey = await chaveDaSessao(sessionName)
@@ -11522,6 +11535,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   : {}),
                 onWarn: (m) => app.log.warn(m),
               })
+
+              if (requeueCount >= MAX_REQUEUE) {
+                await registrarStatusNoPainel(
+                  projectId,
+                  `desistencia:${projectId}:${issueNumber}`,
+                  `GitOrch: a entrega da issue #${issueNumber} falhou ${requeueCount} vezes e bateu o teto de retentativas. A esteira não vai mais tentar sozinha.`
+                )
+              }
             },
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             // Nunca engole: rede/Prisma falhando ao encerrar uma sessão

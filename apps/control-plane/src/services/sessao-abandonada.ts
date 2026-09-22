@@ -51,6 +51,8 @@ export interface LinhaParaJulgar {
    * `AWAITING_USER_FEEDBACK` (ver `ehDuvidaEscaladaAoDono` abaixo).
    */
   answeredHash?: string | null
+  requeueCount: number
+  projectId: string
 }
 
 /**

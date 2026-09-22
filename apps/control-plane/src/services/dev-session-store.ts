@@ -387,6 +387,8 @@ export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSes
     createdAt: Date | null
     closedAt: Date | null
     answeredHash: string | null
+    requeueCount: number
+    projectId: string
   }>
 > {
   return (await deps.prisma.devSession.findMany({
@@ -399,6 +401,8 @@ export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSes
       createdAt: true,
       closedAt: true,
       answeredHash: true,
+      requeueCount: true,
+      projectId: true,
     },
   })) as unknown as Array<{
     sessionName: string
@@ -408,6 +412,8 @@ export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSes
     createdAt: Date | null
     closedAt: Date | null
     answeredHash: string | null
+    requeueCount: number
+    projectId: string
   }>
 }
 
