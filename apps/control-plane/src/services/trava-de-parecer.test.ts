@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { adquirirTravaDeParecer, type PrismaDaTravaDeParecer } from './trava-de-parecer.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 function prismaFake(contagem: number) {
   return {
@@ -72,5 +74,28 @@ describe('adquirirTravaDeParecer', () => {
       estado: { status: 'unknown' },
     })
     expect(chamadaUpsert.update).toEqual({})
+  })
+})
+
+describe('esquema do banco', () => {
+  it('garante que parecerTravadoAte e parecerTravaHeadSha existem no model RepoItem do schema.prisma', () => {
+    const schemaPath = join(process.cwd(), 'prisma', 'schema.prisma')
+    const schemaConteudo = readFileSync(schemaPath, 'utf8')
+
+    // We just search the whole file for these exact definitions, as that's unique enough for a drift guard
+    expect(schemaConteudo).toMatch(/parecerTravadoAte\s+DateTime\?\s+@map\("parecer_travado_ate"\)/)
+    expect(schemaConteudo).toMatch(
+      /parecerTravaHeadSha\s+String\?\s+@map\("parecer_trava_head_sha"\)/
+    )
+    // And ensure they are in the RepoItem block
+    const repoItemStart = schemaConteudo.indexOf('model RepoItem {')
+    const nextModelStart = schemaConteudo.indexOf('model ', repoItemStart + 1)
+    const repoItemBody = schemaConteudo.slice(
+      repoItemStart,
+      nextModelStart !== -1 ? nextModelStart : undefined
+    )
+
+    expect(repoItemBody).toContain('parecerTravadoAte')
+    expect(repoItemBody).toContain('parecerTravaHeadSha')
   })
 })

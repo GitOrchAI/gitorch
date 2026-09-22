@@ -6,39 +6,9 @@
 // contra o estado JÁ commitado pela primeira — é isso que faz a trava valer
 // de verdade contra corrida, não só contra sequência.
 
-export interface PrismaDaTravaDeParecer {
-  repoItem: {
-    upsert: (args: {
-      where: {
-        projectId_tipo_numero: {
-          projectId: string
-          tipo: 'pr'
-          numero: number
-        }
-      }
-      create: {
-        projectId: string
-        tipo: 'pr'
-        numero: number
-        estado: { status: 'unknown' }
-      }
-      update: Record<string, never>
-    }) => Promise<unknown>
-    updateMany: (args: {
-      where: {
-        projectId: string
-        tipo: 'pr'
-        numero: number
-        OR: Array<
-          | { parecerTravadoAte: null }
-          | { parecerTravadoAte: { lt: Date } }
-          | { parecerTravaHeadSha: { not: string } }
-        >
-      }
-      data: { parecerTravadoAte: Date; parecerTravaHeadSha: string }
-    }) => Promise<{ count: number }>
-  }
-}
+import type { PrismaClient } from '@prisma/client'
+
+export type PrismaDaTravaDeParecer = Pick<PrismaClient, 'repoItem'>
 
 /** Por quanto tempo a trava vale — generoso o bastante para um julgamento +
  *  publicação de review terminarem, curto o bastante para uma execução
