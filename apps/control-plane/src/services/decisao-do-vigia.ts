@@ -57,6 +57,10 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   ghSend,
   registrarNoPainel,
   onWarn,
+  userId,
+  agentQuestion,
+  montarContextoExecutivo,
+  depsDoContexto,
 }: DecisaoDoVigiaDeps): Promise<Awaited<AcaoDoVigia>> {
   const cuidaPorOrigem = lerCuidaPorOrigem(runtimeConfig, false)
   const janelaEmConstrucaoHoras = lerJanelaEmConstrucaoHoras(runtimeConfig)
@@ -200,10 +204,6 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     if (!onWarn || !depsVigia || depsVigia.numero === undefined || depsVigia.issueNumber === null) {
       return { acao: 'ignorar', motivo: 'tarefa 3.10: dados insuficientes para perguntar' }
     }
-    const userId = arguments[0].userId
-    const agentQuestion = arguments[0].agentQuestion
-    const montarContextoExecutivo = arguments[0].montarContextoExecutivo
-    const depsDoContexto = arguments[0].depsDoContexto
 
     if (!userId || !agentQuestion || !montarContextoExecutivo || !depsDoContexto) {
       onWarn(
