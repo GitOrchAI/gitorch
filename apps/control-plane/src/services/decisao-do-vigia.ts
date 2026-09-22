@@ -9,6 +9,12 @@ import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.j
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from './vigia-do-pr.js'
+import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
+import type {
+  montarContextoExecutivoDaPergunta,
+  DepsDoContextoExecutivo,
+} from './contexto-executivo-da-pergunta.js'
+import type { OrigemDoItem } from './origem-do-item.js'
 
 type AcaoDoVigia = ReturnType<
   NonNullable<
@@ -24,6 +30,10 @@ export interface DecisaoDoVigiaDeps {
   depsVigia: Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]
   prisma: PrismaClient
   ghGet: (caminho: string, token: string) => Promise<unknown>
+  userId?: string | null | undefined
+  agentQuestion?: AgentQuestionAskerDeCuidado | undefined
+  montarContextoExecutivo?: typeof montarContextoExecutivoDaPergunta | undefined
+  depsDoContexto?: DepsDoContextoExecutivo | undefined
   /** Fase 5.3/#802: escrita de merge do caminho expresso do Dependabot. */
   ghSend: (
     method: 'POST' | 'PATCH' | 'PUT',
@@ -48,6 +58,10 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   ghSend,
   registrarNoPainel,
   onWarn,
+  userId,
+  agentQuestion,
+  montarContextoExecutivo,
+  depsDoContexto,
 }: DecisaoDoVigiaDeps): Promise<Awaited<AcaoDoVigia>> {
   const cuidaPorOrigem = lerCuidaPorOrigem(runtimeConfig, false)
   const janelaEmConstrucaoHoras = lerJanelaEmConstrucaoHoras(runtimeConfig)
@@ -203,12 +217,50 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
       `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
     )
-    // mapear 'perguntar-se-cuida' para o fluxo existente
-    // (PO/perguntar-vinculo/cuidado-por-origem) no futuro.
-    // Por enquanto mantemos ignorar com o que falta sem escalar
+
+    if (!onWarn || !depsVigia || depsVigia.numero === undefined || depsVigia.issueNumber === null) {
+      return { acao: 'ignorar', motivo: 'tarefa 3.10: dados insuficientes para perguntar' }
+    }
+
+    if (!userId || !agentQuestion || !montarContextoExecutivo || !depsDoContexto) {
+      onWarn(
+        `decidirAcaoNoPrOrfaoIntegrado: sem agentQuestionService ou userId para perguntar se cuida do PR #${depsVigia.numero}`
+      )
+      return {
+        acao: 'ignorar',
+        motivo:
+          'tarefa 3.10: fluxo de perguntar se cuida pulado porque falta agentQuestionService ou userId',
+      }
+    }
+
+    try {
+      const contexto = await montarContextoExecutivo(
+        {
+          projectId: projeto.id,
+          repository: projeto.wingId,
+          issueNumber: depsVigia.issueNumber,
+        },
+        depsDoContexto
+      )
+
+      await perguntarSeCuida(
+        {
+          userId,
+          projectId: projeto.id,
+          numeroDoPr: depsVigia.numero,
+          repository: projeto.wingId,
+          origem: origem as OrigemDoItem,
+          contexto,
+        },
+        { agentQuestion }
+      )
+    } catch (err) {
+      onWarn(`decidirAcaoNoPrOrfaoIntegrado: erro ao disparar perguntarSeCuida: ${err}`)
+    }
+
     return {
       acao: 'ignorar',
-      motivo: 'tarefa 3.10: fluxo de perguntar se cuida não implementado no scheduler',
+      motivo: 'pergunta executiva "cuido deste pedido?" enviada ao dono',
     }
   }
   if (acaoMotor.acao === 'mesclar') {

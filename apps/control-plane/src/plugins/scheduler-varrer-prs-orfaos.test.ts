@@ -199,7 +199,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
     expect(result).toEqual({
       acao: 'ignorar',
-      motivo: 'tarefa 3.10: fluxo de perguntar se cuida não implementado no scheduler',
+      motivo: 'tarefa 3.10: dados insuficientes para perguntar',
     })
 
     // Para mesclar: verificacao verde, mergeable true, entendimentoCompleto e QA veredito

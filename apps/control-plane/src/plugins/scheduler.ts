@@ -6905,6 +6905,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         userId: true,
         devPlan: true,
         devAccountId: true,
+        autonomia: true,
       },
     })
 
@@ -7011,6 +7012,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               ghSend,
               registrarNoPainel: registrarStatusNoPainel,
               onWarn: (msg) => app.log.warn(msg),
+              userId: projeto.userId,
+              agentQuestion: (
+                app as unknown as {
+                  agentQuestionService?: import('../services/agent-question.js').AgentQuestionService
+                }
+              ).agentQuestionService as
+                import('../services/perguntar-se-cuida.js').AgentQuestionAskerDeCuidado | undefined,
+              montarContextoExecutivo: montarContextoExecutivoDaPergunta,
+              depsDoContexto: {
+                prisma: app.prisma as unknown as PrismaParaContextoExecutivo,
+                buscarCorpoDaIssue: criarBuscadorDeCorpoDaIssue({
+                  fetchDoCliente: fetchDoRepositorio({ nivel: () => projeto.autonomia }),
+                  repository: projeto.wingId,
+                  issueNumber: depsVigia.issueNumber ?? 0,
+                  githubToken: token,
+                  onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                }),
+              },
             }),
           abrirSessaoDeConserto: ({ numeroDoPr, issueNumber, pedido, branchDoPr }) =>
             abrirSessaoDeConsertoDoPr({ projeto, numeroDoPr, issueNumber, pedido, branchDoPr }),
