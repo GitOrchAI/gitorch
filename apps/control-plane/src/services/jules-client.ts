@@ -15,6 +15,7 @@
 // caminho do label continua valendo como plano B.
 
 import type { ResultadoDoAcionamentoDoDev } from './sm-delegation.js'
+import { classifyGithubApiError } from '../lib/setup-errors.js'
 
 const JULES_API = 'https://jules.googleapis.com/v1alpha'
 const TIMEOUT_MS = 15_000
@@ -619,4 +620,26 @@ export async function atividadesDeConversaJules(deps: {
   return atividades
     .filter((a) => a.texto.length > 0)
     .map((a) => ({ originator: a.originator, quando: new Date(a.quando), texto: a.texto }))
+}
+
+
+/**
+ * Valida a credencial (token) fornecida pelo convidado verificando acesso à API do Jules.
+ * Se houver rate limit ou falha (ex.: token inválido), mapeia o erro usando `classifyGithubApiError`
+ * e lança um erro estruturado com a propriedade `code`.
+ */
+export async function validarTokenJules(deps: {
+  apiKey?: string | undefined
+  fetchImpl?: typeof fetch
+}): Promise<void> {
+  if (!deps.apiKey) return
+  const f = deps.fetchImpl ?? fetch
+  const resp = await f(`${JULES_API}/sessions?pageSize=1`, {
+    headers: { 'X-Goog-Api-Key': deps.apiKey },
+  })
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => null)
+    const code = classifyGithubApiError(resp.status, body)
+    throw Object.assign(new Error(`Jules API validation failed: ${code}`), { code })
+  }
 }

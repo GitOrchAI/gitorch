@@ -69,3 +69,26 @@ function buildJulesAdjustmentComment(prNumber: number, unmetCriteria: string[]):
     ...unmetCriteria.map((criterion) => `- ${criterion}`),
   ].join('\n')
 }
+
+import type {
+  RuntimeCommandRequest,
+  RuntimeCommandResult,
+  RuntimeCommandRunner,
+} from './runtime-adapter.js'
+
+export interface GuestSessionContext {
+  validarTokenJulesApi?: () => Promise<void>
+  autonomyLevel?: string
+}
+
+export function wrapWithJulesApiGate(
+  runner: RuntimeCommandRunner,
+  context?: GuestSessionContext
+): RuntimeCommandRunner {
+  return async (request: RuntimeCommandRequest): Promise<RuntimeCommandResult> => {
+    if (context?.validarTokenJulesApi) {
+      await context.validarTokenJulesApi()
+    }
+    return runner(request)
+  }
+}
