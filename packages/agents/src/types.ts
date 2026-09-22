@@ -42,6 +42,7 @@ export interface RuntimeCredentialRef {
 }
 
 export interface AgentMission {
+  status?: 'resuming' | string
   waitingStatus?: string | null
   waitingReason?: string | null
   id: string

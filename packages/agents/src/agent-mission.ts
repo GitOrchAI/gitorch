@@ -11,6 +11,8 @@ import type {
 } from './types'
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
 import { buildPrimingPreamble } from './prompts/priming.js'
+import { hydrateStateFromCheckpoint } from './workspace-priming.js'
+import type { StateNode } from './types'
 
 export const workspaceManager = new WorkspaceManager()
 
@@ -77,6 +79,7 @@ export function missionStateReducer(
       runtime: missionUpdate.runtime || state.mission.runtime,
       credentialRef: missionUpdate.credentialRef || state.mission.credentialRef,
       evidenceRefs: missionUpdate.evidenceRefs || state.mission.evidenceRefs,
+      status: missionUpdate.status || state.mission.status,
     }
   }
 
@@ -85,6 +88,47 @@ export function missionStateReducer(
     ...update,
     mission: nextMission,
   }
+}
+
+export async function resumeMissionFromCheckpoint(
+  missionId: string,
+  workspacePath: string,
+  currentState: MissionState,
+  nodeRegistry: Map<string, StateNode>
+): Promise<MissionState> {
+  const nextState = missionStateReducer(currentState, {
+    mission: {
+      ...currentState.mission,
+      status: 'resuming',
+    },
+  })
+
+  let currentRole: string | 'done' | 'failed' = nextState.mission.role
+  const checkpointStr = await hydrateStateFromCheckpoint(workspacePath)
+  if (checkpointStr) {
+    try {
+      const checkpoint = JSON.parse(checkpointStr)
+      if (checkpoint.pendingRole) {
+        currentRole = checkpoint.pendingRole
+      }
+    } catch {
+      // Ignora erro de parser e usa a role original
+    }
+  }
+
+  let finalState = nextState
+  while (currentRole !== 'done' && currentRole !== 'failed') {
+    const node = nodeRegistry.get(currentRole)
+    if (!node) {
+      throw new Error(`No state node registered for role: ${currentRole}`)
+    }
+
+    const transition = await node.execute(finalState)
+    finalState = missionStateReducer(finalState, transition.state)
+    currentRole = transition.nextRole ?? 'done'
+  }
+
+  return finalState
 }
 
 function buildPrompt(
