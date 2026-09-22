@@ -16,7 +16,8 @@ import { EngineConnectionService } from '../../apps/control-plane/dist/services/
  * real) — sem ele, pula (não quebra CI de quem não tiver o secret, ex. forks).
  */
 
-const BASE = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4010'
+const BASE =
+  (process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4010') + (process.env.NEXT_PUBLIC_BASE_PATH || '')
 const FIXTURE_REPO = 'GitOrchIA/gitorch-e2e-fixture'
 
 test('diagnóstico grátis: clona a fixture real, mostra veredito + achado determinístico', async ({
@@ -66,7 +67,7 @@ test('diagnóstico grátis: clona a fixture real, mostra veredito + achado deter
   })
   page.on('pageerror', (err) => consoleErrors.push('pageerror: ' + err.message))
 
-  await page.goto(`${BASE}/setup`, { waitUntil: 'networkidle' })
+  await page.goto(`${BASE}/setup/`, { waitUntil: 'networkidle' })
 
   // Sessão já autenticada pula direto pro passo 3 (Terms); só clica "Get
   // started" se o wizard não tiver pulado.

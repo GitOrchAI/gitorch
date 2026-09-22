@@ -49,7 +49,9 @@ import { EngineConnectionService } from '../../apps/control-plane/src/services/e
  * então um ✓ verde jamais aparece por acidente.
  */
 
-const BASE = process.env['E2E_BASE_URL'] ?? 'http://127.0.0.1:4010'
+const BASE =
+  (process.env['E2E_BASE_URL'] ?? 'http://127.0.0.1:4010') +
+  (process.env.NEXT_PUBLIC_BASE_PATH || '')
 const JWT_SECRET = process.env['JWT_SECRET'] ?? ''
 
 // A missão que o submit enfileira — o provisionamento REAL do wizard.

@@ -43,7 +43,8 @@ import * as fs from 'node:fs'
  * (que só sobe control-plane real + podman real). Pula honestamente se
  * E2E_FAKE_CODEX_MODE_FILE não estiver setado, em vez de quebrar CI alheio.
  */
-const BASE = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4010'
+const BASE =
+  (process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4010') + (process.env.NEXT_PUBLIC_BASE_PATH || '')
 const JWT_SECRET = process.env['JWT_SECRET']
 const MODE_FILE = process.env['E2E_FAKE_CODEX_MODE_FILE']
 

@@ -19,7 +19,8 @@ import jwt from 'jsonwebtoken'
  * `/stream`), um snapshot JSON puro do estado adicionado justamente para este
  * caso (e como fallback de polling do frontend se o `EventSource` falhar).
  */
-const BASE = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4010'
+const BASE =
+  (process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4010') + (process.env.NEXT_PUBLIC_BASE_PATH || '')
 
 test('login assistido do Codex: sobe container real, CLI real emite link+código reais de device-auth', async ({
   context,

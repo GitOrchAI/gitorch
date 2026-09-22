@@ -14,7 +14,7 @@ const puppeteer = require('puppeteer');
   const artifactDir = 'C:\\Users\\Admin\\.gemini\\antigravity\\brain\\308f64ef-e2a2-42d6-9744-8a8260b07a98';
 
   console.log('Navegando para Landing Page...');
-  await page.goto('http://localhost:3000', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:3000/', { waitUntil: 'networkidle0' });
   
   // Screenshot Hero
   await page.screenshot({ path: `${artifactDir}\\qa-hero.png` });
@@ -34,13 +34,13 @@ const puppeteer = require('puppeteer');
 
   // Navigate to Setup
   console.log('Navegando para Setup...');
-  await page.goto('http://localhost:3000/setup', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:3000/setup/', { waitUntil: 'networkidle0' });
   await page.screenshot({ path: `${artifactDir}\\qa-setup.png` });
   console.log('✅ Screenshot do Setup capturado');
 
   // Navigate to Dashboard
   console.log('Navegando para Dashboard...');
-  await page.goto('http://localhost:3000/painel', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:3000/painel/', { waitUntil: 'networkidle0' });
   await page.screenshot({ path: `${artifactDir}\\qa-dashboard.png` });
   console.log('✅ Screenshot do Dashboard capturado');
 
