@@ -66,7 +66,12 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
 
     expect(resumo).toEqual({ encontradas: 1, encerradas: 1, falhas: 0 })
     expect(deps.fecharSessao).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionName: 'sessions/legada', issueNumber: 46, requeueCount: 0, projectId: 'proj1' })
+      expect.objectContaining({
+        sessionName: 'sessions/legada',
+        issueNumber: 46,
+        requeueCount: 0,
+        projectId: 'proj1',
+      })
     )
   })
 
@@ -79,7 +84,13 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
     const prisma = prismaFalso({
       devSession: {
         findMany: vi.fn(async () => [
-          { ...SESSAO_LEGADA, answeredHash: marcarEscalada('hash123'), updatedAt: new Date(), requeueCount: 0, projectId: 'proj1' },
+          {
+            ...SESSAO_LEGADA,
+            answeredHash: marcarEscalada('hash123'),
+            updatedAt: new Date(),
+            requeueCount: 0,
+            projectId: 'proj1',
+          },
         ]),
       },
     })
@@ -94,7 +105,15 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
   it('marca não é "respondida" (ex.: "tentando" ou "desisti"): não é o padrão do defeito, ignora', async () => {
     const prisma = prismaFalso({
       devSession: {
-        findMany: vi.fn(async () => [{ ...SESSAO_LEGADA, answeredHash: 'tentando:1:hash123', updatedAt: new Date(), requeueCount: 0, projectId: 'proj1' }]),
+        findMany: vi.fn(async () => [
+          {
+            ...SESSAO_LEGADA,
+            answeredHash: 'tentando:1:hash123',
+            updatedAt: new Date(),
+            requeueCount: 0,
+            projectId: 'proj1',
+          },
+        ]),
       },
     })
     const deps = depsFalso({ prisma })
@@ -161,7 +180,12 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
     const prisma = prismaFalso({
       devSession: {
         findMany: vi.fn(async () => [
-          { ...SESSAO_LEGADA, updatedAt: new Date(Date.now() - 1000), requeueCount: 0, projectId: 'proj1' }, // just 1 second ago
+          {
+            ...SESSAO_LEGADA,
+            updatedAt: new Date(Date.now() - 1000),
+            requeueCount: 0,
+            projectId: 'proj1',
+          }, // just 1 second ago
         ]),
       },
     })

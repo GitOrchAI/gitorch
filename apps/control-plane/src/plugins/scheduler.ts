@@ -11514,7 +11514,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           { projectId: projeto.id, repository: projeto.wingId },
           {
             prisma: app.prisma as unknown as PrismaParaReconciliacao,
-                        fecharSessao: async ({ sessionName, issueNumber, requeueCount, projectId, agora }) => {
+            fecharSessao: async ({ sessionName, issueNumber, requeueCount, projectId, agora }) => {
               // A chave é da conta em que a sessão NASCEU (BYOK, D34), lida
               // linha a linha — MESMO padrão de `devolverVagasDeSessaoAbandonada`.
               const apiKey = await chaveDaSessao(sessionName)
