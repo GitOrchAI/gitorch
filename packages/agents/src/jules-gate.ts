@@ -69,3 +69,25 @@ function buildJulesAdjustmentComment(prNumber: number, unmetCriteria: string[]):
     ...unmetCriteria.map((criterion) => `- ${criterion}`),
   ].join('\n')
 }
+
+export type JulesApiAction = (...args: any[]) => Promise<any>
+
+export function wrapWithJulesGate<T extends JulesApiAction>(
+  action: T,
+  julesApiKey: string | undefined
+): T {
+  return (async (...args: Parameters<T>): Promise<ReturnType<T>> => {
+    if (!julesApiKey) {
+      throw Object.assign(new Error('Jules API key is missing.'), { code: 'INTERNAL' })
+    }
+
+    try {
+      return await action(...args)
+    } catch (err: any) {
+      if (err && err.status === 429) {
+        throw Object.assign(new Error('Limite de requisições da API do Jules excedido ou cota esgotada.'), { code: 'RATE_LIMITED' })
+      }
+      throw err
+    }
+  }) as T
+}

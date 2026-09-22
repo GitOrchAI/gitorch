@@ -1,4 +1,5 @@
-import { decideJulesPrGate } from './jules-gate'
+import { vi } from 'vitest'
+import { decideJulesPrGate, wrapWithJulesGate } from './jules-gate'
 
 test('waits for Jules when CI fails', () => {
   expect(
@@ -180,4 +181,25 @@ test('uses default message when unmetCriteria is omitted or empty', () => {
       '@jules PR #20 is not ready to merge. Required adjustments:\n- QA/review did not verify 100% of the requested scope',
     requiredActions: ['comment-on-pr'],
   })
+})
+
+test('wrapWithJulesGate throws with INTERNAL if API key is missing', async () => {
+  const mockAction = vi.fn()
+  const wrapped = wrapWithJulesGate(mockAction, undefined)
+
+  await expect(wrapped()).rejects.toMatchObject({ code: 'INTERNAL', message: 'Jules API key is missing.' })
+})
+
+test('wrapWithJulesGate throws with RATE_LIMITED for 429 status', async () => {
+  const mockAction = vi.fn().mockRejectedValue({ status: 429 })
+  const wrapped = wrapWithJulesGate(mockAction, 'valid-key')
+
+  await expect(wrapped()).rejects.toMatchObject({ code: 'RATE_LIMITED' })
+})
+
+test('wrapWithJulesGate returns result when API call succeeds', async () => {
+  const mockAction = vi.fn().mockResolvedValue('success')
+  const wrapped = wrapWithJulesGate(mockAction, 'valid-key')
+
+  await expect(wrapped()).resolves.toBe('success')
 })
