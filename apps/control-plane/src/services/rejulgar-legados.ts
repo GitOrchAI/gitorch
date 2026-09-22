@@ -41,7 +41,7 @@ export const REGUA_MUDOU_EM = new Date('2026-08-24T05:00:00Z')
  * Segundo corte de régua (L4-T17): deploy do reconhecimento do culpado pelo
  * cancelamento em cadeia no CI.
  */
-export const REGUA_MUDOU_L4_T17 = new Date('2026-09-08T05:00:00Z') // TODO: update with real date if needed, though this might be fine as long as tests pass with it.
+export const REGUA_MUDOU_L4_T17 = new Date('2026-09-08T05:00:00Z')
 
 import type { ResultadoDoCulpado } from './causa-do-cancelamento.js'
 
@@ -68,7 +68,9 @@ export interface EntregaPresa {
 }
 
 export type DecisaoSobreLegado =
-  { acao: 'rejulgar'; motivo: string } | { acao: 'deixar'; motivo: string } | { acao: 'explicar-falha'; motivo: string }
+  | { acao: 'rejulgar'; motivo: string }
+  | { acao: 'deixar'; motivo: string }
+  | { acao: 'explicar-falha'; motivo: string }
 
 /**
  * Esta entrega merece UM rejulgamento?
@@ -110,24 +112,28 @@ export function decidirSobreLegado(entrega: EntregaPresa): DecisaoSobreLegado {
     }
   }
 
-  if (entrega.reprovadaEm.getTime() < REGUA_MUDOU_L4_T17.getTime() && entrega.ciHoje === 'red' && entrega.culpadoDoCancelamento?.encontrado) {
-     return {
-         acao: 'explicar-falha',
-         motivo: 'reprovada antes do conserto da identificação do cancelamento em cadeia (L4-T17), o CI continua vermelho e agora sabemos a causa legível',
-     }
+  if (
+    entrega.reprovadaEm.getTime() < REGUA_MUDOU_L4_T17.getTime() &&
+    entrega.ciHoje === 'red' &&
+    entrega.culpadoDoCancelamento?.encontrado
+  ) {
+    return {
+      acao: 'explicar-falha',
+      motivo:
+        'reprovada antes do conserto da identificação do cancelamento em cadeia (L4-T17), o CI continua vermelho e agora sabemos a causa legível',
+    }
   }
 
   // Depois do corte já foi julgada pela régua nova. (Para o corte REGUA_MUDOU_EM e o ciHoje sendo diferente de green, e para REGUA_MUDOU_L4_T17 não sendo aplicável)
   // Como temos 2 cortes, we only fallback to deixar after checking both.
 
   if (entrega.reprovadaEm.getTime() >= REGUA_MUDOU_L4_T17.getTime()) {
-      return { acao: 'deixar', motivo: 'reprovada já sob as réguas de hoje' }
+    return { acao: 'deixar', motivo: 'reprovada já sob as réguas de hoje' }
   }
 
   if (entrega.reprovadaEm.getTime() >= REGUA_MUDOU_EM.getTime() && entrega.ciHoje === 'green') {
-      return { acao: 'deixar', motivo: 'reprovada já sob a régua de hoje' }
+    return { acao: 'deixar', motivo: 'reprovada já sob a régua de hoje' }
   }
-
 
   return {
     acao: 'deixar',

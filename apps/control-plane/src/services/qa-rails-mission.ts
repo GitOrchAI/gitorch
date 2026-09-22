@@ -704,27 +704,32 @@ export async function runQaMissionViaRails(
       p.head?.sha
     ) {
       const { estado, culpado } = await (async () => {
-          try {
-            const checks = (await gh(
-              'GET',
-              `/repos/${options.repository}/commits/${p.head?.sha}/check-runs`
-            )) as { check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }> }
-            const checkRuns = checks.check_runs ?? []
-
-            const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
-              const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
-                steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
-              }
-              return (job.steps ?? []).map((s) => ({
-                name: s.name ?? '',
-                conclusion: s.conclusion ?? null,
-                completedAt: s.completed_at ?? null,
-              }))
-            }).catch(() => ({ estado: estadoDoCi(checkRuns), culpado: { encontrado: false as const } }))
-            return investigado
-          } catch {
-            return { estado: 'unknown' as const, culpado: { encontrado: false as const } }
+        try {
+          const checks = (await gh(
+            'GET',
+            `/repos/${options.repository}/commits/${p.head?.sha}/check-runs`
+          )) as {
+            check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
           }
+          const checkRuns = checks.check_runs ?? []
+
+          const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
+            const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
+              steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
+            }
+            return (job.steps ?? []).map((s) => ({
+              name: s.name ?? '',
+              conclusion: s.conclusion ?? null,
+              completedAt: s.completed_at ?? null,
+            }))
+          }).catch(() => ({
+            estado: estadoDoCi(checkRuns),
+            culpado: { encontrado: false as const },
+          }))
+          return investigado
+        } catch {
+          return { estado: 'unknown' as const, culpado: { encontrado: false as const } }
+        }
       })()
       const decisao = decidirSobreLegado({
         numero: p.number,
@@ -875,7 +880,10 @@ export async function runQaMissionViaRails(
     // justamente para os PRs mais antigos.
     retomandoAprovacaoMesmoCommit = Boolean(
       reviewMarcadaNesteHead &&
-      (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora || legadoMereceUmaChance || legadoMereceExplicacao)
+      (foiAprovacao ||
+        reprovadoPeloPortaoComCiVerdeAgora ||
+        legadoMereceUmaChance ||
+        legadoMereceExplicacao)
     )
     retomouLegado = legadoMereceUmaChance || legadoMereceExplicacao
     break

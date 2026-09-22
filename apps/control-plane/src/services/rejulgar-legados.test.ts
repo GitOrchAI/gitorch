@@ -92,22 +92,26 @@ describe('decidirSobreLegado', () => {
   })
 
   it('L4-T17: explica causa do cancelamento em PR antigo, se estiver vermelho com culpado', () => {
-    const d = decidirSobreLegado(presa({
+    const d = decidirSobreLegado(
+      presa({
         ciHoje: 'red',
         reprovadaEm: ANTES_T17,
         culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' },
-    }))
+      })
+    )
     expect(d.acao).toBe('explicar-falha')
     expect(d.motivo).toMatch(/L4-T17/i)
   })
 
   it('L4-T17: reprovação posterior ao corte da L4-T17 (com CI vermelho e culpado) não explica (já explicada na época)', () => {
-      const d = decidirSobreLegado(presa({
-          ciHoje: 'red',
-          reprovadaEm: DEPOIS_T17,
-          culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' },
-      }))
-      expect(d.acao).toBe('deixar')
+    const d = decidirSobreLegado(
+      presa({
+        ciHoje: 'red',
+        reprovadaEm: DEPOIS_T17,
+        culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' },
+      })
+    )
+    expect(d.acao).toBe('deixar')
   })
 })
 
@@ -118,7 +122,12 @@ describe('trocarLegadosPorRejulgamento', () => {
       presa({ numero: 3758 }),
       presa({ numero: 3762, ciHoje: 'red' }),
       presa({ numero: 999, delegada: false }),
-      presa({ numero: 100, ciHoje: 'red', reprovadaEm: ANTES_T17, culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' } }),
+      presa({
+        numero: 100,
+        ciHoje: 'red',
+        reprovadaEm: ANTES_T17,
+        culpadoDoCancelamento: { encontrado: true, ambiguo: false, job: 'j', passo: 'p' },
+      }),
     ])
     expect(r.rejulgar).toEqual([3768, 3758])
     expect(r.explicarFalha).toEqual([100])
@@ -127,7 +136,11 @@ describe('trocarLegadosPorRejulgamento', () => {
   })
 
   it('lista vazia não quebra', () => {
-    expect(trocarLegadosPorRejulgamento([])).toEqual({ rejulgar: [], explicarFalha: [], deixadas: [] })
+    expect(trocarLegadosPorRejulgamento([])).toEqual({
+      rejulgar: [],
+      explicarFalha: [],
+      deixadas: [],
+    })
   })
 })
 
