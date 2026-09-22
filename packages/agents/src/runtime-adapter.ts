@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { setTimeout } from 'node:timers/promises'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 import type {
   AgentRuntimeSelection,
@@ -8,7 +9,7 @@ import type {
   RuntimeCredentialRef,
 } from './types'
 import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
-import { getTracingEnvironment } from './runtime-config'
+import { getTracingEnvironment, BACKOFF_CONFIG } from './runtime-config'
 
 const execFileAsync = promisify(execFile)
 
@@ -139,6 +140,36 @@ const MAX_PROMPT_ARG_BYTES = Number(process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] 
 
 export function isQuotaError(text: string): boolean {
   return /\b429\b|resource.?exhausted|quota|rate.?limit/i.test(text)
+}
+
+export async function withBackoffRetry<T>(
+  operation: () => Promise<T>,
+  shouldRetry: (result: T) => boolean,
+  onPause?: (durationMs: number) => void
+): Promise<T> {
+  let backoffMs = BACKOFF_CONFIG.baseDelay
+  let attempts = 0
+
+  while (true) {
+    attempts++
+    const result = await operation()
+
+    if (shouldRetry(result) && attempts <= BACKOFF_CONFIG.maxRetries) {
+      const baseMs = backoffMs
+      const jitterMs = Math.floor(Math.random() * (0.2 * baseMs))
+      const waitTimeMs = baseMs + jitterMs
+
+      if (onPause) {
+        onPause(waitTimeMs)
+      }
+
+      await setTimeout(waitTimeMs)
+      backoffMs = Math.min(baseMs * BACKOFF_CONFIG.factor, BACKOFF_CONFIG.maxDelay)
+      continue
+    }
+
+    return result
+  }
 }
 
 export interface CapPromptResult {

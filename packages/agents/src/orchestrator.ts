@@ -1,13 +1,17 @@
 import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/synapse'
-import { setTimeout } from 'node:timers/promises'
+
 import {
   buildAgentMission,
   missionStateReducer,
   type BuildAgentMissionInput,
   workspaceManager,
 } from './agent-mission'
-import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
-import { BACKOFF_CONFIG } from './runtime-config'
+import {
+  type RuntimeExecutionResult,
+  type RuntimeRegistry,
+  withBackoffRetry,
+} from './runtime-adapter'
+
 import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
 
@@ -113,48 +117,38 @@ export class AgentOrchestrator {
     timeoutMs?: number
   ): Promise<RuntimeExecutionResult> {
     let result: RuntimeExecutionResult | undefined
-    let backoffMs = BACKOFF_CONFIG.initialMs
-    let attempts = 0
 
     try {
       const adapter = this.registry.resolve(mission.runtime.runtime)
 
-      while (true) {
-        attempts++
-        result = await adapter.run({
-          missionId: mission.id,
-          prompt: mission.prompt,
-          runtime: mission.runtime,
-          credentialRef: mission.credentialRef,
-          role: mission.role,
-          cwd: workspacePath,
-          timeoutMs,
-        })
+      result = await withBackoffRetry(
+        async () => {
+          const res = await adapter.run({
+            missionId: mission.id,
+            prompt: mission.prompt,
+            runtime: mission.runtime,
+            credentialRef: mission.credentialRef,
+            role: mission.role,
+            cwd: workspacePath,
+            timeoutMs,
+          })
 
-        if (result.waitingStatus) {
-          mission.waitingStatus = result.waitingStatus
-          mission.waitingReason = result.waitingReason
-        } else {
-          mission.waitingStatus = null
-          mission.waitingReason = null
-        }
+          if (res.waitingStatus) {
+            mission.waitingStatus = res.waitingStatus
+            mission.waitingReason = res.waitingReason
+          } else {
+            mission.waitingStatus = null
+            mission.waitingReason = null
+          }
 
-        // Usa os limites configurados na missão (se houver config de backoff) ou o default global
-        // Note: this implementation requires the executionLimits to be passed into the mission object
-        // but since we do not have it in the agentMission types directly we will use global default
-        if (result.waitingStatus === 'waiting_quota' && attempts <= BACKOFF_CONFIG.maxRetries) {
-          // Calcula jitter aleatório entre 0 e 20% do backoff base para espalhar retries simultâneos
-          const baseMs = backoffMs
-          const jitterMs = Math.floor(Math.random() * (0.2 * baseMs))
-
-          await setTimeout(baseMs + jitterMs)
-
-          backoffMs = Math.min(baseMs * BACKOFF_CONFIG.factor, BACKOFF_CONFIG.maxMs)
-          continue
-        }
-
-        break
-      }
+          return res
+        },
+        (res) => res.waitingStatus === 'waiting_quota',
+        // onPause callback is intentionally omitted as the system relies entirely on
+        // mission.waitingStatus and mission.waitingReason to reflect pause state,
+        // and project memory explicitly forbids adding arbitrary Synapse event types for this.
+        undefined
+      )
 
       if (result.exitCode !== 0 || result.failedStep) {
         if (this.workspace.handleRuntimeFailure) {
