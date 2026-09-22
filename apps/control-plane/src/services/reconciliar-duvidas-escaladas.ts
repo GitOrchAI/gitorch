@@ -15,6 +15,8 @@ export interface PrismaParaReconciliacao {
         issueNumber: number
         answeredHash: string | null
         updatedAt: Date
+        requeueCount: number
+        projectId: string
       }>
     >
   }
@@ -30,7 +32,13 @@ export interface DepsDeReconciliacao {
    * ÚNICA ação que este módulo pode pedir — não existe `ask`/`criar
    * pergunta` na sua superfície, por desenho.
    */
-  fecharSessao: (args: { sessionName: string; agora: Date }) => Promise<void>
+  fecharSessao: (args: {
+    sessionName: string
+    issueNumber: number
+    requeueCount: number
+    projectId: string
+    agora: Date
+  }) => Promise<void>
   onWarn?: (mensagem: string) => void
   /** Nunca engole: rede/Prisma falhando ao fechar uma sessão presa é nível `error`, não `warn`. */
   onError?: (err: unknown, mensagem: string) => void
@@ -84,7 +92,14 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
       closedAt: null,
       answeredHash: { not: null },
     },
-    select: { sessionName: true, issueNumber: true, answeredHash: true, updatedAt: true },
+    select: {
+      sessionName: true,
+      issueNumber: true,
+      answeredHash: true,
+      updatedAt: true,
+      requeueCount: true,
+      projectId: true,
+    },
   })
 
   const resumo: ResumoDaReconciliacao = { encontradas: 0, encerradas: 0, falhas: 0 }
@@ -113,7 +128,13 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
     resumo.encontradas += 1
 
     try {
-      await deps.fecharSessao({ sessionName: sessao.sessionName, agora })
+      await deps.fecharSessao({
+        sessionName: sessao.sessionName,
+        issueNumber: sessao.issueNumber,
+        requeueCount: sessao.requeueCount,
+        projectId: sessao.projectId,
+        agora,
+      })
       resumo.encerradas += 1
     } catch (err) {
       resumo.falhas += 1
