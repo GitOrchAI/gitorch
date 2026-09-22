@@ -11,6 +11,7 @@ function buildDepsVigia(
     sinais: { autor: 'jules', labels: ['jules'], corpo: null },
     temSessaoViva: false,
     issueNumber: 10,
+    rascunho: false,
     issueAberta: true,
     mergeable: true,
     verificacao: 'verde' as const,
