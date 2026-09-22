@@ -110,6 +110,7 @@ import {
   planoEfetivoDaConta,
 } from '../services/plano-do-dev.js'
 import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
+import { temCotaDisponivel } from '../services/leitura-de-cota.js'
 import { executarCicloTerminal } from '../services/executar-ciclo-terminal.js'
 import {
   lerAprendizados,
@@ -10559,10 +10560,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
         let leuCota = false
         try {
-          leuCota = await app.engineConnections.refreshQuota(
-            project.userId as string,
-            primeiroMotor
-          )
+          leuCota =
+            (await app.engineConnections?.refreshQuota(project.userId as string, primeiroMotor)) ??
+            false
         } catch (err) {
           app.log.warn(
             err,
@@ -10570,7 +10570,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           )
         }
 
-        if (!leuCota) {
+        if (!temCotaDisponivel(leuCota)) {
           continue
         }
       }
