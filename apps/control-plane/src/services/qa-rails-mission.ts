@@ -1,5 +1,5 @@
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
-import { adquirirTravaDeParecer, type PrismaDaTravaDeParecer } from './trava-de-parecer.js'
+import { adquirirTravaDeParecer } from './trava-de-parecer.js'
 import {
   RAILS_SCHEMAS,
   buildStepPrompt,
@@ -202,6 +202,8 @@ export interface VigiliaDoJulgamentoOptions {
   registrarConserto?: (args: { sessionName: string; chave: string; agora: Date }) => Promise<void>
 }
 
+import type { PrismaClient } from '@prisma/client'
+
 export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
   repository: string
   githubToken: string
@@ -294,7 +296,7 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    * linha de configuração, e não uma arqueologia de código apagado.
    */
   julgarEntregaDeTerceiro?: boolean | undefined
-  prisma?: unknown
+  prisma?: Pick<PrismaClient, 'repoItem'>
   projectId?: string
   onWarn?: (message: string) => void
 }
@@ -1031,10 +1033,10 @@ export async function runQaMissionViaRails(
   // aqui, só que chamada mais cedo.
   const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
     // Acquire the lock for publishing the review
-    if (options.prisma && 'repoItem' in (options.prisma as object)) {
+    if (options.prisma) {
       const headShaStr = pr?.head?.sha ?? target.head?.sha ?? 'unknown'
       const lockAcquired = await adquirirTravaDeParecer({
-        prisma: options.prisma as PrismaDaTravaDeParecer,
+        prisma: options.prisma,
         projectId: options.projectId!,
         numeroDoPr: target.number,
         headSha: headShaStr,
