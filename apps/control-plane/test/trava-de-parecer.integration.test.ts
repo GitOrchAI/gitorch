@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { adquirirTravaDeParecer } from '../src/services/trava-de-parecer.js'
+import type { PrismaClient } from '@prisma/client'
 
 // We must unmock @prisma/client because vitest is configured with a global setup file
 // (src/test/setup.ts) that mocks it by default.
@@ -71,74 +72,73 @@ function applySchema(dbUrl: string): void {
   }
 }
 
-describe.skipIf(!reachable)(
-  'trava-de-parecer (integration)',
-  () => {
-    it('exatamente UMA chamada concorrente para o mesmo head devolve true sob concorrência real', async () => {
-      const dbName = uniqueDbName('trava_conc')
-      createDb(dbName)
-      const dbUrl = withDatabase(requireAdminUrl(), dbName)
+describe.skipIf(!reachable)('trava-de-parecer (integration)', () => {
+  it('exatamente UMA chamada concorrente para o mesmo head devolve true sob concorrência real', async () => {
+    const dbName = uniqueDbName('trava_conc')
+    createDb(dbName)
+    const dbUrl = withDatabase(requireAdminUrl(), dbName)
 
-      let prisma1: any
-      let prisma2: any
+    let prisma1: PrismaClient | undefined
+    let prisma2: PrismaClient | undefined
 
-      try {
-        applySchema(dbUrl)
+    try {
+      applySchema(dbUrl)
 
-        const projectId = randomUUID()
-        psql(
-          dbUrl,
-          `INSERT INTO projects (id, wing_id, name, updated_at) ` +
-            `VALUES ('${projectId}', 'owner/repo', 'repo', now())`
-        )
+      const projectId = randomUUID()
+      psql(
+        dbUrl,
+        `INSERT INTO projects (id, wing_id, name, updated_at) ` +
+          `VALUES ('${projectId}', 'owner/repo', 'repo', now())`
+      )
 
-        // Precisamos importar o PrismaClient de verdade agora que desmockamos
-        const { PrismaClient: RealPrismaClient } = await import('@prisma/client')
+      // Precisamos importar o PrismaClient de verdade agora que desmockamos
+      const { PrismaClient: RealPrismaClient } = await import('@prisma/client')
 
-        prisma1 = new RealPrismaClient({ datasources: { db: { url: dbUrl } } })
-        prisma2 = new RealPrismaClient({ datasources: { db: { url: dbUrl } } })
+      prisma1 = new RealPrismaClient({ datasources: { db: { url: dbUrl } } })
+      prisma2 = new RealPrismaClient({ datasources: { db: { url: dbUrl } } })
 
-        const numeroDoPr = 42
-        const headSha = 'abcdef123'
-        const agora = new Date()
+      const numeroDoPr = 42
+      const headSha = 'abcdef123'
+      const agora = new Date()
 
-        // Pré-inserir o RepoItem para não focar no conflito de Upsert, mas sim
-        // no UPDATE condicional (updateMany), que é a real trava de concorrência.
-        psql(dbUrl, `
+      // Pré-inserir o RepoItem para não focar no conflito de Upsert, mas sim
+      // no UPDATE condicional (updateMany), que é a real trava de concorrência.
+      psql(
+        dbUrl,
+        `
           INSERT INTO repo_items (id, project_id, tipo, numero, estado, criado_em, atualizado_em)
           VALUES ('item1', '${projectId}', 'pr', ${numeroDoPr}, '{"status":"unknown"}', now(), now())
-        `)
+        `
+      )
 
-        const promises = [
-          adquirirTravaDeParecer({
-            prisma: prisma1,
-            projectId,
-            numeroDoPr,
-            headSha,
-            agora
-          }),
-          adquirirTravaDeParecer({
-            prisma: prisma2,
-            projectId,
-            numeroDoPr,
-            headSha,
-            agora
-          })
-        ]
+      const promises = [
+        adquirirTravaDeParecer({
+          prisma: prisma1,
+          projectId,
+          numeroDoPr,
+          headSha,
+          agora,
+        }),
+        adquirirTravaDeParecer({
+          prisma: prisma2,
+          projectId,
+          numeroDoPr,
+          headSha,
+          agora,
+        }),
+      ]
 
-        const resultados = await Promise.all(promises)
+      const resultados = await Promise.all(promises)
 
-        const lockAdquirido = resultados.filter(v => v === true).length
-        const lockRejeitado = resultados.filter(v => v === false).length
+      const lockAdquirido = resultados.filter((v) => v === true).length
+      const lockRejeitado = resultados.filter((v) => v === false).length
 
-        expect(lockAdquirido).toBe(1)
-        expect(lockRejeitado).toBe(1)
-
-      } finally {
-        if (prisma1) await prisma1.$disconnect()
-        if (prisma2) await prisma2.$disconnect()
-        dropDb(dbName)
-      }
-    }, 30000)
-  }
-)
+      expect(lockAdquirido).toBe(1)
+      expect(lockRejeitado).toBe(1)
+    } finally {
+      if (prisma1) await prisma1.$disconnect()
+      if (prisma2) await prisma2.$disconnect()
+      dropDb(dbName)
+    }
+  }, 30000)
+})
