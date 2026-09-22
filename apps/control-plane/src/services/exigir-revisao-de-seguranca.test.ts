@@ -21,9 +21,7 @@ describe('calcularExigeRevisaoDeSeguranca', () => {
   it('retorna true (liga guarda) se plano não permite e não existe workflow com gitleaks', async () => {
     const ghGet = vi.fn().mockImplementation(async (path: string) => {
       if (path.endsWith('.github/workflows')) {
-        return [
-          { name: 'ci.yml', path: '.github/workflows/ci.yml' },
-        ]
+        return [{ name: 'ci.yml', path: '.github/workflows/ci.yml' }]
       }
       if (path.endsWith('ci.yml')) {
         return { content: Buffer.from('sem nenhuma ferramenta de seguranca').toString('base64') }
@@ -63,7 +61,9 @@ describe('calcularExigeRevisaoDeSeguranca', () => {
         return { content: Buffer.from('echo test').toString('base64') }
       }
       if (path.endsWith('outro.yml')) {
-        return { content: Buffer.from('uses: gitleaks/action@v1\nrun: gitleaks detect').toString('base64') }
+        return {
+          content: Buffer.from('uses: gitleaks/action@v1\nrun: gitleaks detect').toString('base64'),
+        }
       }
       return []
     })
