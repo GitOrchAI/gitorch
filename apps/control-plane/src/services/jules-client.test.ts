@@ -252,7 +252,87 @@ describe('responderSessaoJules e aprovarPlanoJules', () => {
   })
 })
 
-describe('ultimaMensagemDoDevJules', () => {
+describe('ultimaMensagemDoDevJules (e paginação de atividades)', () => {
+  it('pagina de verdade seguindo nextPageToken: acha a mensagem mais recente que ficou apenas na segunda página', async () => {
+    let numChamadas = 0
+    const fetchImpl = (async (url: string) => {
+      numChamadas += 1
+      if (!url.includes('pageToken')) {
+        // Primeira página
+        return new Response(
+          JSON.stringify({
+            nextPageToken: 'token-para-pagina-2',
+            activities: [
+              {
+                originator: 'agent',
+                createTime: '2026-01-01T10:00:00Z',
+                agentMessaged: { agentMessage: 'mensagem antiga da primeira página' },
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      // Segunda página
+      return new Response(
+        JSON.stringify({
+          activities: [
+            {
+              originator: 'agent',
+              createTime: '2026-01-01T11:00:00Z',
+              agentMessaged: { agentMessage: 'a verdadeira mensagem mais recente, na p2' },
+            },
+          ],
+        }),
+        { status: 200 }
+      )
+    }) as unknown as typeof fetch
+
+    const msg = await ultimaMensagemDoDevJules({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      fetchImpl,
+    })
+
+    expect(numChamadas).toBe(2)
+    expect(msg).toBe('a verdadeira mensagem mais recente, na p2')
+  })
+
+  it('falha de rede na segunda página não lança exceção, emite alerta e retorna as atividades da primeira', async () => {
+    let numChamadas = 0
+    const avisos: string[] = []
+    const fetchImpl = (async (url: string) => {
+      numChamadas += 1
+      if (!url.includes('pageToken')) {
+        return new Response(
+          JSON.stringify({
+            nextPageToken: 'token-para-pagina-2',
+            activities: [
+              {
+                originator: 'agent',
+                createTime: '2026-01-01T10:00:00Z',
+                agentMessaged: { agentMessage: 'mensagem da primeira página salva' },
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      return new Response('{}', { status: 500 }) // falha na segunda página
+    }) as unknown as typeof fetch
+
+    const msg = await ultimaMensagemDoDevJules({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      fetchImpl,
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(numChamadas).toBe(2)
+    expect(msg).toBe('mensagem da primeira página salva')
+    expect(avisos[0]).toContain('sessions/1 na página 2 (HTTP 500)')
+  })
+
   // Regressão do refactor L5-T3: o fetch+parse da página de atividades saiu
   // desta função para uma função privada compartilhada com
   // `houveAtividadeDoDevDesde` — este teste trava o comportamento visível de
