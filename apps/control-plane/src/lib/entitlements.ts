@@ -2,7 +2,7 @@
 // Evita `if (plan === 'pro')` espalhado pelo código (dívida). As flags vivem no
 // Plan.features (JSON) — ver prisma/seed.ts. Ver docs/business/pricing-strategy.md.
 import { prisma } from '../plugins/prisma.js'
-import { generateHmacToken, verifyHmacToken } from './credential-crypto.js'
+import { encryptCredential, decryptCredential } from './credential-crypto.js'
 import { approveGuestInDatabase } from '../plugins/prisma.js'
 import { DEFAULT_GUEST_DURATION_HOURS } from '../config/constants.js'
 
@@ -78,23 +78,17 @@ export async function generateProjectInvitation(
     invitationId: invitation.id,
   }
 
-  // Converter ttl de expiração (ms) em minutos, já que generateHmacToken espera minutos
-  const diffInMs = payload.expiresAt.getTime() - Date.now()
-  const expirationMinutes = Math.max(1, Math.floor(diffInMs / 60000))
-
-  const token = generateHmacToken(JSON.stringify(tokenPayload), expirationMinutes)
+  const token = encryptCredential(JSON.stringify(tokenPayload))
   return token
 }
 
 export function validateProjectInvitation(
   token: string
 ): ProjectInvitationPayload & { invitationId: string } {
-  const decrypted = verifyHmacToken(token)
+  const decrypted = decryptCredential(token)
   const parsed = JSON.parse(decrypted)
   const expiresAt = new Date(parsed.expiresAt)
 
-  // VerifyHmacToken already checks expiration on the token level,
-  // but we can double check the parsed object payload if needed.
   if (expiresAt < new Date()) {
     throw new Error('Project invitation expired')
   }

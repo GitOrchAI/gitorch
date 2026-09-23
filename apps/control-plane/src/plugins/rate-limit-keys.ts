@@ -14,7 +14,3 @@ export function getInvitationRateLimitMax(env: {
 }): number {
   return Number(env.GITORCH_AUTH_RATE_LIMIT_MAX ?? 20)
 }
-
-export function getCreateInvitationRateLimitMax(): number {
-  return 5
-}
