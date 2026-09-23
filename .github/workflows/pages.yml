@@ -93,10 +93,15 @@ jobs:
             fi
             HTML=""
             for i in 1 2 3 4 5 6 7 8; do
-              HTML=$(curl -fsSL "$URL" 2>/dev/null) && [ -n "$HTML" ] && break
-              echo "[$path] tentativa $i: aguardando CDN..."; sleep 15
+              HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL")
+              if [ "$HTTP_CODE" = "200" ]; then
+                HTML=$(curl -fsSL "$URL" 2>/dev/null)
+                break
+              fi
+              echo "[$path] tentativa $i: HTTP $HTTP_CODE (aguardando CDN propagar)..."
+              sleep 15
             done
-            if [ -z "$HTML" ]; then echo "::error::$URL não respondeu"; fail=1; continue; fi
+            if [ -z "$HTML" ]; then echo "::error::$URL não respondeu 200 OK"; fail=1; continue; fi
             ASSET=$(echo "$HTML" | grep -oE '/[A-Za-z0-9/_.-]*_next/static/[A-Za-z0-9/_.-]+\.(js|css)' | head -1)
             if [ -z "$ASSET" ]; then echo "::error::$URL sem asset _next no HTML"; fail=1; continue; fi
             CODE=$(curl -s -o /dev/null -w '%{http_code}' "$HOST$ASSET")
