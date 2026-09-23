@@ -90,9 +90,12 @@ export class QualityAnalystNode extends BaseAgentNode {
     const transition = await super.execute(state)
     const result = transition.state.result as RuntimeExecutionResult
     let qaVerdict: 'approve' | 'request_changes' | undefined
-    let qaComment: any
+    let qaComment: unknown
     try {
-      const parsed = JSON.parse(result.output)
+      const parsed = JSON.parse(result.output) as {
+        verdict?: string
+        comment?: unknown
+      }
       if (parsed.verdict === 'request_changes' || parsed.verdict === 'approve') {
         qaVerdict = parsed.verdict
         qaComment = parsed.comment
@@ -121,12 +124,15 @@ export class QualityAnalystNode extends BaseAgentNode {
         // F6_AGENT_ROLES = ['po', 'ra', 'sm', 'qa']
         // We will assert 'dev' as any here, but it's an orchestrator detail.
         // We should just assign it as 'dev' as any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         transition.nextRole = 'dev' as any
         transition.state.qaRetries = (state.qaRetries || 0) + 1
         if (qaComment) {
           transition.state.mission = {
             ...transition.state.mission,
-            prompt: transition.state.mission.prompt + `\n\n### QA Rework Instructions (Attempt ${transition.state.qaRetries}):\n${JSON.stringify(qaComment, null, 2)}`
+            prompt:
+              transition.state.mission.prompt +
+              `\n\n### QA Rework Instructions (Attempt ${transition.state.qaRetries}):\n${JSON.stringify(qaComment, null, 2)}`,
           }
         }
       }

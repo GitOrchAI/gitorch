@@ -932,14 +932,17 @@ describe('evaluateNodeTransition', () => {
   })
 
   it('bloqueia transicao com qa_failed_max_retries se excedeu maxRetries', () => {
-    const result = evaluateNodeTransition({
-      role: 'qa',
-      exitCriteriaMet: true,
-      guardrailPassed: true,
-      nextNode: 'done',
-      qaVerdict: 'request_changes',
-      qaRetries: 3,
-    }, 3)
+    const result = evaluateNodeTransition(
+      {
+        role: 'qa',
+        exitCriteriaMet: true,
+        guardrailPassed: true,
+        nextNode: 'done',
+        qaVerdict: 'request_changes',
+        qaRetries: 3,
+      },
+      3
+    )
     expect(result).toEqual({ nextNode: 'qa_failed_max_retries' })
   })
 })
