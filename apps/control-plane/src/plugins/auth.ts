@@ -412,6 +412,9 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       if (err instanceof Error && err.message === 'Project invitation expired') {
         return reply.status(401).send({ error: 'Project invitation expired' })
       }
+      if (err instanceof Error && err.name === 'CredentialDecryptError') {
+        return reply.status(403).send({ error: 'Invalid or tampered invitation token' })
+      }
       return reply.status(400).send({ error: 'Invalid invitation token' })
     }
   })

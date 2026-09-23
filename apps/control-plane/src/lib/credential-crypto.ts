@@ -1,4 +1,11 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+  scryptSync,
+  timingSafeEqual,
+} from 'node:crypto'
 
 // Cifragem de credenciais de motor em repouso (AES-256-GCM autenticado).
 // A chave vem de GITORCH_CREDENTIAL_KEY (32 bytes em hex[64] ou base64). Sem
@@ -180,4 +187,86 @@ export function etiquetaDeSegredo(dominio: string, segredo: string): string {
   // N=16384 é o padrão recomendado para uso interativo: caro o bastante para
   // matar força bruta, rápido o bastante (~50ms) para uma chamada de rota.
   return scryptSync(segredo, `gitorch:${dominio}`, 8, { N: 16384, r: 8, p: 1 }).toString('hex')
+}
+
+/**
+ * Gera um token HMAC (base64url) com expiração embutida.
+ * O formato do token gerado é: `payloadB64.expiration.signature`
+ * Ideal para links de convite e URLs assinadas de curta duração, onde apenas a
+ * autenticidade importa e a reversibilidade do payload (vazamento) não é problema
+ * por ser público.
+ */
+export function generateHmacToken(payload: string, expirationMinutes: number): string {
+  let key: Buffer
+  try {
+    key = loadKey()
+  } catch (err) {
+    throw new CredentialEncryptError(
+      `Falha ao carregar a chave do servidor para gerar token HMAC: ${String(
+        (err as { message?: string })?.message ?? err
+      )}`
+    )
+  }
+
+  const payloadB64 = Buffer.from(payload).toString('base64url')
+  const expiration = Date.now() + expirationMinutes * 60 * 1000
+  const message = `${payloadB64}.${expiration}`
+
+  const hmac = createHmac('sha256', key)
+  hmac.update(message)
+  const signature = hmac.digest('base64url')
+
+  return `${message}.${signature}`
+}
+
+/**
+ * Valida a autenticidade e expiração de um token HMAC.
+ * Lança CredentialDecryptError (mesmo erro usado em descriptografia corrompida)
+ * em caso de assinatura inválida ou adulteração.
+ * Lança um erro "Token expired" caso a expiração tenha passado.
+ */
+export function verifyHmacToken(token: string): string {
+  let key: Buffer
+  try {
+    key = loadKey()
+  } catch (err) {
+    throw new CredentialDecryptError(
+      `Falha ao carregar a chave do servidor para validar token HMAC: ${String(
+        (err as { message?: string })?.message ?? err
+      )}`
+    )
+  }
+
+  const parts = token.split('.')
+  if (parts.length !== 3) {
+    throw new CredentialDecryptError('Token HMAC malformado (deve ter 3 partes)')
+  }
+
+  const payloadB64 = parts[0] as string
+  const expirationStr = parts[1] as string
+  const providedSignature = parts[2] as string
+
+  const expiration = parseInt(expirationStr, 10)
+
+  if (isNaN(expiration)) {
+    throw new CredentialDecryptError('Token HMAC com formato de expiração inválido')
+  }
+
+  const message = `${payloadB64}.${expirationStr}`
+  const hmac = createHmac('sha256', key)
+  hmac.update(message)
+  const expectedSignature = hmac.digest('base64url')
+
+  const bufProvided = Buffer.from(providedSignature, 'base64url')
+  const bufExpected = Buffer.from(expectedSignature, 'base64url')
+
+  if (bufProvided.length !== bufExpected.length || !timingSafeEqual(bufProvided, bufExpected)) {
+    throw new CredentialDecryptError('Assinatura do token HMAC inválida')
+  }
+
+  if (Date.now() > expiration) {
+    throw new Error('Project invitation expired')
+  }
+
+  return Buffer.from(payloadB64, 'base64url').toString('utf8')
 }
