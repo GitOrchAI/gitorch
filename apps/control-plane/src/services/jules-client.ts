@@ -466,15 +466,15 @@ interface AtividadeDaSessao {
  * A API não documenta a ordem de retorno de `activities.list`, então não dá
  * para confiar que o último item da página é o mais recente — quem chama
  * decide "mais recente" ou "existe alguma depois de X" olhando `quando`.
- * `pageSize=100` (o teto da API) cobre a folga de uma sessão comum numa
- * página só; sessões com histórico maior que isso são o caso raro que este
- * contrato de degradação aceita (mesma classe de "melhor esforço" do resto
- * deste módulo).
+ * O teto da API é `pageSize=100`, mas a função pagina até MAX_PAGINAS_ATIVIDADES
+ * vezes seguindo `nextPageToken` para cobrir sessões mais longas.
  *
  * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
- * sem atividade relevante ou serviço fora do ar devolvem lista vazia, com
- * aviso.
+ * sem atividade relevante ou serviço fora do ar (ou falha no meio da paginação)
+ * devolvem o que foi conseguido até ali, com aviso.
  */
+const MAX_PAGINAS_ATIVIDADES = 30
+
 async function buscarAtividadesDaSessao(deps: {
   apiKey?: string | undefined
   sessionName: string
@@ -484,45 +484,60 @@ async function buscarAtividadesDaSessao(deps: {
   const warn = deps.onWarn ?? (() => undefined)
   if (!deps.apiKey) return []
   const f = deps.fetchImpl ?? fetch
-  try {
-    const resp = await f(`${JULES_API}/${deps.sessionName}/activities?pageSize=100`, {
-      headers: { 'X-Goog-Api-Key': deps.apiKey },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    })
-    if (!resp.ok) {
-      warn(
-        `[jules] não foi possível ler as atividades da sessão ${deps.sessionName} (HTTP ${resp.status})`
-      )
-      return []
-    }
-    const body = (await resp.json().catch(() => ({}))) as {
-      activities?: Array<{
-        originator?: string
-        createTime?: string
-        agentMessaged?: { agentMessage?: string }
-        userMessaged?: { userMessage?: string }
-      }>
-    }
-    const atividades = Array.isArray(body.activities) ? body.activities : []
+  const resultado: AtividadeDaSessao[] = []
 
-    const resultado: AtividadeDaSessao[] = []
-    for (const atividade of atividades) {
-      const originator = (atividade.originator ?? '').toLowerCase()
-      if (originator !== 'agent' && originator !== 'user') continue
-      const quando = atividade.createTime ? Date.parse(atividade.createTime) : NaN
-      if (Number.isNaN(quando)) continue
-      const texto =
-        originator === 'agent'
-          ? atividade.agentMessaged?.agentMessage
-          : atividade.userMessaged?.userMessage
-      resultado.push({ originator, quando, texto: typeof texto === 'string' ? texto : '' })
+  let pageToken: string | undefined
+  try {
+    for (let pagina = 0; pagina < MAX_PAGINAS_ATIVIDADES; pagina += 1) {
+      const url =
+        `${JULES_API}/${deps.sessionName}/activities?pageSize=100` +
+        (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '')
+
+      const resp = await f(url, {
+        headers: { 'X-Goog-Api-Key': deps.apiKey },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      })
+
+      if (!resp.ok) {
+        warn(
+          `[jules] não foi possível ler as atividades da sessão ${deps.sessionName} na página ${pagina + 1} (HTTP ${resp.status})`
+        )
+        break
+      }
+
+      const body = (await resp.json().catch(() => ({}))) as {
+        nextPageToken?: string
+        activities?: Array<{
+          originator?: string
+          createTime?: string
+          agentMessaged?: { agentMessage?: string }
+          userMessaged?: { userMessage?: string }
+        }>
+      }
+
+      const atividades = Array.isArray(body.activities) ? body.activities : []
+
+      for (const atividade of atividades) {
+        const originator = (atividade.originator ?? '').toLowerCase()
+        if (originator !== 'agent' && originator !== 'user') continue
+        const quando = atividade.createTime ? Date.parse(atividade.createTime) : NaN
+        if (Number.isNaN(quando)) continue
+        const texto =
+          originator === 'agent'
+            ? atividade.agentMessaged?.agentMessage
+            : atividade.userMessaged?.userMessage
+        resultado.push({ originator, quando, texto: typeof texto === 'string' ? texto : '' })
+      }
+
+      if (!body.nextPageToken) break
+      pageToken = body.nextPageToken
     }
     return resultado
   } catch (err) {
     warn(
       `[jules] falha ao ler as atividades da sessão ${deps.sessionName}: ${(err as Error).message}`
     )
-    return []
+    return resultado
   }
 }
 
