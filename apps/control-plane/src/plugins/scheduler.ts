@@ -4505,10 +4505,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             timeoutMs: STALE_RUNNING_MS,
           })
 
-          // @ts-ignore - RuntimeExecutionResult properties span and runtime depend on strictly loaded versions
-          if (result.span) {
-            // @ts-ignore
-            await atualizarSaldoDaOrdem(result.span, result.runtime || sel.runtime, missionId, app.prisma as PrismaClient).catch(e => {
+
+          if ('span' in result && result.span) {
+
+            await atualizarSaldoDaOrdem(result.span as any, (result as any).runtime || sel.runtime, missionId, app.prisma as PrismaClient).catch(e => {
               app.log.warn({ e }, `[Scheduler] Erro ao atualizar saldo do span para ${missionId}`)
             })
           }
