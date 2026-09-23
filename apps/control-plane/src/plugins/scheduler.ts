@@ -4772,6 +4772,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }
         if (err instanceof CredencialExpiradaError) {
           falhaDeCredencial = true
+          motorEmPausa.marcarMorto(err.runtime, new Date())
           // A TELA PARA DE MENTIR. Antes disto, este caminho marcava a falha no
           // RESULTADO DA MISSÃO e mandava o recado — mas nunca tocava na linha
           // da conexão, que seguia dizendo 'connected' para sempre. O dono
