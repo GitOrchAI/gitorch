@@ -150,6 +150,64 @@ export function acordarSmComSeguranca(
   }
 }
 
+export async function notifyOwnerGuestSubmission(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  prisma: any,
+  userId: string,
+  guestName: string,
+  engineMapping: Record<string, string> | undefined | null,
+  executionLimits: { memoryMax?: string; cpuMax?: string; pidsMax?: number } | undefined | null
+): Promise<void> {
+  const botToken = process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN']
+  if (!botToken) return
+
+  const link = await prisma.telegramLink.findUnique({
+    where: { userId },
+  })
+
+  if (!link || !link.chatId) return
+
+  const chatId = String(link.chatId)
+
+  let msg = `🎉 *Novo convidado finalizou o setup!*\n\n`
+  msg += `*Nome:* ${guestName}\n\n`
+
+  if (engineMapping && Object.keys(engineMapping).length > 0) {
+    msg += `*Motores Alocados:*\n`
+    for (const [role, engine] of Object.entries(engineMapping)) {
+      let safeEngine = engine
+      if (typeof safeEngine === 'string') {
+        if (safeEngine.startsWith('gitorch_')) {
+          safeEngine = safeEngine.substring(0, 15) + '***'
+        } else if (safeEngine.startsWith('sk-')) {
+          safeEngine = safeEngine.substring(0, 7) + '***'
+        } else if (safeEngine.length > 10) {
+          safeEngine = safeEngine.substring(0, 4) + '***' + safeEngine.slice(-4)
+        }
+      }
+      msg += `- ${role}: \`${safeEngine}\`\n`
+    }
+    msg += `\n`
+  }
+
+  if (executionLimits) {
+    msg += `*Quota Proposta:*\n`
+    if (executionLimits.memoryMax) msg += `- Memória Max: \`${executionLimits.memoryMax}\`\n`
+    if (executionLimits.cpuMax) msg += `- CPU Max: \`${executionLimits.cpuMax}\`\n`
+    if (executionLimits.pidsMax) msg += `- PIDs Max: \`${executionLimits.pidsMax}\`\n`
+  }
+
+  try {
+    await sendTelegramMessage({
+      botToken,
+      chatId,
+      text: msg,
+    })
+  } catch (err) {
+    console.error(`[Telegram] Falha ao notificar dono sobre submissão de convidado: ${err}`)
+  }
+}
+
 export const telegramPlugin = fp(async (app: FastifyInstance) => {
   const botToken = process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN']
 
