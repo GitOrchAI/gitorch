@@ -54,6 +54,7 @@ import { TelaProjetos } from '../../components/painel/TelaProjetos'
 import { TelaRegras } from '../../components/painel/TelaRegras'
 import { TelaHistorico } from '../../components/painel/TelaHistorico'
 import { TelaConfig } from '../../components/painel/TelaConfig'
+import { TelaRepositorio } from '../../components/painel/TelaRepositorio'
 
 function tempoRelativo(iso: string): string {
   if (!iso) return ''
@@ -299,6 +300,8 @@ export default function PainelOwner() {
         )
       case 'entregas':
         return <TelaEntregas />
+      case 'repositorio':
+        return <TelaRepositorio />
       case 'custos':
         return <TelaCustos />
       case 'motores':
@@ -311,6 +314,14 @@ export default function PainelOwner() {
         return <TelaHistorico />
       case 'config':
         return <TelaConfig tema={tema} setTema={setTema} />
+      default: {
+        // Exaustão obrigatória: um TelaId novo em painel-nav.ts que não
+        // ganhar um case aqui quebra o build (nunca mais um componente
+        // órfão silencioso — histórico: Fase 6.2 ficou 3 tentativas sem
+        // essa checagem e o bug não aparecia em nenhum teste).
+        const _exaustivo: never = id
+        return _exaustivo
+      }
     }
   }
 
