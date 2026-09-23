@@ -18,6 +18,7 @@ import {
   type CausaDaParada,
 } from './vigia-do-pr.js'
 import type { CuidaPorOrigem } from './cuidado-por-origem.js'
+import { MARCA_DE_ENTREGA_GRANDE_DEMAIS } from './reprovacao-que-ensina.js'
 
 export type AcaoDoMotor =
   | { acao: 'so-acompanhar'; motivo: string }
@@ -185,15 +186,15 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
     branchDoPr: branch,
     pedido:
       causa === 'qa-reprovou'
-        ? deps.ultimoParecerQa?.body?.includes('<!-- gitorch:qa:entrega-grande-demais -->') ||
+        ? deps.ultimoParecerQa?.body?.includes(MARCA_DE_ENTREGA_GRANDE_DEMAIS) ||
           deps.ultimoParecerQa?.body
             ?.toLowerCase()
             .includes('não coube inteira na janela de revisão') ||
           deps.ultimoParecerQa?.body
             ?.toLowerCase()
             .includes('nao coube inteira na janela de revisao')
-          ? `A entrega não coube inteira na janela de revisão. Divida esta entrega em partes menores e independentes (um propósito por PR). Abra os novos PRs e feche este aqui apontando para eles.`
-          : deps.ultimoParecerQa?.body || ''
+          ? `A entrega não coube inteira na janela de revisão do QA.\n\nDivida esta entrega em partes menores e independentes (um propósito por PR), cada um ligado à respectiva issue. Abra os novos PRs e feche este aqui apontando para eles.\n\nMotivo apontado pelo QA:\n${deps.ultimoParecerQa?.body || ''}`
+          : `O QA solicitou as seguintes mudanças no pull request #${deps.numero}:\n\n${deps.ultimoParecerQa?.body || ''}`
         : causa === 'conflito'
           ? `Traga a base para o seu ramo e resolva o conflito do pull request #${deps.numero}.`
           : `A verificação automática do pull request #${deps.numero} está vermelha — conserte a causa.`,

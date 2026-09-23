@@ -445,6 +445,7 @@ import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
 import type { Prisma, PrismaClient } from '@prisma/client'
 import * as os from 'node:os'
+import type { TelemetrySpanEvent, TelemetryQuotaAlertEvent } from './sse.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // dist/plugins -> raiz do repo -> runtime/
@@ -3001,6 +3002,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.warn(
           `[Scheduler] Orçamento do plano ${plan.id} atingido para o usuário ${project.userId} (${ownerToday}/${plan.maxMissionsPerDay}); pulando`
         )
+        const quotaEventBudget: TelemetryQuotaAlertEvent = {
+          type: 'telemetry:quota_alert',
+          missionId: `no-mission-${project.wingId}`,
+          role,
+          reason: `Orçamento do plano ${plan.id} atingido para o usuário ${project.userId}`,
+        }
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEventBudget)
+        if ('emitter' in app)
+          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:quota_alert',
+            quotaEventBudget
+          )
+
         return { triggered: false, reason: 'plan-budget' }
       }
     }
@@ -3134,6 +3149,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.warn(
           `[Scheduler] Gasto bloqueado (${decision.reason}) para ${project.userId}; pulando ${role}`
         )
+        const quotaEvent: TelemetryQuotaAlertEvent = {
+          type: 'telemetry:quota_alert',
+          missionId: `no-mission-${project.wingId}`, // Stable missionId for deduplication
+          role,
+          reason: `Gasto bloqueado (${decision.reason}) para o projeto ${project.id}`,
+        }
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEvent)
+        if ('emitter' in app)
+          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:quota_alert',
+            quotaEvent
+          )
+
         return { triggered: false, reason: decision.reason ?? 'spend-blocked' }
       }
     }
@@ -3356,7 +3385,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         .catch(() => undefined)
 
+      const spanExecutionStartTime = Date.now()
+
       try {
+        // Emit start span
+        const spanStartEvent: TelemetrySpanEvent = {
+          type: 'telemetry:span',
+          missionId,
+          role,
+        }
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:span', spanStartEvent)
+        if ('emitter' in app)
+          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:span',
+            spanStartEvent
+          )
+
         const credentialRef = {
           connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
           ownerScope: 'project' as const,
@@ -4666,6 +4711,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   `[Scheduler] Consumo ${missionId}: antes=${before} depois=${c.quotaAfter} usou=${c.tokensUsed}`
                 )
               }
+              const spanSuccessEvent: TelemetrySpanEvent = {
+                type: 'telemetry:span',
+                missionId,
+                role,
+                cost: c.tokensUsed ?? 0,
+                latency: Date.now() - spanExecutionStartTime,
+              }
+              if ('broadcastEvent' in app)
+                app.broadcastEvent(project.wingId, 'telemetry:span', spanSuccessEvent)
+              if ('emitter' in app)
+                (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+                  'telemetry:span',
+                  spanSuccessEvent
+                )
             } catch (e) {
               app.log.warn({ e }, `[Scheduler] medição de consumo falhou para ${missionId}`)
             }
@@ -4733,6 +4792,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         break
       } catch (err) {
         lastError = String((err as { stack?: string })?.stack ?? err)
+
+        const spanErrorEvent: TelemetrySpanEvent = {
+          type: 'telemetry:span',
+          missionId,
+          role,
+          error: lastError,
+          cost: 0,
+          latency: Date.now() - spanExecutionStartTime,
+        }
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:span', spanErrorEvent)
+        if ('emitter' in app && !isEngineFault(err, lastError)) {
+          ;(app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:span',
+            spanErrorEvent
+          )
+        }
+
         // Classificação de origem do erro (Lei dos trilhos) — ver isEngineFault:
         // - GithubExecutionError: o GitHub falhou (token/rate-limit do REPO) —
         //   igual para TODOS os motores; failover só repetiria o dano. Falha já.
@@ -4772,6 +4849,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }
         if (err instanceof CredencialExpiradaError) {
           falhaDeCredencial = true
+          motorEmPausa.marcarMorto(err.runtime, new Date())
           // A TELA PARA DE MENTIR. Antes disto, este caminho marcava a falha no
           // RESULTADO DA MISSÃO e mandava o recado — mas nunca tocava na linha
           // da conexão, que seguia dizendo 'connected' para sempre. O dono

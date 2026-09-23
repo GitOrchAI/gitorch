@@ -177,12 +177,17 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   let ultimoEscalonamentoEm: Date | null = null
 
   if (origem !== 'dependabot') {
-    if (depsVigia.headSha) {
+    if (!depsVigia.headSha) {
+      onWarn(
+        `decidirAcaoNoPrOrfaoIntegrado: headSha ausente no PR #${depsVigia.numero}, ignorando busca de pareceres do QA.`
+      )
+    } else {
       try {
-        const reviews = (await ghGet(
+        const rawReviews = await ghGet(
           `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/reviews?per_page=100`,
           token
-        )) as ReviewDoGithub[]
+        )
+        const reviews = Array.isArray(rawReviews) ? (rawReviews as ReviewDoGithub[]) : []
 
         const review = acharParecerNesteHead(reviews, depsVigia.headSha)
         if (review && review.body && !ehAprovacao(review)) {

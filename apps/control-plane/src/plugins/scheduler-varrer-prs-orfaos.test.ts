@@ -25,6 +25,214 @@ function buildDepsVigia(
 }
 
 describe('decidirAcaoNoPrOrfaoIntegrado', () => {
+  it('teste da cadeia real: a marca de entrega-grande-demais aciona a logica correta', async () => {
+    const depsVigia = {
+      numero: 3953,
+      sinais: {
+        autor: 'jules_gitorch',
+        labels: ['gitorch:task', 'jules', 'gitorch:agent:qa'],
+        corpo: null,
+      },
+      temSessaoViva: false,
+      issueNumber: 3841,
+      issueAberta: true,
+      mergeable: true,
+      verificacao: 'verde',
+      paradoHaMs: 8 * 24 * 60 * 60 * 1000,
+      acoesAnteriores: 0,
+      podeAbrirSessao: true,
+      origem: 'desconhecido',
+      branchDoPr: 'feat-zap',
+      branchNoRepoDoProjeto: true,
+      headSha: '42ae8dc7',
+      rascunho: false,
+    } as unknown as Parameters<
+      NonNullable<import('../services/vigia-do-pr.js').VigiaDoPrDeps['decidirAcaoNoPrOrfao']>
+    >[0]
+
+    const ghGetMock = vi.fn().mockImplementation(async (caminho: string) => {
+      if (caminho.includes('/pulls/3953/reviews')) {
+        return [
+          {
+            body: `<!-- gitorch:qa -->\n<!-- gitorch:qa:entrega-grande-demais -->\nO tamanho deste PR excede o limite`,
+            commit_id: '42ae8dc7',
+            submitted_at: new Date(Date.now() - 1000).toISOString(),
+          },
+        ]
+      }
+      return []
+    })
+
+    const prismaMock = {
+      agentQuestion: {
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+      event: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+      },
+      repoItem: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as import('@prisma/client').PrismaClient
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: {},
+      agora: new Date(),
+      projeto: { id: 'p1', wingId: 'repo', devPlan: 'free' },
+      token: 'tok',
+      depsVigia,
+      prisma: prismaMock,
+      ghGet: ghGetMock,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result.acao).toBe('retomar')
+    if (result.acao === 'retomar') {
+      expect(result.pedido).toContain('O tamanho deste PR excede o limite')
+      expect(result.pedido).toContain('Divida esta entrega em partes menores')
+      expect(result.pedido).toContain('cada um ligado à respectiva issue')
+    }
+  })
+
+  it('idade/teto sozinho (acoesAnteriores > max) SEM parecer do QA não escala ao dono', async () => {
+    const depsVigia = {
+      numero: 1234,
+      sinais: {
+        autor: 'jules_gitorch',
+        labels: ['gitorch:task', 'jules', 'gitorch:agent:qa'],
+        corpo: null,
+      },
+      temSessaoViva: false,
+      issueNumber: 111,
+      issueAberta: true,
+      mergeable: true,
+      verificacao: 'verde',
+      paradoHaMs: 8 * 24 * 60 * 60 * 1000,
+      acoesAnteriores: 3, // Acima do MAX
+      podeAbrirSessao: true,
+      origem: 'jules',
+      branchDoPr: 'fix-1',
+      branchNoRepoDoProjeto: true,
+      headSha: 'sha123',
+      rascunho: false,
+    } as unknown as Parameters<
+      NonNullable<import('../services/vigia-do-pr.js').VigiaDoPrDeps['decidirAcaoNoPrOrfao']>
+    >[0]
+
+    const ghGetMock = vi.fn().mockImplementation(async () => {
+      // Sem reviews do QA
+      return []
+    })
+
+    const prismaMock = {
+      agentQuestion: {
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+      event: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(3),
+      },
+      repoItem: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as import('@prisma/client').PrismaClient
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: { cuidado_por_origem: { jules: 'sim' } }, // Config para agir sozinho
+      agora: new Date(),
+      projeto: { id: 'p1', wingId: 'repo', devPlan: 'free' },
+      token: 'tok',
+      depsVigia,
+      prisma: prismaMock,
+      ghGet: ghGetMock,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    // Na nova regra, sem parecer do QA e sem escalonamento anterior (não temDuvidaPendente),
+    // ele vai tentar agir. A ausência de defeito (causa null) faz ele mesclar.
+    // Se estivesse quebrado, iria retomar.
+    // A questão é que ele NÃO `so-acompanhar` / `escalar` apenas por `acoesAnteriores > max`.
+    expect(result.acao).not.toBe('escalar')
+    expect(result.acao).not.toBe('so-acompanhar')
+  })
+
+  it('teto esgotado com pergunta pendente -> so-acompanhar (sem escalar)', async () => {
+    const depsVigia = {
+      numero: 1234,
+      sinais: {
+        autor: 'jules_gitorch',
+        labels: ['gitorch:task', 'jules', 'gitorch:agent:qa'],
+        corpo: null,
+      },
+      temSessaoViva: false,
+      issueNumber: 111,
+      issueAberta: true,
+      mergeable: true,
+      verificacao: 'vermelha', // Algo para consertar
+      paradoHaMs: 8 * 24 * 60 * 60 * 1000,
+      acoesAnteriores: 0,
+      podeAbrirSessao: true,
+      origem: 'jules',
+      branchDoPr: 'fix-1',
+      branchNoRepoDoProjeto: true,
+      headSha: 'sha123',
+      rascunho: false,
+    } as unknown as Parameters<
+      NonNullable<import('../services/vigia-do-pr.js').VigiaDoPrDeps['decidirAcaoNoPrOrfao']>
+    >[0]
+
+    const ghGetMock = vi.fn().mockImplementation(async (caminho: string) => {
+      if (caminho.includes('reviews')) {
+        return [
+          {
+            body: `<!-- gitorch:qa -->\nRevisado com erros`,
+            commit_id: 'sha123',
+            submitted_at: new Date(Date.now() - 10000).toISOString(),
+          },
+        ]
+      }
+      return []
+    })
+
+    const prismaMock = {
+      agentQuestion: {
+        findFirst: vi.fn().mockResolvedValue({ status: 'open' }), // Pergunta pendente
+      },
+      event: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { createdAt: new Date(Date.now() - 5000), payload: { vigiaDoPr: { acao: 'escalar' } } },
+          ]), // Escalou DEPOIS do review
+        count: vi.fn().mockResolvedValue(3), // Ações depois do review: 3 (> MAX_ACOES_DO_VIGIA)
+      },
+      repoItem: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as import('@prisma/client').PrismaClient
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: { cuidado_por_origem: { jules: 'sim' } },
+      agora: new Date(),
+      projeto: { id: 'p1', wingId: 'repo', devPlan: 'free' },
+      token: 'tok',
+      depsVigia,
+      prisma: prismaMock,
+      ghGet: ghGetMock,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result.acao).toBe('ignorar') // O mapeamento em decidirAcaoNoPrOrfaoIntegrado traduz 'so-acompanhar' para 'ignorar'
+    expect(result.motivo).toContain('já foi ao dono depois do teto')
+  })
+
   it('retoma PR se houver REQUEST_CHANGES no HEAD atual (mesmo após duas tentativas anteriores, limit bypass)', async () => {
     const depsVigia = {
       numero: 3953,

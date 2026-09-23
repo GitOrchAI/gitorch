@@ -11,11 +11,13 @@ import {
   tratarCliqueDeProjeto,
   answerTelegramCallback,
   zerarTecladoDaMensagem,
+  editTelegramMessageText,
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { nascerDesejo } from '../services/nascer-desejo.js'
 import { PRAZO_DO_PENDENTE_MS } from '../services/desejo-pendente.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
+import { SynapseClient, type CortexClientLike } from '@gitorch/synapse'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   resolveNotifyChatId,
@@ -28,6 +30,8 @@ import {
   type ResultadoDoManipuladorDeResposta,
 } from '../services/agent-question.js'
 import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
+import type { TelemetrySpanEvent, TelemetryQuotaAlertEvent } from './sse.js'
+
 import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-errors.js'
 import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
 import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
@@ -76,6 +80,30 @@ import { calcularTempoDeResolucao } from '@gitorch/cadence'
 const POLL_TIMEOUT_SEC = 30
 // Backoff quando o Telegram está fora / a rede caiu: não martelar a API.
 const ERROR_BACKOFF_MS = 15_000
+
+// Dedup state for telemetry alerts to prevent spam (by missionId/wingId and event type)
+const alertDedupState = new Map<string, number>()
+const DEDUP_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
+
+// Periodic cleanup to avoid memory leak
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, timestamp] of alertDedupState.entries()) {
+    if (now - timestamp >= DEDUP_TIMEOUT_MS) {
+      alertDedupState.delete(key)
+    }
+  }
+}, DEDUP_TIMEOUT_MS).unref?.()
+
+function formatObservabilityAlert(event: TelemetrySpanEvent | TelemetryQuotaAlertEvent): string {
+  if (event.type === 'telemetry:quota_alert') {
+    return `🚨 Alerta de Orçamento Atingido\n\nNó: ${event.role || 'desconhecido'}\nCusto: ${event.used || 0} / ${event.limit || 'desconhecido'} tokens\nMotivo: ${event.reason}\nOrdem: ${event.missionId}`
+  }
+  if (event.type === 'telemetry:span') {
+    return `❌ Falha de Execução no Nó\n\nNó: ${event.role || 'desconhecido'}\nErro: ${event.error}\nCusto acumulado: ${event.cost || 0} tokens\nOrdem: ${event.missionId}`
+  }
+  return `Alerta de Observabilidade: ${JSON.stringify(event)}`
+}
 
 /**
  * Fix-up (revisão, defeito 4): usado por `comentarNaIssue`
@@ -756,42 +784,130 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // do PR #394 (31/08, 502 no site). `onReady` agenda o mesmo callback sem bootar o root.
   app.addHook('onReady', async () => {
     if ('emitter' in app) {
-      // @ts-ignore
-      app.emitter.on('pipeline.error', async (metadata: PipelineErrorMetadata) => {
-        const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
-        if (!ownerEmail) return
+      ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+        'pipeline.error',
+        async (metadata: PipelineErrorMetadata) => {
+          const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
+          if (!ownerEmail) return
 
-        const user = await app.prisma.user.findUnique({
-          where: { email: ownerEmail },
-          select: { id: true, email: true },
-        })
-        if (!user) return
+          const user = await app.prisma.user.findUnique({
+            where: { email: ownerEmail },
+            select: { id: true, email: true },
+          })
+          if (!user) return
 
-        const chatId = await resolveNotifyChatId(app.prisma, {
-          userId: user.id,
-          user: { email: user.email },
-        })
-        if (!chatId) return
+          const chatId = await resolveNotifyChatId(app.prisma, {
+            userId: user.id,
+            user: { email: user.email },
+          })
+          if (!chatId) return
 
-        // Extrai o code, remove a chave se for algo como "CODE: message"
-        let errorCode = metadata.reason
-        const match = /^([A-Z_]+):\s/.exec(errorCode)
-        if (match && match[1]) {
-          errorCode = match[1]
+          // Extrai o code, remove a chave se for algo como "CODE: message"
+          let errorCode = metadata.reason
+          const match = /^([A-Z_]+):\s/.exec(errorCode)
+          if (match && match[1]) {
+            errorCode = match[1]
+          }
+
+          const translatedReason = traduzirErroParaUsuario(errorCode as SetupErrorCode | null)
+          const actionRequired = metadata.requiresAction ? 'Sim' : 'Não'
+          const text = `🚨 Sua entrega falhou no passo ${metadata.step}. O que quebrou: ${translatedReason}. O que fizemos: ${metadata.mitigationAction}. Ação necessária: ${actionRequired}`
+
+          app.log.info({ payload: text }, '[Telegram] enviando aviso de falha na pipeline')
+
+          await sendTelegramMessage({
+            botToken,
+            chatId,
+            text,
+          })
         }
+      )
 
-        const translatedReason = traduzirErroParaUsuario(errorCode as SetupErrorCode | null)
-        const actionRequired = metadata.requiresAction ? 'Sim' : 'Não'
-        const text = `🚨 Sua entrega falhou no passo ${metadata.step}. O que quebrou: ${translatedReason}. O que fizemos: ${metadata.mitigationAction}. Ação necessária: ${actionRequired}`
+      if ('emitter' in app) {
+        ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+          'telemetry:quota_alert',
+          async (event: TelemetryQuotaAlertEvent) => {
+            try {
+              const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
+              if (!ownerEmail) return
 
-        app.log.info({ payload: text }, '[Telegram] enviando aviso de falha na pipeline')
+              const dedupKey = `${event.missionId}:quota_alert`
+              const lastSent = alertDedupState.get(dedupKey)
+              if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
+              alertDedupState.set(dedupKey, Date.now())
 
-        await sendTelegramMessage({
-          botToken,
-          chatId,
-          text,
-        })
-      })
+              const user = await app.prisma.user.findUnique({
+                where: { email: ownerEmail },
+                select: { id: true, email: true },
+              })
+              if (!user) return
+
+              const chatId = await resolveNotifyChatId(app.prisma, {
+                userId: user.id,
+                user: { email: user.email },
+              })
+              if (!chatId) return
+
+              const text = formatObservabilityAlert(event)
+              app.log.info(
+                { payload: text },
+                '[Telegram] enviando aviso de teto de consumo atingido'
+              )
+
+              await sendTelegramMessage({
+                botToken,
+                chatId,
+                text,
+              })
+            } catch (err) {
+              app.log.error(err, '[Telegram] falha ao processar evento de quota')
+            }
+          }
+        )
+      } // End of if ('emitter' in app) for quota_alert
+
+      if ('emitter' in app) {
+        ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+          'telemetry:span',
+          async (event: TelemetrySpanEvent) => {
+            try {
+              // Only alert on non-recoverable errors
+              if (!event.error) return
+
+              const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
+              if (!ownerEmail) return
+
+              const dedupKey = `${event.missionId}:span_error`
+              const lastSent = alertDedupState.get(dedupKey)
+              if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
+              alertDedupState.set(dedupKey, Date.now())
+
+              const user = await app.prisma.user.findUnique({
+                where: { email: ownerEmail },
+                select: { id: true, email: true },
+              })
+              if (!user) return
+
+              const chatId = await resolveNotifyChatId(app.prisma, {
+                userId: user.id,
+                user: { email: user.email },
+              })
+              if (!chatId) return
+
+              const text = formatObservabilityAlert(event)
+              app.log.info({ payload: text }, '[Telegram] enviando aviso de erro de execução no nó')
+
+              await sendTelegramMessage({
+                botToken,
+                chatId,
+                text,
+              })
+            } catch (err) {
+              app.log.error(err, '[Telegram] falha ao processar evento de span de telemetria')
+            }
+          }
+        )
+      } // End of if ('emitter' in app) for span
     }
   })
 
@@ -914,6 +1030,53 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
 
         for (const update of result.updates) {
           if (update.callback_query) {
+            const data = update.callback_query.data
+
+            if (data?.startsWith('wadd:')) {
+              await answerTelegramCallback({ botToken, callbackQueryId: update.callback_query.id })
+
+              if (update.callback_query.message?.chat) {
+                const chatId = String(update.callback_query.message.chat.id)
+                const messageId = update.callback_query.message.message_id
+
+                const drawerId = data.substring(5)
+                const drawer = app.cortex.getDrawerById(drawerId)
+                const itemContent = drawer?.content || 'Item desconhecido'
+
+                const dono = await resolveDonoDoChat(app.prisma, chatId)
+                if (dono.tipo === 'unico') {
+                  const projetos = await projetosParaDesejo(app.prisma, dono.userId)
+                  const wingId = projetos[0]?.repo
+                  const projectId = projetos[0]?.id
+
+                  if (wingId && projectId) {
+                    await nascerDesejo(
+                      {
+                        projectId,
+                        repo: wingId,
+                        titulo: itemContent,
+                        corpo: '',
+                        etiquetas: ['wishlist'],
+                      },
+                      {
+                        prisma: app.prisma,
+                        engineConnections: app.engineConnections,
+                        onInfo: (msg) => app.log.info(msg),
+                      }
+                    )
+                  }
+                }
+
+                await editTelegramMessageText({
+                  botToken,
+                  chatId,
+                  messageId,
+                  text: `Item '${itemContent.trim()}' adicionado à wishlist.`,
+                })
+              }
+              continue
+            }
+
             // O toque no botão de PROJETO vem primeiro porque ele reconhece o
             // que é seu pelo prefixo e devolve `null` para todo o resto — a
             // dúvida do PO, que viaja no mesmo canal, segue intacta logo abaixo.
@@ -1146,11 +1309,71 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                       text: 'Use /wishlist add <item>',
                     })
                   } else {
-                    await sendTelegramMessage({
-                      botToken,
-                      chatId: strChatId,
-                      text: `Item '${payload.trim()}' adicionado à wishlist.`,
+                    const projetos = await projetosParaDesejo(app.prisma, dono.userId)
+                    const wingId = projetos[0]?.repo
+                    const projectId = projetos[0]?.id
+
+                    if (!wingId || !projectId) {
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: 'Nenhum projeto ativo encontrado para adicionar à wishlist.',
+                      })
+                      break
+                    }
+
+                    const synapse = new SynapseClient({
+                      cortexClient: app.cortex as unknown as CortexClientLike,
                     })
+                    const queryStr = payload.trim()
+
+                    const results = await synapse.queryContextualSimilarity(wingId, queryStr, 5)
+
+                    if (results.length > 1) {
+                      const buttons = results.map((r) => [
+                        {
+                          text:
+                            (r.content || '').substring(0, 40) +
+                            ((r.content || '').length > 40 ? '...' : ''),
+                          callback_data: `wadd:${r.drawerId}`,
+                        },
+                      ])
+
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: `Foram encontrados múltiplos resultados para '${queryStr}'. Escolha um:`,
+                        teclado: { inline_keyboard: buttons },
+                      })
+                    } else if (results.length === 1) {
+                      const itemContent = results[0]?.content || ''
+                      await nascerDesejo(
+                        {
+                          projectId,
+                          repo: wingId,
+                          titulo: itemContent,
+                          corpo: '',
+                          etiquetas: ['wishlist'],
+                        },
+                        {
+                          prisma: app.prisma,
+                          engineConnections: app.engineConnections,
+                          onInfo: (msg) => app.log.info(msg),
+                        }
+                      )
+
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: `Item '${itemContent.trim()}' adicionado à wishlist.`,
+                      })
+                    } else {
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: `Nenhum item encontrado para '${queryStr}'.`,
+                      })
+                    }
                   }
                   break
                 default:

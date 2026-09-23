@@ -25,6 +25,9 @@ import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
 import { guestAgentEngineMappingSchema, guestExecutionLimitsSchema } from '@gitorch/agents'
+import { revokeGuestAccess as revokeInSpendGuard, isGuestRevoked } from '../lib/spend-guard.js'
+import { revokeGuestAccess as revokeInSecurity } from './security.js'
+import { markGuestCredentialsRevoked } from '../lib/credential-archive.js'
 
 interface ApiKeyPayload {
   projectId: string
@@ -289,6 +292,13 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
     resolveScope(request)
       .then((scope) => {
+        if (scope.userId !== undefined && isGuestRevoked(scope.userId)) {
+          const error = new Error('FORBIDDEN: Guest access revoked') as Error & {
+            statusCode: number
+          }
+          error.statusCode = 403
+          return done(error)
+        }
         if (scope.userId !== undefined) {
           tenantContext.run({ userId: scope.userId }, () => done())
           return
@@ -550,6 +560,55 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
     const scope = await updateGuestProjectScope(guestId, allowedProjectIds, autonomyLevel)
     return reply.send({ status: 'UPDATED', scope })
+  })
+
+  app.post('/projects/:id/guests/:guestId/revoke', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const { id: projectId, guestId } = request.params as { id: string; guestId: string }
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { userId: true },
+    })
+
+    if (!project || project.userId !== userId) {
+      const error = new Error(
+        'FORBIDDEN: You do not have permission to revoke guests for this project'
+      ) as Error & { statusCode: number }
+      error.statusCode = 403
+      throw error
+    }
+
+    revokeInSpendGuard(guestId, 'Revoked by owner')
+    revokeInSecurity(guestId, 'Revoked by owner')
+    markGuestCredentialsRevoked(guestId)
+
+    return reply.send({ status: 'REVOKED' })
+  })
+
+  app.put('/guests/profile', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const _schema = z.object({
+      contactInfo: z.string().optional(),
+      profileData: z.string().optional(),
+    })
+
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+
+    return reply.send({ status: 'UPDATED', profile: parsedBody.data })
   })
 }
 

@@ -117,6 +117,13 @@ export interface NextActionDecision {
   repeated: boolean
 }
 
+export interface CortexDrawerLike {
+  id: string
+  wingId: string
+  content: string
+  metadata?: Record<string, unknown>
+}
+
 export interface CortexSearchResultLike {
   drawerId: string
   layer: string
@@ -126,4 +133,5 @@ export interface CortexSearchResultLike {
 }
 export interface CortexClientLike {
   search(wingId: string, query: string, limit: number): Promise<CortexSearchResultLike[]>
+  getDrawerById(id: string): Promise<CortexDrawerLike | null> | CortexDrawerLike | null
 }

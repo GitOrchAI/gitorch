@@ -160,6 +160,20 @@ export class SqliteStore {
       })
   }
 
+  getDrawerById(id: string): CortexDrawer | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT *
+      FROM cortex_drawers
+      WHERE id = ?
+    `
+      )
+      .get(id) as SqliteRow | undefined
+
+    return row ? this.mapDrawer(row) : null
+  }
+
   getTopDrawers(wingId: string, limit: number): CortexDrawer[] {
     return (
       this.db

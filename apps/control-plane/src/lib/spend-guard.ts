@@ -114,3 +114,18 @@ export function releaseMissionTokens(orgId: string, tokens: number): void {
 export function _resetSpendGuardReservationsForTesting(): void {
   reservedTokensByOrg.clear()
 }
+
+export const revokedGuests = new Set<string>()
+
+export function revokeGuestAccess(guestId: string, reason: string): void {
+  revokedGuests.add(guestId)
+  console.log(`Guest ${guestId} revoked: ${reason}`)
+}
+
+export function isGuestRevoked(guestId: string): boolean {
+  return revokedGuests.has(guestId)
+}
+
+export function clearRevokedGuests(): void {
+  revokedGuests.clear()
+}

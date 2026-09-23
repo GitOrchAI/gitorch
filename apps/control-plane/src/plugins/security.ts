@@ -83,6 +83,28 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
       }
     }
   })
+
+  app.addHook('preHandler', async (request, reply) => {
+    const userId = request.user?.id
+    if (userId && isGuestRevoked(userId)) {
+      return reply.code(403).send({ error: 'Forbidden', message: 'Guest access revoked' })
+    }
+  })
 }
 
 export const securityHookPlugin = fp(securityPlugin)
+
+export const revokedSecurityGuests = new Set<string>()
+
+export function revokeGuestAccess(guestId: string, reason: string): void {
+  revokedSecurityGuests.add(guestId)
+  console.log(`Security Guest ${guestId} revoked: ${reason}`)
+}
+
+export function isGuestRevoked(guestId: string): boolean {
+  return revokedSecurityGuests.has(guestId)
+}
+
+export function clearRevokedGuests(): void {
+  revokedSecurityGuests.clear()
+}

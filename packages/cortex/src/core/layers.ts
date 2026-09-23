@@ -2,6 +2,7 @@ import type { CortexDrawer, CortexIdentity, CortexWakeUpResult } from '../types'
 
 export interface StoreLike {
   getIdentity(wingId: string): CortexIdentity | null
+  getDrawerById(id: string): CortexDrawer | null
   getTopDrawers(wingId: string, limit: number): CortexDrawer[]
   getDrawersByScope(
     wingId: string,
