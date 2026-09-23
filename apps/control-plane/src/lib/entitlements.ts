@@ -3,6 +3,8 @@
 // Plan.features (JSON) — ver prisma/seed.ts. Ver docs/business/pricing-strategy.md.
 import { prisma } from '../plugins/prisma.js'
 import { encryptCredential, decryptCredential } from './credential-crypto.js'
+import { approveGuestInDatabase } from '../plugins/prisma.js'
+import { DEFAULT_GUEST_DURATION_HOURS } from '../config/constants.js'
 
 export type Capability =
   | 'autoAutonomy' // agente decide sozinho (vs. dono aprova cada missão)
@@ -95,4 +97,16 @@ export function validateProjectInvitation(
     ...parsed,
     expiresAt,
   }
+}
+
+export async function approveGuestMembership(
+  projectId: string,
+  guestId: string,
+  durationHours?: number
+) {
+  const hours = durationHours ?? DEFAULT_GUEST_DURATION_HOURS
+  const validUntil = new Date()
+  validUntil.setHours(validUntil.getHours() + hours)
+
+  return approveGuestInDatabase(projectId, guestId, validUntil)
 }
