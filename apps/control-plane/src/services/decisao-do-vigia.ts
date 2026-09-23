@@ -206,9 +206,11 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     } catch (err) {
       // Se a API falhar ou não trouxer changed_files, não age destrutivamente
     }
+    // Tarefa fechada, mas PR tem arquivos alterados.
+    // Em vez de deixar aberto, tratamos como PR substituído.
     return {
-      acao: 'ignorar',
-      motivo: `#${depsVigia.numero}: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto`,
+      acao: 'fechar',
+      motivo: `A tarefa #${depsVigia.issueNumber} já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.`
     }
   }
   if (acaoMotor.acao === 'perguntar-se-cuida') {

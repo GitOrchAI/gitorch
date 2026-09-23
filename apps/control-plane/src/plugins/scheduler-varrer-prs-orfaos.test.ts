@@ -96,7 +96,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     expect(ghGet).toHaveBeenCalledWith('/repos/org/repo/pulls/42', 'gh-token')
   })
 
-  it('(2) issue fechada mas PR com alteracoes reais -> NAO fecha', async () => {
+  it('(2) issue fechada mas PR com alteracoes reais -> FECHA como substituído', async () => {
     const depsVigia = buildDepsVigia({ issueAberta: false })
     const ghGet = vi.fn(async (url) => {
       if (url === '/repos/org/repo/pulls/42') {
@@ -119,13 +119,12 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     expect(result).toEqual({
-      acao: 'ignorar',
-      motivo:
-        '#42: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto',
+      acao: 'fechar',
+      motivo: 'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
     })
   })
 
-  it('(3) changed_files desconhecido -> NAO fecha', async () => {
+  it('(3) changed_files desconhecido -> FECHA como substituído', async () => {
     const depsVigia = buildDepsVigia({ issueAberta: false })
     const ghGet = vi.fn(async (url) => {
       if (url === '/repos/org/repo/pulls/42') {
@@ -148,9 +147,8 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     expect(result).toEqual({
-      acao: 'ignorar',
-      motivo:
-        '#42: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto',
+      acao: 'fechar',
+      motivo: 'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
     })
   })
 
