@@ -70,15 +70,27 @@ export interface ProjectInvitationPayload {
 export async function generateProjectInvitation(
   payload: ProjectInvitationPayload
 ): Promise<string> {
+  const data: Prisma.ProjectInvitationUncheckedCreateInput = {
+    userId: payload.userId,
+    targetProjects: payload.targetProjects,
+    expiresAt: payload.expiresAt,
+    status: 'PENDING_APPROVAL',
+  }
+
+  if (payload.engineMapping) {
+    data.engineMapping = payload.engineMapping as Prisma.InputJsonValue
+  } else {
+    data.engineMapping = Prisma.JsonNull
+  }
+
+  if (payload.executionLimits) {
+    data.executionLimits = payload.executionLimits as Prisma.InputJsonValue
+  } else {
+    data.executionLimits = Prisma.JsonNull
+  }
+
   const invitation = await prisma.projectInvitation.create({
-    data: {
-      userId: payload.userId,
-      targetProjects: payload.targetProjects,
-      expiresAt: payload.expiresAt,
-      status: 'PENDING_APPROVAL',
-      engineMapping: payload.engineMapping ? (payload.engineMapping as any) : Prisma.JsonNull,
-      executionLimits: payload.executionLimits ? (payload.executionLimits as any) : Prisma.JsonNull,
-    },
+    data,
   })
 
   const tokenPayload = {
