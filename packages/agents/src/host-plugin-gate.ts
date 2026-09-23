@@ -4,6 +4,7 @@ import type {
   RuntimeCommandResult,
   RuntimeCommandRunner,
 } from './runtime-adapter.js'
+import { exigirPermissao } from '@gitorch/cadence'
 
 // Achado importante da revisão pós-merge: `createPodmanCommandRunner` (ver
 // podman-runner.ts) só recusa uma missão sem o plugin de segurança do
@@ -71,9 +72,22 @@ export async function isGitorchPluginPresentOnHost(markerPath?: string): Promise
  */
 export function wrapWithHostGitorchPluginGate(
   runner: RuntimeCommandRunner,
-  markerPath?: string
+  markerPath?: string,
+  guestAutonomy?: string
 ): RuntimeCommandRunner {
   return async (request: RuntimeCommandRequest): Promise<RuntimeCommandResult> => {
+    if (guestAutonomy) {
+      try {
+        exigirPermissao(guestAutonomy, 'propor')
+      } catch (err) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: err instanceof Error ? err.message : String(err),
+          durationMs: 0,
+        }
+      }
+    }
     if ((process.env['GITORCH_AGY_PLUGIN'] ?? '1') === '0') {
       return {
         exitCode: 1,
