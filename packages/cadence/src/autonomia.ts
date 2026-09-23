@@ -202,3 +202,19 @@ export function evaluateAutonomyTransition(context: AutonomyTransitionContext): 
 
   return context.humanApprovalNode
 }
+
+export interface GuestMember {
+  id: string
+  targetProjects?: string[] | null
+  autonomyLevel?: string | null
+  [key: string]: unknown
+}
+
+export function resolveGuestAutonomyLevel(guestMember: GuestMember): {
+  nivel: NivelDeAutonomia
+  permissoes: AcaoNoRepositorio[]
+} {
+  const nivel = normalizarNivel(guestMember.autonomyLevel)
+  const permissoes = Array.from(PERMITIDO[nivel])
+  return { nivel, permissoes }
+}

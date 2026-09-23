@@ -6,7 +6,10 @@ import {
   generateProjectInvitation,
   validateProjectInvitation,
   approveGuestMembership,
+  updateGuestProjectScope,
 } from '../lib/entitlements.js'
+
+import { NIVEIS_DE_AUTONOMIA } from '@gitorch/cadence'
 
 /**
  * O escopo de isolamento da requisição: o DONO (userId) quando há um, ou o
@@ -417,6 +420,51 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       }
       return reply.status(400).send({ error: 'Invalid invitation token' })
     }
+  })
+
+  app.put('/guests/:guestId/scope', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const { guestId } = request.params as { guestId: string }
+    const _schema = z.object({
+      allowedProjectIds: z.array(z.string()).min(1),
+      autonomyLevel: z.string(),
+    })
+
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+
+    const { allowedProjectIds, autonomyLevel } = parsedBody.data
+
+    if (!NIVEIS_DE_AUTONOMIA.includes(autonomyLevel as (typeof NIVEIS_DE_AUTONOMIA)[number])) {
+      const error = new Error('BAD REQUEST: Invalid autonomyLevel') as Error & {
+        statusCode: number
+      }
+      error.statusCode = 400
+      throw error
+    }
+
+    const projectsCount = await prisma.project.count({
+      where: { id: { in: allowedProjectIds }, userId },
+    })
+
+    if (projectsCount !== allowedProjectIds.length) {
+      const error = new Error(
+        'FORBIDDEN: You do not have permission to manage scope for one or more requested projects'
+      ) as Error & { statusCode: number }
+      error.statusCode = 403
+      throw error
+    }
+
+    const scope = await updateGuestProjectScope(guestId, allowedProjectIds, autonomyLevel)
+    return reply.send({ status: 'UPDATED', scope })
   })
 }
 
