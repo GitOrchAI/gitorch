@@ -179,11 +179,13 @@ export class AgentOrchestrator {
 
     try {
       if (
-        !mission.credentialRef.providedSecrets ||
+        !mission.credentialRef?.providedSecrets ||
         mission.credentialRef.providedSecrets.length === 0
       ) {
         throw Object.assign(
-          new Error(`Credencial ausente para o motor ${mission.runtime.runtime}`),
+          new Error(
+            `Credencial ausente para o motor ${mission.runtime?.runtime ?? 'desconhecido'}`
+          ),
           { code: 'UNAUTHORIZED' }
         )
       }

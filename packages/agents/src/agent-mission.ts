@@ -36,7 +36,7 @@ export interface BuildAgentMissionInput {
 export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
   const runtime = input.runtime ?? DEFAULT_AGENT_RUNTIME_ASSIGNMENTS[input.role]
 
-  if (input.credentialRef.runtime !== runtime.runtime) {
+  if (input.credentialRef && input.credentialRef.runtime !== runtime.runtime) {
     throw new Error(
       `Credential runtime ${input.credentialRef.runtime} does not match selected runtime ${runtime.runtime}`
     )
@@ -50,10 +50,12 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     goal: input.goal,
     prompt: buildPrompt(input.role, input.repository, input.goal, input.context, runtime.runtime),
     runtime: { ...runtime },
-    credentialRef: {
-      ...input.credentialRef,
-      providedSecrets: [...input.credentialRef.providedSecrets],
-    },
+    credentialRef: input.credentialRef
+      ? {
+          ...input.credentialRef,
+          providedSecrets: [...(input.credentialRef.providedSecrets || [])],
+        }
+      : (undefined as unknown as RuntimeCredentialRef),
     evidenceRefs: [...(input.evidenceRefs ?? [])],
     userId: input.userId,
   }
