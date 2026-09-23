@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { z } from 'zod'
 
 /**
  * Teto de CPU/memória por execução de agente. Sem isto, um CLI agêntico solto
@@ -17,6 +18,13 @@ import { delimiter, join } from 'node:path'
  * existia antes desta mudança.
  */
 export type ExecutionLimitsMode = 'systemd' | 'none'
+
+export const guestExecutionLimitsSchema = z.object({
+  maxQuota: z.number().nonnegative(),
+  maxStepsPerMission: z.number().int().positive(),
+})
+
+export type GuestExecutionLimits = z.infer<typeof guestExecutionLimitsSchema>
 
 export interface ExecutionLimits {
   /** Ex.: '2G'. Vira `-p MemoryMax=<memoryMax>` do systemd-run. */

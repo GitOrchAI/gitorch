@@ -21,6 +21,7 @@ import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
+import { guestAgentEngineMappingSchema, guestExecutionLimitsSchema } from '@gitorch/agents'
 
 interface ApiKeyPayload {
   projectId: string
@@ -361,6 +362,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       ttlDays: z.number().int().positive(),
       email: z.string().email().optional(),
       githubLogin: z.string().optional(),
+      engineMapping: guestAgentEngineMappingSchema.optional(),
+      executionLimits: guestExecutionLimitsSchema.optional(),
     })
 
     const parsedBody = _schema.safeParse(request.body)
@@ -379,6 +382,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       expiresAt,
       ...(body.email ? { email: body.email } : {}),
       ...(body.githubLogin ? { githubLogin: body.githubLogin } : {}),
+      ...(body.engineMapping ? { engineMapping: body.engineMapping } : {}),
+      ...(body.executionLimits ? { executionLimits: body.executionLimits } : {}),
     })
 
     return reply.send({ token })

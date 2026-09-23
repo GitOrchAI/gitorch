@@ -9,7 +9,7 @@ import {
   type PlanLike,
 } from './entitlements.js'
 import { prisma } from '../plugins/prisma.js'
-import type { ProjectInvitation } from '@prisma/client'
+import { Prisma, type ProjectInvitation } from '@prisma/client'
 
 vi.mock('../plugins/prisma.js', () => ({
   prisma: {
@@ -133,6 +133,9 @@ describe('invitations', () => {
         userId: 'user-1',
         targetProjects: ['p1', 'p2'],
         expiresAt,
+        status: 'PENDING_APPROVAL',
+        engineMapping: Prisma.JsonNull,
+        executionLimits: Prisma.JsonNull,
       },
     })
 

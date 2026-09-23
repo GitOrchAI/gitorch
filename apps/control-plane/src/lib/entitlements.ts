@@ -54,23 +54,43 @@ export function canExecuteMissionToday(plan: PlanLike, missionsToday: number): b
   return missionsToday < plan.maxMissionsPerDay
 }
 
+import { Prisma } from '@prisma/client'
+import type { GuestAgentEngineMapping, GuestExecutionLimits } from '@gitorch/agents'
+
 export interface ProjectInvitationPayload {
   userId: string
   targetProjects: string[]
   expiresAt: Date
   email?: string
   githubLogin?: string
+  engineMapping?: GuestAgentEngineMapping
+  executionLimits?: GuestExecutionLimits
 }
 
 export async function generateProjectInvitation(
   payload: ProjectInvitationPayload
 ): Promise<string> {
+  const data: Prisma.ProjectInvitationUncheckedCreateInput = {
+    userId: payload.userId,
+    targetProjects: payload.targetProjects,
+    expiresAt: payload.expiresAt,
+    status: 'PENDING_APPROVAL',
+  }
+
+  if (payload.engineMapping) {
+    data.engineMapping = payload.engineMapping as Prisma.InputJsonValue
+  } else {
+    data.engineMapping = Prisma.JsonNull
+  }
+
+  if (payload.executionLimits) {
+    data.executionLimits = payload.executionLimits as Prisma.InputJsonValue
+  } else {
+    data.executionLimits = Prisma.JsonNull
+  }
+
   const invitation = await prisma.projectInvitation.create({
-    data: {
-      userId: payload.userId,
-      targetProjects: payload.targetProjects,
-      expiresAt: payload.expiresAt,
-    },
+    data,
   })
 
   const tokenPayload = {
