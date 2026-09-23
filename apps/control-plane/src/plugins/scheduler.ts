@@ -1755,7 +1755,15 @@ function buildRuntimeStack(
         tokensSpent = agg._sum.tokensUsed ?? 0
       }
 
-      verificarQuotaPreExecucao(project.userId, TOKENS_RESERVE_ESTIMATE, tokenBudget, tokensSpent)
+      verificarQuotaPreExecucao(
+        project.userId,
+        TOKENS_RESERVE_ESTIMATE,
+        tokenBudget,
+        tokensSpent,
+        null,
+        null,
+        (msg) => app.log.warn(`[Pre-Execution Quota Alert] ${msg}`)
+      )
     }
   })
 

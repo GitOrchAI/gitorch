@@ -104,11 +104,23 @@ export function verificarQuotaPreExecucao(
   orgId: string,
   tokensNeeded: number,
   tokenBudget?: number | null,
-  tokensSpent?: number
+  tokensSpent?: number,
+  quotaRemaining?: number | null,
+  quotaTotal?: number | null,
+  onAlert?: (msg: string) => void
 ): void {
   const budget = tokenBudget ?? null
   const spent = tokensSpent ?? 0
+
+  const health = quotaHealth(quotaRemaining, quotaTotal)
+  if (shouldAlertForQuota(health) && onAlert) {
+    onAlert(`Quota ${health} no motor para a org ${orgId}`)
+  }
+
   if (!canExecuteMission(orgId, tokensNeeded, budget, spent)) {
+    if (onAlert) {
+      onAlert(`Quota excedida: uso de tokens atingiu o orcamento na org ${orgId}`)
+    }
     throw new QuotaExcedidaError('Quota excedida')
   }
 }
