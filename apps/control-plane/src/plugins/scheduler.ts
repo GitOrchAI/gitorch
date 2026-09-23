@@ -1748,7 +1748,7 @@ function buildRuntimeStack(
         const startOfMonth = new Date()
         startOfMonth.setDate(1)
         startOfMonth.setHours(0, 0, 0, 0)
-        const agg = await app.prisma.mission.aggregate({
+        const agg = await (app.prisma as PrismaClient).mission.aggregate({
           where: { createdAt: { gte: startOfMonth }, project: { userId: project.userId } },
           _sum: { tokensUsed: true },
         })
@@ -3152,7 +3152,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const startOfMonth = new Date()
         startOfMonth.setDate(1)
         startOfMonth.setHours(0, 0, 0, 0)
-        const agg = await app.prisma.mission.aggregate({
+        const agg = await (app.prisma as PrismaClient).mission.aggregate({
           where: { createdAt: { gte: startOfMonth }, project: { userId: project.userId } },
           _sum: { tokensUsed: true },
         })
