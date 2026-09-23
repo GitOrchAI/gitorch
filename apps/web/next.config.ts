@@ -4,7 +4,11 @@ const nextConfig: NextConfig = {
   output: 'export',
   // GitHub Pages de projeto vive em /<repo>; domínio custom (js.org) vive na
   // raiz. Dinâmico por build — nunca fixo no código.
-  basePath: process.env.NEXT_PUBLIC_BASE_PATH ? (process.env.NEXT_PUBLIC_BASE_PATH === '' ? undefined : process.env.NEXT_PUBLIC_BASE_PATH) : undefined,
+  basePath: process.env.NEXT_PUBLIC_BASE_PATH
+    ? process.env.NEXT_PUBLIC_BASE_PATH === ''
+      ? undefined
+      : process.env.NEXT_PUBLIC_BASE_PATH
+    : undefined,
   trailingSlash: true,
   images: {
     unoptimized: true,
