@@ -126,7 +126,17 @@ Object.assign(prismaPlugin, { [Symbol.for('skip-override')]: true })
 export async function approveGuestInDatabase(projectId: string, guestId: string, validUntil: Date) {
   const invitation = await prisma.projectInvitation.findUnique({ where: { id: guestId } })
   if (!invitation) throw new Error('Guest invitation not found')
-  const targets = Array.isArray(invitation.targetProjects) ? invitation.targetProjects : []
+  let targets: string[] = []
+  if (Array.isArray(invitation.targetProjects)) {
+    targets = invitation.targetProjects as string[]
+  } else if (
+    invitation.targetProjects &&
+    typeof invitation.targetProjects === 'object' &&
+    !Array.isArray(invitation.targetProjects)
+  ) {
+    const tp = invitation.targetProjects as { projects?: string[] }
+    targets = Array.isArray(tp.projects) ? tp.projects : []
+  }
   if (!targets.includes(projectId)) {
     throw new Error('Guest invitation does not belong to this project')
   }

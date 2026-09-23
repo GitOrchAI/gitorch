@@ -5,6 +5,7 @@ import { prisma } from '../plugins/prisma.js'
 import { generateHmacToken, verifyHmacToken } from './credential-crypto.js'
 import { approveGuestInDatabase } from '../plugins/prisma.js'
 import { DEFAULT_GUEST_DURATION_HOURS } from '../config/constants.js'
+import { type GuestMember } from '@gitorch/cadence'
 
 export type Capability =
   | 'autoAutonomy' // agente decide sozinho (vs. dono aprova cada missão)
@@ -135,4 +136,34 @@ export async function approveGuestMembership(
   validUntil.setHours(validUntil.getHours() + hours)
 
   return approveGuestInDatabase(projectId, guestId, validUntil)
+}
+
+export async function updateGuestProjectScope(
+  guestId: string,
+  allowedProjectIds: string[],
+  autonomyLevel: string
+): Promise<GuestMember> {
+  const invitation = await prisma.projectInvitation.findUnique({
+    where: { id: guestId },
+  })
+
+  if (!invitation) {
+    throw new Error('Guest invitation not found')
+  }
+
+  const updated = await prisma.projectInvitation.update({
+    where: { id: guestId },
+    data: {
+      targetProjects: {
+        projects: allowedProjectIds,
+        autonomyLevel: autonomyLevel,
+      },
+    },
+  })
+
+  return {
+    id: updated.id,
+    targetProjects: allowedProjectIds,
+    autonomyLevel: autonomyLevel,
+  }
 }
