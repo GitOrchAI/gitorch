@@ -159,40 +159,6 @@ test('bubbles up step-level failure and recovery status to the workspace provide
   expect(handleRuntimeFailure).toHaveBeenCalledWith('Adapter explosion', 'execute-runner', false)
 })
 
-test('throws UNAUTHORIZED when providedSecrets is missing or empty', async () => {
-  const allocate = vi.fn().mockResolvedValue({ path: '/tmp/ws' })
-  const hibernate = vi.fn().mockResolvedValue(undefined)
-
-  const registry = new RuntimeRegistry()
-  registry.register(
-    createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: ['--print'] })
-  )
-  const orchestrator = new AgentOrchestrator({
-    registry,
-    synapse: new SynapseClient(),
-    workspace: { allocateWorkspace: allocate, hibernateWorkspace: hibernate },
-  })
-
-  await expect(
-    orchestrator.runMission({
-      id: 'mission-unauthorized',
-      projectId: 'project-1',
-      repository: 'owner/repo',
-      role: 'ra',
-      goal: 'Write code',
-      context: [],
-      credentialRef: {
-        connectionId: 'c1',
-        ownerScope: 'user',
-        runtime: 'codex',
-        providedSecrets: [],
-      },
-    })
-  ).rejects.toMatchObject({
-    code: 'UNAUTHORIZED',
-  })
-})
-
 test(
   'retries runMissionCore when adapter returns waiting_quota and scales backoff exponentially',
   { timeout: 10000 },

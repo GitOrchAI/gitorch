@@ -201,7 +201,13 @@ export function resolvePrimaryRuntime(
   guestRuntimeConfig?: unknown
 ): RuntimeSelection {
   const safeRole: F6AgentRole = isF6AgentRole(role) ? role : 'ra'
-  return resolveRuntimeChain(safeRole, runtimeConfig, defaults, [], guestRuntimeConfig)[0] as RuntimeSelection
+  return resolveRuntimeChain(
+    safeRole,
+    runtimeConfig,
+    defaults,
+    [],
+    guestRuntimeConfig
+  )[0] as RuntimeSelection
 }
 
 // Erros que justificam trocar de motor (cota esgotada, rate limit, auth). Erros
