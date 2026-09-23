@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout } from 'node:timers/promises'
@@ -7,7 +8,8 @@ import type {
   F6AgentRole,
   F6AgentRuntime,
   RuntimeCredentialRef,
-} from './types'
+  Span,
+} from './types.js'
 import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
 import { getTracingEnvironment, BACKOFF_CONFIG } from './runtime-config'
 
@@ -53,6 +55,7 @@ export interface RuntimeExecutionResult {
   failedStep?: string
   errorDetails?: string
   recoveryAction?: 'auto-rollback' | 'none'
+  span?: Span
 }
 
 /**
@@ -447,6 +450,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ? []
           : [...(options.promptSeparator ? [options.promptSeparator] : []), effectivePrompt]
 
+      const startTime = Date.now()
       const { result, error, failedStep } = await wrapExecutionStep('execute-runner', () =>
         runner({
           binary: options.binary,
@@ -457,9 +461,23 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
         })
       )
+      const endTime = Date.now()
 
       if (error) {
         const errorMessage = String(error.message)
+
+        const span: Span = {
+          traceId: request.missionId,
+          spanId: crypto.randomUUID(),
+          name: request.role || 'execution',
+          input: request.prompt,
+          output: errorMessage,
+          usage: { promptTokens: 0, completionTokens: 0 },
+          startTime,
+          endTime,
+          status: 'error',
+        }
+
         if (isQuotaError(errorMessage)) {
           return {
             missionId: request.missionId,
@@ -470,6 +488,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
             durationMs: 0,
             waitingStatus: 'waiting_quota',
             waitingReason: 'Quota or rate limit exceeded',
+            span,
           }
         }
         return {
@@ -482,11 +501,25 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           failedStep: failedStep ?? 'execute-runner',
           errorDetails: errorMessage,
           recoveryAction: 'none',
+          span,
         }
       }
 
       if (result) {
         const failed = result.exitCode !== 0
+
+        const span: Span = {
+          traceId: request.missionId,
+          spanId: crypto.randomUUID(),
+          name: request.role || 'execution',
+          input: request.prompt,
+          output: result.stdout || result.stderr || '',
+          usage: { promptTokens: 0, completionTokens: 0 },
+          startTime,
+          endTime,
+          status: failed ? 'error' : 'success',
+        }
+
         if (failed && isQuotaError(result.stderr)) {
           return {
             missionId: request.missionId,
@@ -497,6 +530,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
             durationMs: result.durationMs,
             waitingStatus: 'waiting_quota',
             waitingReason: 'Quota or rate limit exceeded',
+            span,
           }
         }
         return {
@@ -513,6 +547,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
                 recoveryAction: 'none',
               }
             : {}),
+          span,
         }
       }
 
@@ -579,13 +614,28 @@ export function createPythonSdkRuntimeAdapter(
         // Mesmo motivo do runner CLI: stdin aberto = processo esperando EOF.
         pending.child.stdin?.end()
         const { stdout, stderr } = await pending
+        const endTime = Date.now()
+
+        const span: Span = {
+          traceId: request.missionId,
+          spanId: crypto.randomUUID(),
+          name: request.role || 'execution',
+          input: request.prompt,
+          output: stdout || stderr || '',
+          usage: { promptTokens: 0, completionTokens: 0 },
+          startTime: start,
+          endTime,
+          status: 'success',
+        }
+
         return {
           missionId: request.missionId,
           runtime: options.runtime,
           output: stdout,
           stderr: stderr,
           exitCode: 0,
-          durationMs: Date.now() - start,
+          durationMs: endTime - start,
+          span,
         }
       } catch (error: unknown) {
         const err = error as {
@@ -596,8 +646,21 @@ export function createPythonSdkRuntimeAdapter(
           stderr?: string
           message?: string
         }
+        const endTime = Date.now()
         const timedOut = err.killed === true || err.signal === 'SIGKILL'
         const errorMessage = err.stderr || err.message || String(error)
+
+        const span: Span = {
+          traceId: request.missionId,
+          spanId: crypto.randomUUID(),
+          name: request.role || 'execution',
+          input: request.prompt,
+          output: err.stdout || errorMessage,
+          usage: { promptTokens: 0, completionTokens: 0 },
+          startTime: start,
+          endTime,
+          status: 'error',
+        }
 
         if (!timedOut && isQuotaError(errorMessage)) {
           return {
@@ -606,9 +669,10 @@ export function createPythonSdkRuntimeAdapter(
             output: err.stdout || '',
             stderr: errorMessage,
             exitCode: 0,
-            durationMs: Date.now() - start,
+            durationMs: endTime - start,
             waitingStatus: 'waiting_quota',
             waitingReason: 'Quota or rate limit exceeded',
+            span,
           }
         }
 
@@ -618,10 +682,11 @@ export function createPythonSdkRuntimeAdapter(
           output: err.stdout || '',
           stderr: errorMessage,
           exitCode: timedOut ? 124 : normalizeExitCode(err.code),
-          durationMs: Date.now() - start,
+          durationMs: endTime - start,
           failedStep: 'execute-python-script',
           errorDetails: errorMessage,
           recoveryAction: 'none',
+          span,
         }
       }
     },

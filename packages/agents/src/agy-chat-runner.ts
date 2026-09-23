@@ -1,5 +1,7 @@
+import crypto from 'node:crypto'
 import { spawn as ptySpawnDefault } from 'node-pty-prebuilt-multiarch'
 import { wirePtyHandle, type PtySpawn, type WiredPtyHandle } from './device-login-runner.js'
+import type { Span } from './types.js'
 
 // Sobe o `agy` em modo CHAT (sem argumentos — é o TUI normal do produto, NÃO
 // `agy usage`, que falha sem TTY e nem é o comando certo de quota — ver o
@@ -16,7 +18,7 @@ import { wirePtyHandle, type PtySpawn, type WiredPtyHandle } from './device-logi
 // além do HOME, porque a leitura de quota não executa nada perigoso — só lê
 // uma tela.
 
-export type AgyChatHandle = WiredPtyHandle
+export type AgyChatHandle = WiredPtyHandle & { span?: Span }
 
 // Terminal largo o bastante pra a tela do `/usage` (barras de progresso +
 // legendas) nunca quebrar em múltiplas linhas dentro do buffer — mesmo
@@ -39,6 +41,9 @@ export interface RunAgyChatCommandOptions {
   rows?: number
   /** Injetável para teste — NUNCA sobe o `agy` real numa suite de testes. */
   ptySpawnImpl?: PtySpawn
+  sessionId?: string
+  stepName?: string
+  modelId?: string
 }
 
 /**
@@ -71,5 +76,20 @@ export function runAgyChatCommand(options: RunAgyChatCommandOptions): AgyChatHan
     env,
   })
 
-  return wirePtyHandle(ptyProcess)
+  let span: Span | undefined
+  if (options.sessionId && options.stepName) {
+    span = {
+      traceId: options.sessionId,
+      spanId: crypto.randomUUID(),
+      name: options.stepName,
+      input: '',
+      output: '',
+      usage: { promptTokens: 0, completionTokens: 0 },
+      startTime: Date.now(),
+      endTime: Date.now(),
+      status: 'success', // will be evaluated later if implemented
+    }
+  }
+
+  return { ...wirePtyHandle(ptyProcess), span }
 }

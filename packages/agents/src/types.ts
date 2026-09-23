@@ -131,3 +131,18 @@ export interface StateGraph {
   addEdge(from: string, to: string): void
   run(initialState: MissionState): Promise<MissionState>
 }
+
+export interface Span {
+  traceId: string
+  spanId: string
+  name: string
+  input: string
+  output: string
+  usage: {
+    promptTokens: number
+    completionTokens: number
+  }
+  startTime: number
+  endTime: number
+  status: 'success' | 'error'
+}
