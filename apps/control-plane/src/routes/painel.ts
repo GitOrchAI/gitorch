@@ -1852,6 +1852,41 @@ export const painelRoutes = async (
       })
     }
   )
+
+  // GET /api/v1/painel/repositorio/:projectId/tudo/:numero — consulta completa (item + grafo)
+  app.get<{ Params: { projectId: string; numero: string }; Querystring: { tipo?: string } }>(
+    '/api/v1/painel/repositorio/:projectId/tudo/:numero',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+
+      const row = await app.prisma.project.findFirst({
+        where: { id: request.params.projectId, userId: ownerId, isActive: true },
+        select: { id: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      const tipoStr = request.query.tipo?.trim() || 'pr'
+      const tipoValido = tipoStr === 'pr' || tipoStr === 'issue' || tipoStr === 'alerta'
+      if (!tipoValido) return reply.code(400).send({ error: 'Tipo inválido.' })
+
+      const numeroNum = parseInt(request.params.numero, 10)
+      if (isNaN(numeroNum)) return reply.code(400).send({ error: 'Número inválido.' })
+
+      const { tudoSobreOItem } = await import('../services/tudo-sobre-o-item.js')
+      const tudo = await tudoSobreOItem({
+        prisma: app.prisma as never,
+        projectId: row.id,
+        tipo: tipoStr as 'pr' | 'issue' | 'alerta',
+        numero: numeroNum,
+      })
+
+      if (!tudo) return reply.code(404).send({ error: 'Item não encontrado.' })
+
+      return reply.send(tudo)
+    }
+  )
 }
 
 /**
