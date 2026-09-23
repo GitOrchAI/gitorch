@@ -11,6 +11,19 @@ export class GitHubWorkModel {
     return [...item.subIssueNodeIds]
   }
 
+  weightFor(item: GitHubWorkItem): number | undefined {
+    const match = item.body?.match(/\*\*(-?\d+(?:\.\d+)?)\*\*/)
+    if (match?.[1]) {
+      const num = Number(match[1])
+      if ([1, 2, 3, 5, 8, 13].includes(num)) return num
+    }
+    return undefined
+  }
+
+  iterationFor(item: GitHubWorkItem): string | undefined {
+    return item.milestone
+  }
+
   mergedAtFor(item: GitHubWorkItem): string | undefined {
     return item.mergedAt
   }

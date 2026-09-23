@@ -62,6 +62,7 @@ function normalizeIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
     blockedByNodeIds: namedNodeIdsOrNames(issue['blocked_by'], 'node_id'),
     blockingNodeIds: namedNodeIdsOrNames(issue['blocking'], 'node_id'),
     projectItemIds: namedNodeIdsOrNames(issue['project_items'], 'id'),
+    body: optionalString(issue, 'body') ?? '',
     milestone: optionalString(optionalRecord(issue['milestone']), 'title'),
   }
 
@@ -104,6 +105,7 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
       blockingNodeIds: [],
       projectItemIds: [],
       linkedPullRequestNodeIds: [pullRequestNodeId],
+      body: optionalString(pullRequest, 'body') ?? '',
       mergedAt,
       milestone: optionalString(optionalRecord(pullRequest['milestone']), 'title'),
     },
