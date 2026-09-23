@@ -94,6 +94,28 @@ describe('resolveRuntimeChain', () => {
   })
 })
 
+describe('resolveRuntimeChain com guestRuntimeConfig', () => {
+  test('usa a preferência do guest quando fornecida e válida', () => {
+    const projectCfg = { agents: { po: { runtime: 'codex' } } }
+    const guestCfg = { agents: { po: { runtime: 'claude', model: 'opus' } } }
+    const chain = resolveRuntimeChain('po', projectCfg, defaults, [], guestCfg)
+    expect(chain[0]).toEqual({ runtime: 'claude', model: 'opus' })
+  })
+
+  test('cai para a preferência do projeto se o guest não tiver configurado o papel', () => {
+    const projectCfg = { agents: { po: { runtime: 'codex' } } }
+    const guestCfg = { agents: { ra: { runtime: 'claude' } } }
+    const chain = resolveRuntimeChain('po', projectCfg, defaults, [], guestCfg)
+    expect(chain[0]).toEqual({ runtime: 'codex' })
+  })
+
+  test('cai para a preferência do projeto se guestRuntimeConfig for undefined', () => {
+    const projectCfg = { agents: { po: { runtime: 'codex' } } }
+    const chain = resolveRuntimeChain('po', projectCfg, defaults, [], undefined)
+    expect(chain[0]).toEqual({ runtime: 'codex' })
+  })
+})
+
 // Motor marcado inutilizável no boot (contrato-de-motor.ts: sem descobridor de
 // catálogo e/ou sem leitor de cota registrados) nunca pode ganhar um degrau na
 // cadeia — colocá-lo lá só para a missão morrer nele é o mesmo defeito medido
