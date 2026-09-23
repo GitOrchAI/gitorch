@@ -25,6 +25,81 @@ function buildDepsVigia(
 }
 
 describe('decidirAcaoNoPrOrfaoIntegrado', () => {
+  it('retoma PR se houver REQUEST_CHANGES no HEAD atual (mesmo após duas tentativas anteriores, limit bypass)', async () => {
+    const depsVigia = {
+      numero: 3953,
+      sinais: {
+        autor: 'jules_gitorch',
+        labels: ['gitorch:task', 'jules', 'gitorch:agent:qa'],
+        corpo: null,
+      },
+      temSessaoViva: false,
+      issueNumber: 3841,
+      issueAberta: true,
+      mergeable: true,
+      verificacao: 'verde',
+      paradoHaMs: 8 * 24 * 60 * 60 * 1000,
+      acoesAnteriores: 2, // MAX_ACOES_DO_VIGIA (normally would trigger escalation)
+      podeAbrirSessao: true,
+      origem: 'desconhecido',
+      branchDoPr: 'feat-zap',
+      branchNoRepoDoProjeto: true,
+      headSha: '42ae8dc7',
+      rascunho: false,
+    } as unknown as Parameters<
+      NonNullable<import('../services/vigia-do-pr.js').VigiaDoPrDeps['decidirAcaoNoPrOrfao']>
+    >[0]
+
+    const ghGetMock = vi.fn().mockImplementation(async (caminho: string) => {
+      if (caminho.includes('/pulls/3953/reviews')) {
+        return [
+          {
+            body: `<!-- gitorch:qa -->\nO parecer de teste diz que a entrega nao coube inteira na janela de revisao.`,
+            commit_id: '42ae8dc7',
+            submitted_at: new Date(Date.now() - 1000).toISOString(),
+          },
+        ]
+      }
+      return []
+    })
+
+    const prismaMock = {
+      agentQuestion: {
+        findFirst: vi.fn().mockResolvedValue(null), // No pending question
+      },
+      event: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { createdAt: new Date(Date.now() - 5000), payload: { vigiaDoPr: { acao: 'escalar' } } },
+          ]), // Escalation happened BEFORE QA review
+        count: vi.fn().mockResolvedValue(0), // Count of actions since QA review is 0
+      },
+      repoItem: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as import('@prisma/client').PrismaClient
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: {},
+      agora: new Date(),
+      projeto: { id: 'p1', wingId: 'repo', devPlan: 'free' },
+      token: 'tok',
+      depsVigia,
+      prisma: prismaMock,
+      ghGet: ghGetMock,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result.acao).toBe('retomar')
+    if (result.acao === 'retomar') {
+      expect(result.pedido).toContain('Divida esta entrega')
+      expect(result.pedido).toContain('partes menores')
+    }
+  })
+
   const agora = new Date('2026-09-15T12:00:00.000Z')
   const projeto = { id: 'proj-1', wingId: 'org/repo' }
   const token = 'gh-token'
