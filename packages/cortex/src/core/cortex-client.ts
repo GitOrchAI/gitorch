@@ -84,6 +84,11 @@ export class CortexClient {
     return this.selector.loadL2(wingId, roomId, hallId)
   }
 
+  getDrawerById(id: string): CortexDrawer | null {
+    this.ensureInitialized()
+    return this.getSqliteStore().getDrawerById(id)
+  }
+
   async search(wingId: string, query: string, limit: number): Promise<CortexSearchResult[]> {
     this.ensureInitialized()
     const embedding = await this.embeddingFn(query)
@@ -127,6 +132,7 @@ export class CortexClient {
   private storeLike(): StoreLike {
     return {
       getIdentity: (wingId: string) => this.getSqliteStore().getIdentity(wingId),
+      getDrawerById: (id: string) => this.getSqliteStore().getDrawerById(id),
       getTopDrawers: (wingId: string, limit: number) =>
         this.getSqliteStore().getTopDrawers(wingId, limit),
       getDrawersByScope: (wingId: string, roomId?: string, hallId?: string, limit?: number) =>

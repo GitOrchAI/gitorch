@@ -20,7 +20,7 @@ function abrirTudo(
   pedido: string | number,
   nos: readonly NoDaArvore[]
 ): { linhas: LinhaDaArvore[]; abertos: Set<string> } {
-  let abertos = new Set<string>()
+  const abertos = new Set<string>()
   let linhas = linhasVisiveis(pedido, nos, abertos)
   let mudou = true
   while (mudou) {

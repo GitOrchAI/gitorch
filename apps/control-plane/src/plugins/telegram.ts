@@ -11,11 +11,13 @@ import {
   tratarCliqueDeProjeto,
   answerTelegramCallback,
   zerarTecladoDaMensagem,
+  editTelegramMessageText,
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { nascerDesejo } from '../services/nascer-desejo.js'
 import { PRAZO_DO_PENDENTE_MS } from '../services/desejo-pendente.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
+import { SynapseClient, type CortexClientLike } from '@gitorch/synapse'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   resolveNotifyChatId,
@@ -914,6 +916,53 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
 
         for (const update of result.updates) {
           if (update.callback_query) {
+            const data = update.callback_query.data
+
+            if (data?.startsWith('wadd:')) {
+              await answerTelegramCallback({ botToken, callbackQueryId: update.callback_query.id })
+
+              if (update.callback_query.message?.chat) {
+                const chatId = String(update.callback_query.message.chat.id)
+                const messageId = update.callback_query.message.message_id
+
+                const drawerId = data.substring(5)
+                const drawer = app.cortex.getDrawerById(drawerId)
+                const itemContent = drawer?.content || 'Item desconhecido'
+
+                const dono = await resolveDonoDoChat(app.prisma, chatId)
+                if (dono.tipo === 'unico') {
+                  const projetos = await projetosParaDesejo(app.prisma, dono.userId)
+                  const wingId = projetos[0]?.repo
+                  const projectId = projetos[0]?.id
+
+                  if (wingId && projectId) {
+                    await nascerDesejo(
+                      {
+                        projectId,
+                        repo: wingId,
+                        titulo: itemContent,
+                        corpo: '',
+                        etiquetas: ['wishlist'],
+                      },
+                      {
+                        prisma: app.prisma,
+                        engineConnections: app.engineConnections,
+                        onInfo: (msg) => app.log.info(msg),
+                      }
+                    )
+                  }
+                }
+
+                await editTelegramMessageText({
+                  botToken,
+                  chatId,
+                  messageId,
+                  text: `Item '${itemContent.trim()}' adicionado à wishlist.`,
+                })
+              }
+              continue
+            }
+
             // O toque no botão de PROJETO vem primeiro porque ele reconhece o
             // que é seu pelo prefixo e devolve `null` para todo o resto — a
             // dúvida do PO, que viaja no mesmo canal, segue intacta logo abaixo.
@@ -1146,11 +1195,71 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                       text: 'Use /wishlist add <item>',
                     })
                   } else {
-                    await sendTelegramMessage({
-                      botToken,
-                      chatId: strChatId,
-                      text: `Item '${payload.trim()}' adicionado à wishlist.`,
+                    const projetos = await projetosParaDesejo(app.prisma, dono.userId)
+                    const wingId = projetos[0]?.repo
+                    const projectId = projetos[0]?.id
+
+                    if (!wingId || !projectId) {
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: 'Nenhum projeto ativo encontrado para adicionar à wishlist.',
+                      })
+                      break
+                    }
+
+                    const synapse = new SynapseClient({
+                      cortexClient: app.cortex as unknown as CortexClientLike,
                     })
+                    const queryStr = payload.trim()
+
+                    const results = await synapse.queryContextualSimilarity(wingId, queryStr, 5)
+
+                    if (results.length > 1) {
+                      const buttons = results.map((r) => [
+                        {
+                          text:
+                            (r.content || '').substring(0, 40) +
+                            ((r.content || '').length > 40 ? '...' : ''),
+                          callback_data: `wadd:${r.drawerId}`,
+                        },
+                      ])
+
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: `Foram encontrados múltiplos resultados para '${queryStr}'. Escolha um:`,
+                        teclado: { inline_keyboard: buttons },
+                      })
+                    } else if (results.length === 1) {
+                      const itemContent = results[0]?.content || ''
+                      await nascerDesejo(
+                        {
+                          projectId,
+                          repo: wingId,
+                          titulo: itemContent,
+                          corpo: '',
+                          etiquetas: ['wishlist'],
+                        },
+                        {
+                          prisma: app.prisma,
+                          engineConnections: app.engineConnections,
+                          onInfo: (msg) => app.log.info(msg),
+                        }
+                      )
+
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: `Item '${itemContent.trim()}' adicionado à wishlist.`,
+                      })
+                    } else {
+                      await sendTelegramMessage({
+                        botToken,
+                        chatId: strChatId,
+                        text: `Nenhum item encontrado para '${queryStr}'.`,
+                      })
+                    }
                   }
                   break
                 default:
