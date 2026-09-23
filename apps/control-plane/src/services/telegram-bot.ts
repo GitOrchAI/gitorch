@@ -1472,6 +1472,31 @@ async function registrarDesejoEmProjeto(
  * falha de edição no Telegram não pode desfazer nada nem derrubar o laço. Sem
  * `messageId` não há o que editar — some calado.
  */
+export async function editTelegramMessageText(input: {
+  botToken: string
+  chatId: string
+  messageId?: number | undefined
+  text: string
+  fetchImpl?: typeof fetch
+}): Promise<boolean> {
+  if (input.messageId === undefined) return false
+  const f = input.fetchImpl ?? fetch
+  try {
+    const resp = await f(`${API}/bot${input.botToken}/editMessageText`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: input.chatId,
+        message_id: input.messageId,
+        text: input.text,
+      }),
+    })
+    return resp.ok
+  } catch {
+    return false
+  }
+}
+
 export async function zerarTecladoDaMensagem(input: {
   botToken: string
   chatId: string

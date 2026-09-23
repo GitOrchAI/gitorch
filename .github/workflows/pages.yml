@@ -37,6 +37,9 @@ jobs:
       - name: Build static site
         working-directory: apps/web
         run: pnpm build
+      - name: Bypass Jekyll on GitHub Pages
+        working-directory: apps/web
+        run: touch out/.nojekyll
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
