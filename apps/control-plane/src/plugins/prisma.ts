@@ -124,11 +124,11 @@ export const prismaPlugin: FastifyPluginAsync = async (app) => {
 Object.assign(prismaPlugin, { [Symbol.for('skip-override')]: true })
 
 export async function approveGuestInDatabase(projectId: string, guestId: string, validUntil: Date) {
-  const invitation = await prisma.projectInvitation.findUnique({ where: { id: guestId } });
-  if (!invitation) throw new Error('Guest invitation not found');
-  const targets = Array.isArray(invitation.targetProjects) ? invitation.targetProjects : [];
+  const invitation = await prisma.projectInvitation.findUnique({ where: { id: guestId } })
+  if (!invitation) throw new Error('Guest invitation not found')
+  const targets = Array.isArray(invitation.targetProjects) ? invitation.targetProjects : []
   if (!targets.includes(projectId)) {
-    throw new Error('Guest invitation does not belong to this project');
+    throw new Error('Guest invitation does not belong to this project')
   }
   return prisma.projectInvitation.update({
     where: { id: guestId },

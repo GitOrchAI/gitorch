@@ -99,8 +99,11 @@ export function validateProjectInvitation(
   }
 }
 
-
-export async function approveGuestMembership(projectId: string, guestId: string, durationHours?: number) {
+export async function approveGuestMembership(
+  projectId: string,
+  guestId: string,
+  durationHours?: number
+) {
   const hours = durationHours ?? DEFAULT_GUEST_DURATION_HOURS
   const validUntil = new Date()
   validUntil.setHours(validUntil.getHours() + hours)
