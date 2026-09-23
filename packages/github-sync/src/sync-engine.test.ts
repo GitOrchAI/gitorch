@@ -136,12 +136,12 @@ test('executes operations sequentially with logical lock per item id', async () 
   const executionOrder: number[] = []
 
   const p1 = engine.executeWithLock('I_6', async () => {
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await new Promise((resolve) => setTimeout(resolve, 50))
     executionOrder.push(1)
   })
 
   const p2 = engine.executeWithLock('I_6', async () => {
-    await new Promise(resolve => setTimeout(resolve, 10))
+    await new Promise((resolve) => setTimeout(resolve, 10))
     executionOrder.push(2)
   })
 

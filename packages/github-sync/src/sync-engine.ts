@@ -86,16 +86,42 @@ export class GitHubSyncEngine {
     for (const operation of plan.operations) {
       if (operation.nodeId) {
         await this.executeWithLock(operation.nodeId, async () => {
-          if (operation.kind === 'update-project-field' && operation.projectId && operation.projectItemId && operation.fieldName) {
+          if (
+            operation.kind === 'update-project-field' &&
+            operation.projectId &&
+            operation.projectItemId &&
+            operation.fieldName
+          ) {
             const field = operation.fieldName
             const val = operation.value
 
             if (field === 'Status' && typeof val === 'string') {
-              await client.updateSingleSelectField({ projectId: operation.projectId, itemId: operation.projectItemId, fieldId: 'Status', optionId: val }).catch(() => {})
+              await client
+                .updateSingleSelectField({
+                  projectId: operation.projectId,
+                  itemId: operation.projectItemId,
+                  fieldId: 'Status',
+                  optionId: val,
+                })
+                .catch(() => {})
             } else if (field === 'Weight' && typeof val === 'number') {
-              await client.setNumberField({ projectId: operation.projectId, itemId: operation.projectItemId, fieldId: 'Weight', number: val }).catch(() => {})
+              await client
+                .setNumberField({
+                  projectId: operation.projectId,
+                  itemId: operation.projectItemId,
+                  fieldId: 'Weight',
+                  number: val,
+                })
+                .catch(() => {})
             } else if (field === 'Iteration' && typeof val === 'string') {
-              await client.setIterationField({ projectId: operation.projectId, itemId: operation.projectItemId, fieldId: 'Iteration', iterationId: val }).catch(() => {})
+              await client
+                .setIterationField({
+                  projectId: operation.projectId,
+                  itemId: operation.projectItemId,
+                  fieldId: 'Iteration',
+                  iterationId: val,
+                })
+                .catch(() => {})
             }
           }
         })

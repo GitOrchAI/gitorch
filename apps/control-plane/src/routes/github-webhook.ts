@@ -628,10 +628,6 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           const syncEvent = normalizer.normalize(envelope)
           const ingestResult = syncEngine.ingest(syncEvent)
 
-
-
-
-
           if (ingestResult.accepted) {
             app.log.info(
               { eventId: syncEvent.id, deliveryId: syncEvent.deliveryId },
