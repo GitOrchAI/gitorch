@@ -72,6 +72,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     '/api/waitlist',
     '/api/billing/webhook',
     '/api/v1/invitations/validate/',
+    '/api/v1/invites/claim/',
   ]
 
   // O front estático (wizard Next export) é servido pela MESMA origem e é
@@ -416,6 +417,85 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         projects,
         owner: user,
       })
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Project invitation expired') {
+        return reply.status(401).send({ error: 'Project invitation expired' })
+      }
+      if (err instanceof Error && err.name === 'CredentialDecryptError') {
+        return reply.status(403).send({ error: 'Invalid or tampered invitation token' })
+      }
+      return reply.status(400).send({ error: 'Invalid invitation token' })
+    }
+  })
+
+  app.get('/api/v1/invites/claim/:token', async (request, reply) => {
+    const { token } = request.params as { token: string }
+    try {
+      const payload = validateProjectInvitation(token)
+
+      const invitationRecord = await prisma.projectInvitation.findUnique({
+        where: { id: payload.invitationId },
+      })
+
+      if (
+        !invitationRecord ||
+        (invitationRecord.status !== 'pending' && invitationRecord.status !== 'PENDING_APPROVAL')
+      ) {
+        return reply.status(400).send({ error: 'Invitation already claimed or revoked' })
+      }
+
+      const projects = await prisma.project.findMany({
+        where: { id: { in: payload.targetProjects }, userId: payload.userId },
+        select: { id: true, wingId: true, name: true },
+      })
+
+      const user = await prisma.user.findUnique({
+        where: { id: payload.userId },
+        select: { id: true, githubLogin: true },
+      })
+
+      return reply.send({
+        invitation: {
+          expiresAt: payload.expiresAt,
+          email: payload.email,
+          githubLogin: payload.githubLogin,
+        },
+        projects,
+        owner: user,
+      })
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Project invitation expired') {
+        return reply.status(401).send({ error: 'Project invitation expired' })
+      }
+      if (err instanceof Error && err.name === 'CredentialDecryptError') {
+        return reply.status(403).send({ error: 'Invalid or tampered invitation token' })
+      }
+      return reply.status(400).send({ error: 'Invalid invitation token' })
+    }
+  })
+
+  app.post('/api/v1/invites/claim/:token', async (request, reply) => {
+    const { token } = request.params as { token: string }
+    try {
+      const payload = validateProjectInvitation(token)
+
+      const invitationRecord = await prisma.projectInvitation.findUnique({
+        where: { id: payload.invitationId },
+      })
+
+      if (
+        !invitationRecord ||
+        (invitationRecord.status !== 'pending' && invitationRecord.status !== 'PENDING_APPROVAL')
+      ) {
+        return reply.status(400).send({ error: 'Invitation already claimed or revoked' })
+      }
+
+      await prisma.projectInvitation.update({
+        where: { id: payload.invitationId },
+        data: { status: 'claimed' },
+      })
+
+      return reply.send({ status: 'claimed' })
     } catch (err) {
       if (err instanceof Error && err.message === 'Project invitation expired') {
         return reply.status(401).send({ error: 'Project invitation expired' })
