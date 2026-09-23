@@ -151,9 +151,8 @@ export function acordarSmComSeguranca(
 }
 
 export async function notifyOwnerGuestSubmission(
-  prisma: {
-    telegramLink: { findUnique: (args: { where: { userId: string } }) => Promise<{ chatId: bigint } | null> }
-  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  prisma: any,
   userId: string,
   guestName: string,
   engineMapping: Record<string, string> | undefined | null,
@@ -166,9 +165,9 @@ export async function notifyOwnerGuestSubmission(
     where: { userId },
   })
 
-  if (!link) return
+  if (!link || !link.chatId) return
 
-  const chatId = Number(link.chatId)
+  const chatId = String(link.chatId)
 
   let msg = `🎉 *Novo convidado finalizou o setup!*\n\n`
   msg += `*Nome:* ${guestName}\n\n`

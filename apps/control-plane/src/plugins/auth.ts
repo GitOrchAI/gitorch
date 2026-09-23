@@ -343,7 +343,9 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     })
 
     if (!project || project.userId !== resolvedUserId) {
-      const error = new Error('FORBIDDEN: You do not have permission to view proposals for this project') as Error & { statusCode: number }
+      const error = new Error(
+        'FORBIDDEN: You do not have permission to view proposals for this project'
+      ) as Error & { statusCode: number }
       error.statusCode = 403
       throw error
     }
@@ -370,14 +372,25 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       const safeRecord = { ...p }
 
       if (safeRecord.engineMapping) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const safeEngineMapping = { ...(safeRecord.engineMapping as Record<string, any>) }
         for (const key of Object.keys(safeEngineMapping)) {
-          if (typeof safeEngineMapping[key] === 'string' && safeEngineMapping[key].startsWith('gitorch_')) {
+          if (
+            typeof safeEngineMapping[key] === 'string' &&
+            safeEngineMapping[key].startsWith('gitorch_')
+          ) {
             safeEngineMapping[key] = safeEngineMapping[key].substring(0, 15) + '***'
-          } else if (typeof safeEngineMapping[key] === 'string' && safeEngineMapping[key].startsWith('sk-')) {
+          } else if (
+            typeof safeEngineMapping[key] === 'string' &&
+            safeEngineMapping[key].startsWith('sk-')
+          ) {
             safeEngineMapping[key] = safeEngineMapping[key].substring(0, 7) + '***'
-          } else if (typeof safeEngineMapping[key] === 'string' && safeEngineMapping[key].length > 10) {
-            safeEngineMapping[key] = safeEngineMapping[key].substring(0, 4) + '***' + safeEngineMapping[key].slice(-4)
+          } else if (
+            typeof safeEngineMapping[key] === 'string' &&
+            safeEngineMapping[key].length > 10
+          ) {
+            safeEngineMapping[key] =
+              safeEngineMapping[key].substring(0, 4) + '***' + safeEngineMapping[key].slice(-4)
           }
         }
         safeRecord.engineMapping = safeEngineMapping
@@ -567,8 +580,10 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         data: { status: 'claimed' },
       })
 
-      const engineMapping = invitationRecord.engineMapping as Record<string, string> | undefined | null
-      const executionLimits = invitationRecord.executionLimits as { memoryMax?: string; cpuMax?: string; pidsMax?: number } | undefined | null
+      const engineMapping = invitationRecord.engineMapping as
+        Record<string, string> | undefined | null
+      const executionLimits = invitationRecord.executionLimits as
+        { memoryMax?: string; cpuMax?: string; pidsMax?: number } | undefined | null
       const guestName = payload.githubLogin || payload.email || 'Convidado'
 
       await notifyOwnerGuestSubmission(
@@ -581,7 +596,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
       const targetProjectsArr = Array.isArray(invitationRecord.targetProjects)
         ? (invitationRecord.targetProjects as string[])
-        : ((invitationRecord.targetProjects as any)?.projects as string[]) || []
+        : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ((invitationRecord.targetProjects as any)?.projects as string[]) || []
 
       const firstTargetProject = targetProjectsArr[0]
       if (firstTargetProject) {
