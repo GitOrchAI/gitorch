@@ -2857,4 +2857,85 @@ describe('Rotas do painel do owner', () => {
       expect((await getTimeline()).json().eventos[0].texto).toBe('')
     })
   })
+
+  describe('GET /api/v1/painel/repositorio (Fase 6.2 do plano do repositório inteiro)', () => {
+    test('GET /api/v1/painel/repositorio junta ficha, origem e nota de segurança', async () => {
+      const p = await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ id: 'proj_1' }),
+            findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]),
+          },
+          repoItem: {
+            findMany: vi.fn().mockResolvedValue([
+              { tipo: 'pr', numero: 1, origem: 'jules' },
+              { tipo: 'alerta', numero: 2, origem: 'dependabot' },
+            ]),
+          },
+          event: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([
+                { payload: { chave: 'motor-do-proximo-passo:1:2', texto: 'aguardando' } },
+              ]),
+          },
+        })
+      )
+
+      const resp = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio?projeto=meu-projeto',
+        headers: authHeaders,
+      })
+
+      expect(resp.statusCode).toBe(200)
+      const body = resp.json()
+
+      expect(Array.isArray(body.itens)).toBe(true)
+      expect(body.itens).toHaveLength(2)
+
+      // pr tem evento
+      const p1 = body.itens.find((i: any) => i.numero === 1)
+      expect(p1.tipo).toBe('pr')
+      expect(p1.proximoPasso).toBe('aguardando')
+
+      // alerta não tem
+      const p2 = body.itens.find((i: any) => i.numero === 2)
+      expect(p2.proximoPasso).toBeNull()
+
+      expect(p.repoItem.findMany).toHaveBeenCalledWith({
+        where: { projectId: 'proj_1' },
+        orderBy: { atualizadoEm: 'desc' },
+        take: 200,
+      })
+    })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio?projeto=foo',
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('sem projeto na querystring → 400', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(400)
+      expect(res.json().error).toBe('Informe o projeto.')
+    })
+
+    test('projeto de outro dono → 404', async () => {
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio?projeto=foo',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(404)
+    })
+  })
 })

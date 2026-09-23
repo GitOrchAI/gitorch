@@ -9,6 +9,7 @@ export type TelaId =
   | 'pedidos'
   | 'decisoes'
   | 'entregas'
+  | 'repositorio'
   | 'custos'
   | 'motores'
   | 'projetos'
@@ -39,6 +40,7 @@ export const NAV: GrupoNav[] = [
       { id: 'pedidos', l: 'Pedidos', i: 'spark' },
       { id: 'decisoes', l: 'Decisões', i: 'inbox', badge: true },
       { id: 'entregas', l: 'Entregas', i: 'ship' },
+      { id: 'repositorio', l: 'Repositório', i: 'repo' },
     ],
   },
   {
