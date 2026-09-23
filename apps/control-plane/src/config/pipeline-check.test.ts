@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import Fastify from 'fastify'
-import { pipelineCheckEnabled } from './pipeline-check.js'
+import { pipelineCheckEnabled, parsePipelineError } from './pipeline-check.js'
 import { schedulerPlugin } from '../plugins/scheduler.js'
 import { telegramPlugin } from '../plugins/telegram.js'
 import { AgentQuestionService } from '../services/agent-question.js'
@@ -89,4 +89,24 @@ describe('telegram plugin em modo pipeline-check', () => {
       else process.env['NODE_ENV'] = originalNodeEnv
     }
   }, 2000)
+})
+
+describe('parsePipelineError', () => {
+  it('parses ci-do-cliente errors correctly and sets mitigation action', () => {
+    const error = new Error('pipeline error ci-do-cliente occurred')
+    const metadata = parsePipelineError(error, 'test-step')
+    expect(metadata.reason).toBe('pipeline error ci-do-cliente occurred')
+    expect(metadata.mitigationAction).toBe('Verify client CI pipeline configuration')
+    expect(metadata.requiresAction).toBe(true)
+    expect(metadata.step).toBe('test-step')
+  })
+
+  it('parses generic errors correctly and sets manual mitigation action', () => {
+    const error = new Error('generic error')
+    const metadata = parsePipelineError(error, 'test-step')
+    expect(metadata.reason).toBe('generic error')
+    expect(metadata.mitigationAction).toBe('Manual operator intervention required')
+    expect(metadata.requiresAction).toBe(true)
+    expect(metadata.step).toBe('test-step')
+  })
 })
