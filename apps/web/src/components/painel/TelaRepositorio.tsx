@@ -5,6 +5,7 @@
 import { Cabeca, Card } from './PainelUI'
 import { ROTAS } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
+import { Estados } from './PainelEstados'
 
 interface ItemDoRepositorio {
   tipo: string
@@ -26,30 +27,35 @@ export function TelaRepositorio() {
         Cada pedido, tarefa e alerta, com origem e próximo passo.
       </Cabeca>
       <Card flush titulo="Itens">
-        {dados.estado === 'ok' &&
-          dados.dados?.itens.map((item) => (
-            <div key={`${item.tipo}-${item.numero}`} className="pn-row static">
-              <span className="pn-grow">
-                <span className="pn-rt">
-                  {item.tipo === 'pr'
-                    ? 'Pull request'
-                    : item.tipo === 'issue'
-                      ? 'Tarefa'
-                      : 'Alerta'}{' '}
-                  #{item.numero}
-                </span>
-                <span className="pn-rs">
-                  {item.origem ?? 'origem ainda não classificada'} —{' '}
-                  {item.proximoPasso ?? 'sem decisão registrada ainda'}
-                </span>
-              </span>
-            </div>
-          ))}
-        {dados.estado === 'ok' && dados.dados?.itens.length === 0 && (
-          <p style={{ margin: 18, fontSize: 13.5, color: 'var(--gl-muted)' }}>
-            Nada por aqui ainda.
-          </p>
-        )}
+        <Estados r={dados} o_que="o repositório">
+          {(d) => (
+            <>
+              {d.itens.map((item) => (
+                <div key={`${item.tipo}-${item.numero}`} className="pn-row static">
+                  <span className="pn-grow">
+                    <span className="pn-rt">
+                      {item.tipo === 'pr'
+                        ? 'Pull request'
+                        : item.tipo === 'issue'
+                          ? 'Tarefa'
+                          : 'Alerta'}{' '}
+                      #{item.numero}
+                    </span>
+                    <span className="pn-rs">
+                      {item.origem ?? 'origem ainda não classificada'} —{' '}
+                      {item.proximoPasso ?? 'sem decisão registrada ainda'}
+                    </span>
+                  </span>
+                </div>
+              ))}
+              {d.itens.length === 0 && (
+                <p style={{ margin: 18, fontSize: 13.5, color: 'var(--gl-muted)' }}>
+                  Nada por aqui ainda.
+                </p>
+              )}
+            </>
+          )}
+        </Estados>
       </Card>
     </>
   )
