@@ -37,6 +37,10 @@ jobs:
       - name: Build static site
         working-directory: apps/web
         run: pnpm build
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/out
       - name: Assert basePath nas páginas (home + setup + painel)
         working-directory: apps/web
         env:
@@ -57,10 +61,6 @@ jobs:
             fi
             echo "OK: $f com assets em $BP"
           done
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: apps/web/out
   deploy:
     environment:
       name: github-pages
