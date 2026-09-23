@@ -12,7 +12,11 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
       if (request.url.endsWith('/invitations/create')) {
         return getCreateInvitationRateLimitMax()
       }
-      if (request.url.startsWith('/api/v1/invitations/validate/')) {
+      if (
+        request.url.startsWith('/api/v1/invitations/validate/') ||
+        request.url.startsWith('/api/v1/invites/claim/') ||
+        request.url.startsWith('/api/v1/invites/claim/')
+      ) {
         return getInvitationRateLimitMax(env)
       }
       return 1000
@@ -21,10 +25,15 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
     allowList: (request: FastifyRequest) =>
       !(
         request.url.startsWith('/api/v1/invitations/validate/') ||
+        request.url.startsWith('/api/v1/invites/claim/') ||
         request.url.endsWith('/invitations/create')
       ),
     keyGenerator: (request: FastifyRequest) => {
-      if (request.url.startsWith('/api/v1/invitations/validate/')) {
+      if (
+        request.url.startsWith('/api/v1/invitations/validate/') ||
+        request.url.startsWith('/api/v1/invites/claim/') ||
+        request.url.startsWith('/api/v1/invites/claim/')
+      ) {
         const match = request.url.match(/\/api\/v1\/invitations\/validate\/([^/?]+)/)
         if (match) {
           return `${request.ip}-${match[1]}`
@@ -35,7 +44,11 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
   })
 
   app.addHook('onRequest', async (request, reply) => {
-    if (request.url.startsWith('/api/v1/invitations/validate/')) {
+    if (
+      request.url.startsWith('/api/v1/invitations/validate/') ||
+      request.url.startsWith('/api/v1/invites/claim/') ||
+      request.url.startsWith('/api/v1/invites/claim/')
+    ) {
       const match = request.url.match(/\/api\/v1\/invitations\/validate\/([^/?]+)/)
       if (match) {
         const token = match[1]
