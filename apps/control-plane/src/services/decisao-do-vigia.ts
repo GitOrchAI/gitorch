@@ -210,7 +210,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     // Em vez de deixar aberto, tratamos como PR substituído.
     return {
       acao: 'fechar',
-      motivo: `A tarefa #${depsVigia.issueNumber} já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.`
+      motivo: `A tarefa #${depsVigia.issueNumber} já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.`,
     }
   }
   if (acaoMotor.acao === 'perguntar-se-cuida') {

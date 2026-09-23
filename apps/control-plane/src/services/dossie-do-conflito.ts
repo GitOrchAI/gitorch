@@ -64,7 +64,8 @@ Ação recomendada: Criar uma branch nova a partir da main apenas com o que falt
 
     if (filesDoPr.length > 10) {
       conclusao = 'escopo_misturado'
-      texto += '\n\nAnálise: O PR contém muitos arquivos modificados, indicando possível mistura de escopo.'
+      texto +=
+        '\n\nAnálise: O PR contém muitos arquivos modificados, indicando possível mistura de escopo.'
     } else {
       conclusao = 'conflito_legitimo'
       texto += '\n\nAnálise: Conflito legítimo. Por favor, resolva os conflitos nos arquivos acima.'

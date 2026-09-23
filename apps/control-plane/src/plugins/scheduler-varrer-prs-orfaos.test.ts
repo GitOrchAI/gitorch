@@ -120,7 +120,8 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
 
     expect(result).toEqual({
       acao: 'fechar',
-      motivo: 'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
+      motivo:
+        'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
     })
   })
 
@@ -148,7 +149,8 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
 
     expect(result).toEqual({
       acao: 'fechar',
-      motivo: 'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
+      motivo:
+        'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
     })
   })
 
