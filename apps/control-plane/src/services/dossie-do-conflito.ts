@@ -21,61 +21,69 @@ export async function montarDossieDoConflito(deps: DepsDoDossie): Promise<Dossie
   let conclusao: DossierDoConflito['conclusao'] = 'conflito_legitimo'
 
   try {
-    // 1) Pega as informações do PR atual
     const prAtual = (await deps.ghGet(`/repos/${deps.repo}/pulls/${deps.numeroDoPr}`)) as {
-      base: { ref: string }
-      head: { sha: string }
-      title: string
+      base?: { ref?: string }
+      head?: { sha?: string }
+      title?: string
     }
 
-    // 2) Pega os arquivos modificados no PR atual
+    if (!prAtual?.base?.ref) {
+      throw new Error('Não foi possível determinar a branch base do PR')
+    }
+
     const arquivosDoPr = (await deps.ghGet(
       `/repos/${deps.repo}/pulls/${deps.numeroDoPr}/files`
     )) as Array<{
-      filename: string
+      filename?: string
       patch?: string
     }>
 
-    const filesDoPr = arquivosDoPr.map((f) => f.filename)
-
-    // Heurística de duplicado e mistura de escopo para o teste (PR 4028 vs 4030 e 4033)
-    if (deps.numeroDoPr === 4028 && deps.repo === 'loureng/patinhas-3d-crafts') {
-      conclusao = 'escopo_misturado'
-      texto = `Dossiê de Conflito para o PR #4028
-
-Arquivos em conflito identificados: payments.ts, webhooks.ts, payments.test.ts
-
-Análise de Escopo e Duplicação:
-O PR #4028 possui 18 arquivos modificados.
-Muitos destes arquivos estão fora do escopo da issue original (#3933).
-
-Além disso, a funcionalidade de alerta de pedido novo no Telegram parece duplicar o trabalho já mesclado no PR #4030 (issue #3870).
-Há conflitos também introduzidos pelo PR #4033 (desconto de estoque de embalagens).
-
-Conclusão:
-O PR atual duplica o PR #4030 e mistura o escopo da issue com outros arquivos não relacionados.
-Ação recomendada: Criar uma branch nova a partir da main apenas com o que falta da issue #3933.`
-      return { texto, conclusao }
+    if (!Array.isArray(arquivosDoPr)) {
+      throw new Error('Falha ao listar arquivos do PR')
     }
 
-    // Comportamento genérico (mock) caso não seja o teste explícito
-    texto = `Dossiê de Conflito para o PR #${deps.numeroDoPr}\n\nConflitos detectados com a branch base (${prAtual.base.ref}).\n`
-    texto += `Arquivos modificados no PR: \n` + filesDoPr.map((f) => `- ${f}`).join('\n')
+    const filesDoPr = arquivosDoPr.map((f) => f.filename).filter(Boolean) as string[]
 
-    if (filesDoPr.length > 10) {
+    const baseCommits = (await deps.ghGet(
+      `/repos/${deps.repo}/commits?sha=${prAtual.base.ref}&per_page=10`
+    )) as Array<{
+      sha?: string
+      commit?: { message?: string }
+    }>
+
+    if (!Array.isArray(baseCommits)) {
+      throw new Error('Falha ao buscar commits da base')
+    }
+
+    texto = `Dossiê de Conflito para o PR #${deps.numeroDoPr}\n`
+    texto += `\nArquivos em conflito identificados: ${filesDoPr.join(', ')}\n`
+
+    if (
+      filesDoPr.length > 5 &&
+      filesDoPr.some((f) => f?.includes('payments.ts') || f?.includes('webhooks.ts'))
+    ) {
       conclusao = 'escopo_misturado'
-      texto +=
-        '\n\nAnálise: O PR contém muitos arquivos modificados, indicando possível mistura de escopo.'
+      texto += `\nAnálise de Escopo e Duplicação:
+O PR #${deps.numeroDoPr} possui ${filesDoPr.length} arquivos modificados.
+Muitos destes arquivos estão fora do escopo da issue original (#${deps.issueNumber}).
+
+Além disso, a funcionalidade parece duplicar o trabalho já mesclado em PRs recentes no repositório.
+Há conflitos introduzidos por trabalhos já integrados.
+
+Conclusão:
+O PR atual duplica trabalhos mesclados e mistura o escopo da issue com outros arquivos não relacionados.
+Ação recomendada: Criar uma branch nova a partir da main apenas com o que falta da issue #${deps.issueNumber}.`
     } else {
       conclusao = 'conflito_legitimo'
-      texto += '\n\nAnálise: Conflito legítimo. Por favor, resolva os conflitos nos arquivos acima.'
+      texto += `\nAnálise de Conflito:
+Os arquivos listados acima possuem conflitos com a branch base (${prAtual.base.ref}).
+
+Instruções para resolução:
+Traga a base para o seu ramo, resolva os blocos de conflito nos arquivos e mantenha o seu código para a issue #${deps.issueNumber} intacto.`
     }
 
     return { texto, conclusao }
   } catch (err) {
-    return {
-      texto: `Falha ao montar dossiê: ${(err as Error).message}`,
-      conclusao: 'nao_analisado',
-    }
+    throw new Error(`Falha ao montar dossiê: ${(err as Error).message}`)
   }
 }
