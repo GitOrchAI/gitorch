@@ -31,6 +31,7 @@ import {
 } from '../services/agent-question.js'
 import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
 import type { TelemetrySpanEvent, TelemetryQuotaAlertEvent } from './sse.js'
+
 import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-errors.js'
 import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
 import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
@@ -81,8 +82,8 @@ const POLL_TIMEOUT_SEC = 30
 const ERROR_BACKOFF_MS = 15_000
 
 // Dedup state for telemetry alerts to prevent spam (by missionId/wingId and event type)
-const alertDedupState = new Map<string, number>();
-const DEDUP_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const alertDedupState = new Map<string, number>()
+const DEDUP_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutes
 
 // Periodic cleanup to avoid memory leak
 setInterval(() => {
@@ -96,12 +97,12 @@ setInterval(() => {
 
 function formatObservabilityAlert(event: TelemetrySpanEvent | TelemetryQuotaAlertEvent): string {
   if (event.type === 'telemetry:quota_alert') {
-    return `🚨 Alerta de Orçamento Atingido\n\nNó: ${event.role || 'desconhecido'}\nCusto: ${event.used || 0} / ${event.limit || 'desconhecido'} tokens\nMotivo: ${event.reason}\nOrdem: ${event.missionId}`;
+    return `🚨 Alerta de Orçamento Atingido\n\nNó: ${event.role || 'desconhecido'}\nCusto: ${event.used || 0} / ${event.limit || 'desconhecido'} tokens\nMotivo: ${event.reason}\nOrdem: ${event.missionId}`
   }
   if (event.type === 'telemetry:span') {
-    return `❌ Falha de Execução no Nó\n\nNó: ${event.role || 'desconhecido'}\nErro: ${event.error}\nCusto acumulado: ${event.cost || 0} tokens\nOrdem: ${event.missionId}`;
+    return `❌ Falha de Execução no Nó\n\nNó: ${event.role || 'desconhecido'}\nErro: ${event.error}\nCusto acumulado: ${event.cost || 0} tokens\nOrdem: ${event.missionId}`
   }
-  return `Alerta de Observabilidade: ${JSON.stringify(event)}`;
+  return `Alerta de Observabilidade: ${JSON.stringify(event)}`
 }
 
 /**
@@ -783,53 +784,11 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // do PR #394 (31/08, 502 no site). `onReady` agenda o mesmo callback sem bootar o root.
   app.addHook('onReady', async () => {
     if ('emitter' in app) {
-      // @ts-ignore
-      app.emitter.on('pipeline.error', async (metadata: PipelineErrorMetadata) => {
-        const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
-        if (!ownerEmail) return
-
-        const user = await app.prisma.user.findUnique({
-          where: { email: ownerEmail },
-          select: { id: true, email: true },
-        })
-        if (!user) return
-
-        const chatId = await resolveNotifyChatId(app.prisma, {
-          userId: user.id,
-          user: { email: user.email },
-        })
-        if (!chatId) return
-
-        // Extrai o code, remove a chave se for algo como "CODE: message"
-        let errorCode = metadata.reason
-        const match = /^([A-Z_]+):\s/.exec(errorCode)
-        if (match && match[1]) {
-          errorCode = match[1]
-        }
-
-        const translatedReason = traduzirErroParaUsuario(errorCode as SetupErrorCode | null)
-        const actionRequired = metadata.requiresAction ? 'Sim' : 'Não'
-        const text = `🚨 Sua entrega falhou no passo ${metadata.step}. O que quebrou: ${translatedReason}. O que fizemos: ${metadata.mitigationAction}. Ação necessária: ${actionRequired}`
-
-        app.log.info({ payload: text }, '[Telegram] enviando aviso de falha na pipeline')
-
-        await sendTelegramMessage({
-          botToken,
-          chatId,
-          text,
-        })
-      })
-
-      // @ts-ignore
-      app.emitter.on('telemetry:quota_alert', async (event: TelemetryQuotaAlertEvent) => {
-        try {
+      ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+        'pipeline.error',
+        async (metadata: PipelineErrorMetadata) => {
           const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
           if (!ownerEmail) return
-
-          const dedupKey = `${event.missionId}:quota_alert`
-          const lastSent = alertDedupState.get(dedupKey)
-          if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
-          alertDedupState.set(dedupKey, Date.now())
 
           const user = await app.prisma.user.findUnique({
             where: { email: ownerEmail },
@@ -843,57 +802,112 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           })
           if (!chatId) return
 
-          const text = formatObservabilityAlert(event)
-          app.log.info({ payload: text }, '[Telegram] enviando aviso de teto de consumo atingido')
+          // Extrai o code, remove a chave se for algo como "CODE: message"
+          let errorCode = metadata.reason
+          const match = /^([A-Z_]+):\s/.exec(errorCode)
+          if (match && match[1]) {
+            errorCode = match[1]
+          }
+
+          const translatedReason = traduzirErroParaUsuario(errorCode as SetupErrorCode | null)
+          const actionRequired = metadata.requiresAction ? 'Sim' : 'Não'
+          const text = `🚨 Sua entrega falhou no passo ${metadata.step}. O que quebrou: ${translatedReason}. O que fizemos: ${metadata.mitigationAction}. Ação necessária: ${actionRequired}`
+
+          app.log.info({ payload: text }, '[Telegram] enviando aviso de falha na pipeline')
 
           await sendTelegramMessage({
             botToken,
             chatId,
             text,
           })
-        } catch (err) {
-          app.log.error(err, '[Telegram] falha ao processar evento de quota')
         }
-      })
+      )
 
-      // @ts-ignore
-      app.emitter.on('telemetry:span', async (event: TelemetrySpanEvent) => {
-        try {
-          // Only alert on non-recoverable errors
-          if (!event.error) return
+      if ('emitter' in app) {
+        ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+          'telemetry:quota_alert',
+          async (event: TelemetryQuotaAlertEvent) => {
+            try {
+              const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
+              if (!ownerEmail) return
 
-          const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
-          if (!ownerEmail) return
+              const dedupKey = `${event.missionId}:quota_alert`
+              const lastSent = alertDedupState.get(dedupKey)
+              if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
+              alertDedupState.set(dedupKey, Date.now())
 
-          const dedupKey = `${event.missionId}:span_error`
-          const lastSent = alertDedupState.get(dedupKey)
-          if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
-          alertDedupState.set(dedupKey, Date.now())
+              const user = await app.prisma.user.findUnique({
+                where: { email: ownerEmail },
+                select: { id: true, email: true },
+              })
+              if (!user) return
 
-          const user = await app.prisma.user.findUnique({
-            where: { email: ownerEmail },
-            select: { id: true, email: true },
-          })
-          if (!user) return
+              const chatId = await resolveNotifyChatId(app.prisma, {
+                userId: user.id,
+                user: { email: user.email },
+              })
+              if (!chatId) return
 
-          const chatId = await resolveNotifyChatId(app.prisma, {
-            userId: user.id,
-            user: { email: user.email },
-          })
-          if (!chatId) return
+              const text = formatObservabilityAlert(event)
+              app.log.info(
+                { payload: text },
+                '[Telegram] enviando aviso de teto de consumo atingido'
+              )
 
-          const text = formatObservabilityAlert(event)
-          app.log.info({ payload: text }, '[Telegram] enviando aviso de erro de execução no nó')
+              await sendTelegramMessage({
+                botToken,
+                chatId,
+                text,
+              })
+            } catch (err) {
+              app.log.error(err, '[Telegram] falha ao processar evento de quota')
+            }
+          }
+        )
+      } // End of if ('emitter' in app) for quota_alert
 
-          await sendTelegramMessage({
-            botToken,
-            chatId,
-            text,
-          })
-        } catch (err) {
-          app.log.error(err, '[Telegram] falha ao processar evento de span de telemetria')
-        }
-      })
+      if ('emitter' in app) {
+        ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+          'telemetry:span',
+          async (event: TelemetrySpanEvent) => {
+            try {
+              // Only alert on non-recoverable errors
+              if (!event.error) return
+
+              const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
+              if (!ownerEmail) return
+
+              const dedupKey = `${event.missionId}:span_error`
+              const lastSent = alertDedupState.get(dedupKey)
+              if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
+              alertDedupState.set(dedupKey, Date.now())
+
+              const user = await app.prisma.user.findUnique({
+                where: { email: ownerEmail },
+                select: { id: true, email: true },
+              })
+              if (!user) return
+
+              const chatId = await resolveNotifyChatId(app.prisma, {
+                userId: user.id,
+                user: { email: user.email },
+              })
+              if (!chatId) return
+
+              const text = formatObservabilityAlert(event)
+              app.log.info({ payload: text }, '[Telegram] enviando aviso de erro de execução no nó')
+
+              await sendTelegramMessage({
+                botToken,
+                chatId,
+                text,
+              })
+            } catch (err) {
+              app.log.error(err, '[Telegram] falha ao processar evento de span de telemetria')
+            }
+          }
+        )
+      } // End of if ('emitter' in app) for span
     }
   })
 

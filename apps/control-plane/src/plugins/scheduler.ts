@@ -3006,10 +3006,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           type: 'telemetry:quota_alert',
           missionId: `no-mission-${project.wingId}`,
           role,
-          reason: `Orçamento do plano ${plan.id} atingido para o usuário ${project.userId}`
+          reason: `Orçamento do plano ${plan.id} atingido para o usuário ${project.userId}`,
         }
-        if ('broadcastEvent' in app) app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEventBudget)
-        if ('emitter' in app) (app as any).emitter.emit('telemetry:quota_alert', quotaEventBudget)
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEventBudget)
+        if ('emitter' in app)
+          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:quota_alert',
+            quotaEventBudget
+          )
 
         return { triggered: false, reason: 'plan-budget' }
       }
@@ -3148,10 +3153,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           type: 'telemetry:quota_alert',
           missionId: `no-mission-${project.wingId}`, // Stable missionId for deduplication
           role,
-          reason: `Gasto bloqueado (${decision.reason}) para o projeto ${project.id}`
+          reason: `Gasto bloqueado (${decision.reason}) para o projeto ${project.id}`,
         }
-        if ('broadcastEvent' in app) app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEvent)
-        if ('emitter' in app) (app as any).emitter.emit('telemetry:quota_alert', quotaEvent)
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEvent)
+        if ('emitter' in app)
+          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:quota_alert',
+            quotaEvent
+          )
 
         return { triggered: false, reason: decision.reason ?? 'spend-blocked' }
       }
@@ -3382,10 +3392,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const spanStartEvent: TelemetrySpanEvent = {
           type: 'telemetry:span',
           missionId,
-          role
+          role,
         }
-        if ('broadcastEvent' in app) app.broadcastEvent(project.wingId, 'telemetry:span', spanStartEvent)
-        if ('emitter' in app) (app as any).emitter.emit('telemetry:span', spanStartEvent)
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:span', spanStartEvent)
+        if ('emitter' in app)
+          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:span',
+            spanStartEvent
+          )
 
         const credentialRef = {
           connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
@@ -4703,8 +4718,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 cost: c.tokensUsed ?? 0,
                 latency: Date.now() - spanExecutionStartTime,
               }
-              if ('broadcastEvent' in app) app.broadcastEvent(project.wingId, 'telemetry:span', spanSuccessEvent)
-              if ('emitter' in app) (app as any).emitter.emit('telemetry:span', spanSuccessEvent)
+              if ('broadcastEvent' in app)
+                app.broadcastEvent(project.wingId, 'telemetry:span', spanSuccessEvent)
+              if ('emitter' in app)
+                (app as unknown as { emitter: { emit: Function } }).emitter.emit(
+                  'telemetry:span',
+                  spanSuccessEvent
+                )
             } catch (e) {
               app.log.warn({ e }, `[Scheduler] medição de consumo falhou para ${missionId}`)
             }
@@ -4779,11 +4799,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           role,
           error: lastError,
           cost: 0,
-          latency: Date.now() - spanExecutionStartTime
+          latency: Date.now() - spanExecutionStartTime,
         }
-        if ('broadcastEvent' in app) app.broadcastEvent(project.wingId, 'telemetry:span', spanErrorEvent)
+        if ('broadcastEvent' in app)
+          app.broadcastEvent(project.wingId, 'telemetry:span', spanErrorEvent)
         if ('emitter' in app && !isEngineFault(err, lastError)) {
-          (app as any).emitter.emit('telemetry:span', spanErrorEvent)
+          ;(app as unknown as { emitter: { emit: Function } }).emitter.emit(
+            'telemetry:span',
+            spanErrorEvent
+          )
         }
 
         // Classificação de origem do erro (Lei dos trilhos) — ver isEngineFault:
