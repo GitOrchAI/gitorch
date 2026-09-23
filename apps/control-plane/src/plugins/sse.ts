@@ -14,6 +14,24 @@ interface EventMessage {
   comment?: string
 }
 
+export interface TelemetrySpanEvent {
+  type: 'telemetry:span'
+  missionId: string
+  role?: string
+  cost?: number
+  latency?: number
+  error?: string
+}
+
+export interface TelemetryQuotaAlertEvent {
+  type: 'telemetry:quota_alert'
+  missionId: string
+  role?: string
+  limit?: number
+  used?: number
+  reason: string
+}
+
 interface SseClient {
   id: string
   wingId: string
