@@ -87,7 +87,7 @@ describe('Mission endpoints limits', () => {
           if (!dbUser || !dbUser.plan) return
 
           const { canExecuteMissionToday } = await import('./lib/entitlements.js')
-          const { canExecuteMission, reserveMissionTokens } = await import('./lib/spend-guard.js')
+          const { canExecuteMission, reserveMissionTokens, TOKENS_RESERVE_ESTIMATE } = await import('./lib/spend-guard.js')
 
           const plan = dbUser.plan
 
@@ -126,7 +126,6 @@ describe('Mission endpoints limits', () => {
             })
             const tokensSpent = agg._sum.tokensUsed ?? 0
 
-            const TOKENS_RESERVE_ESTIMATE = 10000
             if (!canExecuteMission(userId, TOKENS_RESERVE_ESTIMATE, tokenBudget, tokensSpent)) {
               reply
                 .code(402)
