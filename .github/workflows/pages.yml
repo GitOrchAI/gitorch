@@ -22,6 +22,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     environment: github-pages
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     env:
       NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
       NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH || format('/{0}', github.event.repository.name) }}
@@ -51,6 +55,7 @@ jobs:
           NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH || format('/{0}', github.event.repository.name) }}
         run: |
           BP="${NEXT_PUBLIC_BASE_PATH:-}"
+          if [ "$BP" = "/" ]; then BP=""; fi
           if [ -z "$BP" ]; then echo "Sem basePath (domínio raiz) — nada a checar."; exit 0; fi
           for f in index.html setup/index.html painel/index.html; do
             [ -f "out/$f" ] || { echo "::error::out/$f não existe (página faltando no build)."; exit 1; }
@@ -83,11 +88,13 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: deploy
     runs-on: ubuntu-latest
+    environment: github-pages
     steps:
       - name: Verifica páginas publicadas + assets (home + setup + painel)
         run: |
           HOST="https://${{ github.repository_owner }}.github.io"
           PREFIX="${{ vars.GITORCH_PAGES_BASE_PATH || format('/{0}', github.event.repository.name) }}"
+          if [ "$PREFIX" = "/" ]; then PREFIX=""; fi
           fail=0
           for path in "/" "/setup" "/painel"; do
             if [ "$path" = "/" ]; then
