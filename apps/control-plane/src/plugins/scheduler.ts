@@ -4498,7 +4498,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           })
 
           if (result.span) {
-            await atualizarSaldoDaOrdem(result.span, result.runtime, missionId, app.prisma as PrismaClient).catch(e => {
+            await atualizarSaldoDaOrdem(result.span, result.runtime || sel.runtime, missionId, app.prisma as PrismaClient).catch(e => {
               app.log.warn({ e }, `[Scheduler] Erro ao atualizar saldo do span para ${missionId}`)
             })
           }
