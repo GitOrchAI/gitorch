@@ -1,4 +1,11 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+  scryptSync,
+  timingSafeEqual,
+} from 'node:crypto'
 
 // Cifragem de credenciais de motor em repouso (AES-256-GCM autenticado).
 // A chave vem de GITORCH_CREDENTIAL_KEY (32 bytes em hex[64] ou base64). Sem

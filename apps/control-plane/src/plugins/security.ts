@@ -19,7 +19,10 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
     },
     timeWindow: '1 minute',
     allowList: (request: FastifyRequest) =>
-      !(request.url.startsWith('/api/v1/invitations/validate/') || request.url.endsWith('/invitations/create')),
+      !(
+        request.url.startsWith('/api/v1/invitations/validate/') ||
+        request.url.endsWith('/invitations/create')
+      ),
     keyGenerator: (request: FastifyRequest) => {
       if (request.url.startsWith('/api/v1/invitations/validate/')) {
         const match = request.url.match(/\/api\/v1\/invitations\/validate\/([^/?]+)/)
@@ -28,7 +31,7 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
         }
       }
       return request.ip
-    }
+    },
   })
 
   app.addHook('onRequest', async (request, reply) => {
