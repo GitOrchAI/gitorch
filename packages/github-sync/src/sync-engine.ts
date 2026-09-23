@@ -54,6 +54,8 @@ export class GitHubSyncEngine {
         projectItemId,
         fieldName: 'Status',
         value: status,
+        wishCreatedAt: event.workItem.wishCreatedAt,
+        mergedAt: event.workItem.mergedAt,
       })
 
       if (weight !== undefined) {

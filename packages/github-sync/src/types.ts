@@ -136,4 +136,6 @@ export interface GitHubSyncOperation {
   projectItemId?: string
   fieldName?: ProjectV2FieldName
   value?: string | number
+  wishCreatedAt?: string
+  mergedAt?: string
 }
