@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, test, it, expect, beforeEach, afterEach } from 'vitest'
 import Fastify, { FastifyInstance } from 'fastify'
-import { securityHookPlugin } from './security.js'
+import { securityHookPlugin, revokeGuestAccess, clearRevokedGuests } from './security.js'
 
 describe('Security Plugin', () => {
   let app: FastifyInstance
@@ -74,5 +74,42 @@ describe('Security Plugin', () => {
       error: 'Bad Request',
       message: 'Tab characters are not allowed in headers',
     })
+  })
+})
+
+describe('Guest Revocation in Security Plugin', () => {
+  let app: FastifyInstance
+
+  beforeEach(async () => {
+    app = Fastify()
+    app.decorateRequest(
+      'user',
+      null as unknown as { id: string; wingId: string; email?: string } | undefined
+    )
+    app.addHook('onRequest', async (req) => {
+      req.user = { id: 'revoked-guest', wingId: 'w_123', email: 'guest@test.com' }
+    })
+    await app.register(securityHookPlugin)
+    app.get('/test', async (_request, _reply) => {
+      return { success: true }
+    })
+    clearRevokedGuests()
+  })
+
+  afterEach(async () => {
+    await app.close()
+    clearRevokedGuests()
+  })
+
+  test('should block revoked guest access', async () => {
+    revokeGuestAccess('revoked-guest', 'testing block')
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/test',
+    })
+
+    expect(response.statusCode).toBe(403)
+    expect(response.json().message).toBe('Guest access revoked')
   })
 })

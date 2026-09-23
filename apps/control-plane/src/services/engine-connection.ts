@@ -345,7 +345,7 @@ export class EngineConnectionService {
 
     // O blob guarda caminhos relativos ao HOME; restaura na raiz do HOME alvo.
     const blob = decryptCredential(record.encryptedCredential)
-    await restoreDirectory(blob, homeDir)
+    await restoreDirectory(blob, homeDir, record.userId || undefined)
     return true
   }
 
@@ -361,7 +361,7 @@ export class EngineConnectionService {
     })
     if (!record?.encryptedCredential || record.status !== 'connected') return null
     const blob = decryptCredential(record.encryptedCredential)
-    const token = readArchiveEntry(blob, '.gitorch/gh-token')
+    const token = readArchiveEntry(blob, '.gitorch/gh-token', record.userId || undefined)
     return token?.trim() ?? null
   }
 
@@ -385,13 +385,18 @@ export class EngineConnectionService {
       credentialKind: string | null
       envVarName: string | null
       expiresAt: Date | null
+      userId?: string
     } | null
   ): string | null {
     if (!record?.encryptedCredential || record.status !== 'connected') return null
     if (record.credentialKind !== 'env' || !record.envVarName) return null
     if (record.expiresAt && record.expiresAt.getTime() < Date.now()) return null
     const blob = decryptCredential(record.encryptedCredential)
-    const token = readArchiveEntry(blob, path.join('.gitorch', 'env', record.envVarName))
+    const token = readArchiveEntry(
+      blob,
+      path.join('.gitorch', 'env', record.envVarName),
+      record.userId || undefined
+    )
     return token?.trim() || null
   }
 
