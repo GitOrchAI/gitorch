@@ -114,6 +114,7 @@ export interface MissionState {
   workspacePath?: string
   result?: unknown
   timeoutMs?: number
+  qaRetries?: number
 }
 
 export interface NodeTransition {

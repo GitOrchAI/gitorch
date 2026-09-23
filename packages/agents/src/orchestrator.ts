@@ -12,6 +12,8 @@ import {
   withBackoffRetry,
 } from './runtime-adapter'
 
+import { evaluateNodeTransition } from '@gitorch/cadence'
+
 import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
 
@@ -83,6 +85,63 @@ export class RequirementsAnalystNode extends BaseAgentNode {
 
 export class QualityAnalystNode extends BaseAgentNode {
   role = 'qa' as const
+
+  override async execute(state: MissionState): Promise<NodeTransition> {
+    const transition = await super.execute(state)
+    const result = transition.state.result as RuntimeExecutionResult
+    let qaVerdict: 'approve' | 'request_changes' | undefined
+    let qaComment: unknown
+    try {
+      const parsed = JSON.parse(result.output) as {
+        verdict?: string
+        comment?: unknown
+      }
+      if (parsed.verdict === 'request_changes' || parsed.verdict === 'approve') {
+        qaVerdict = parsed.verdict
+        qaComment = parsed.comment
+      }
+    } catch {
+      // Output is not valid JSON or doesn't match form
+    }
+
+    const evalResult = evaluateNodeTransition({
+      role: 'qa',
+      exitCriteriaMet: transition.nextRole === 'done',
+      guardrailPassed: true,
+      nextNode: 'done',
+      qaVerdict,
+      qaRetries: state.qaRetries || 0,
+    })
+
+    if ('nextNode' in evalResult) {
+      transition.nextRole = evalResult.nextNode as F6AgentRole | 'done' | 'failed'
+      if (evalResult.nextNode === 'qa_failed_max_retries') {
+        transition.nextRole = 'failed'
+        transition.state.mission.status = 'qa_failed_max_retries'
+      } else if (evalResult.nextNode === 'dev') {
+        // 'dev' is handled as nextRole but F6AgentRole doesn't include 'dev' currently.
+        // Wait, NodeTransition nextRole is F6AgentRole | 'done' | 'failed'
+        // F6_AGENT_ROLES = ['po', 'ra', 'sm', 'qa']
+        // We will assert 'dev' as any here, but it's an orchestrator detail.
+        // We should just assign it as 'dev' as any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        transition.nextRole = 'dev' as any
+        transition.state.qaRetries = (state.qaRetries || 0) + 1
+        if (qaComment) {
+          transition.state.mission = {
+            ...transition.state.mission,
+            prompt:
+              transition.state.mission.prompt +
+              `\n\n### QA Rework Instructions (Attempt ${transition.state.qaRetries}):\n${JSON.stringify(qaComment, null, 2)}`,
+          }
+        }
+      }
+    } else {
+      transition.nextRole = 'failed'
+      if (result) result.errorDetails = evalResult.error
+    }
+    return transition
+  }
 }
 
 export class DeveloperNode extends BaseAgentNode {
