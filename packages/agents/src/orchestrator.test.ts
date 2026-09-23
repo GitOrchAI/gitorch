@@ -151,12 +151,12 @@ test('bubbles up step-level failure and recovery status to the workspace provide
       connectionId: 'conn-codex',
       ownerScope: 'project',
       runtime: 'codex',
-      providedSecrets: [],
+      providedSecrets: ['fake-secret'],
     },
     userId: 'qa-user',
   })
 
-  expect(handleRuntimeFailure).toHaveBeenCalledWith('Adapter explosion', 'execute-runner', false)
+  expect(handleRuntimeFailure).toHaveBeenCalledWith('Error: Adapter explosion', 'run-mission', false)
 })
 
 test('retries runMissionCore when adapter returns waiting_quota and scales backoff exponentially', async () => {
@@ -192,12 +192,12 @@ test('retries runMissionCore when adapter returns waiting_quota and scales backo
       connectionId: 'conn-codex',
       ownerScope: 'organization',
       runtime: 'codex',
-      providedSecrets: [],
+      providedSecrets: ['fake-secret'],
     },
   })
 
   // Advance timers enough to trigger the backoff setTimeout
-  await vi.advanceTimersByTimeAsync(5000)
+  await vi.advanceTimersByTimeAsync(15000)
   const result = await runPromise
 
   vi.useRealTimers()
@@ -242,7 +242,7 @@ test('uses an injected workspace provider instead of the default Firecracker man
       connectionId: 'conn-codex',
       ownerScope: 'project',
       runtime: 'codex',
-      providedSecrets: [],
+      providedSecrets: ['fake-secret'],
     },
     userId: 'scheduler-user',
   })

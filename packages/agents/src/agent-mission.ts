@@ -133,7 +133,11 @@ export async function resumeMissionFromCheckpoint(
 
     // Gravacao do checkpoint ocorre de forma assincrona sem interromper runtime
     synapseClient
-      .recordStateCheckpoint(missionId, prevRole, finalState as unknown as Record<string, unknown>)
+      .recordStateCheckpoint(missionId, prevRole, {
+        ...(finalState as unknown as Record<string, unknown>),
+        guestId: finalState.mission.userId,
+        engine: finalState.mission.runtime.runtime,
+      })
       .catch(() => {})
   }
 

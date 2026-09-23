@@ -178,6 +178,16 @@ export class AgentOrchestrator {
     let result: RuntimeExecutionResult | undefined
 
     try {
+      if (
+        !mission.credentialRef.providedSecrets ||
+        mission.credentialRef.providedSecrets.length === 0
+      ) {
+        throw Object.assign(
+          new Error(`Credencial ausente para o motor ${mission.runtime.runtime}`),
+          { code: 'UNAUTHORIZED' }
+        )
+      }
+
       const adapter = this.registry.resolve(mission.runtime.runtime)
 
       result = await withBackoffRetry(

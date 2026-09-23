@@ -82,9 +82,15 @@ export function resolveRuntimeChain(
    * a preferência de ninguém — ela só existe para o dia em que a preferência
    * não pode rodar.
    */
-  motoresConectados: readonly string[] = []
+  motoresConectados: readonly string[] = [],
+  guestRuntimeConfig?: unknown
 ): RuntimeSelection[] {
-  const pref = readAgentsConfig(runtimeConfig)[role] ?? {}
+  // If guest config is provided and it has valid agent settings for this role, we use it.
+  // Otherwise we fallback to the project's runtime config.
+  const guestPref = guestRuntimeConfig ? readAgentsConfig(guestRuntimeConfig)[role] : undefined
+  const projectPref = readAgentsConfig(runtimeConfig)[role]
+
+  const pref = guestPref && Object.keys(guestPref).length > 0 ? guestPref : (projectPref ?? {})
   const chain: RuntimeSelection[] = []
 
   const push = (runtime?: string, model?: string, effort?: string) => {
@@ -191,10 +197,11 @@ export function resolveRuntimeChain(
 export function resolvePrimaryRuntime(
   role: string,
   runtimeConfig: unknown,
-  defaults: ResolverDefaults
+  defaults: ResolverDefaults,
+  guestRuntimeConfig?: unknown
 ): RuntimeSelection {
   const safeRole: F6AgentRole = isF6AgentRole(role) ? role : 'ra'
-  return resolveRuntimeChain(safeRole, runtimeConfig, defaults)[0] as RuntimeSelection
+  return resolveRuntimeChain(safeRole, runtimeConfig, defaults, [], guestRuntimeConfig)[0] as RuntimeSelection
 }
 
 // Erros que justificam trocar de motor (cota esgotada, rate limit, auth). Erros

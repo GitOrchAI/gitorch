@@ -3043,7 +3043,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       role,
       project.runtimeConfig,
       RESOLVER_DEFAULTS,
-      motoresConectados
+      motoresConectados,
+      (project.user as unknown as { runtimeConfig?: unknown })?.runtimeConfig
     )
     const primary = chain[0] as { runtime: string; model?: string; effort?: string }
 
