@@ -108,6 +108,29 @@ describe('runAgyChatCommand', () => {
     expect((options as { rows?: number }).rows).toBe(24)
   })
 
+  it('retorna um objeto de span quando sessionId e stepName sao fornecidos', () => {
+    const pty = fakeIPty()
+    const ptySpawnImpl = vi.fn(() => pty) as unknown as (
+      file: string,
+      args: string[],
+      options: Record<string, unknown>
+    ) => typeof pty
+    const handle = runAgyChatCommand({
+      homeDir: '/home/x',
+      ptySpawnImpl,
+      sessionId: 'test-session-123',
+      stepName: 'test-step',
+    })
+
+    expect(handle.span).toBeDefined()
+    expect(handle.span!.traceId).toBe('test-session-123')
+    expect(handle.span!.name).toBe('test-step')
+    expect(handle.span!.usage).toEqual({ promptTokens: 0, completionTokens: 0 })
+    expect(handle.span!.startTime).toBeLessThanOrEqual(Date.now())
+    expect(handle.span!.spanId).toBeDefined()
+    expect(handle.span!.status).toBe('success')
+  })
+
   it('onStdout/writeStdin/kill/exited funcionam (reusa wirePtyHandle)', async () => {
     const pty = {
       onData: vi.fn((cb: (data: string) => void) => {

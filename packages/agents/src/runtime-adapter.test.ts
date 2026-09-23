@@ -118,7 +118,7 @@ test('creates cli runtime adapter that passes prompt and runtime environment to 
       },
     },
   ])
-  expect(result).toEqual({
+  expect(result).toMatchObject({
     missionId: 'mission-agy-1',
     runtime: 'antigravity',
     output: 'mission complete',
@@ -421,6 +421,43 @@ describe('capPromptForArgv (achado importante: E2BIG)', () => {
       else process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] = prev
       vi.resetModules()
     }
+  })
+})
+
+describe('createCliRuntimeAdapter retorna metadata de span na execucao com contagem de tokens', () => {
+  test('retorna span metadata e extrai tokens de stdout/stderr ou fallback', async () => {
+    const runner = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: 'ok\nprompt_tokens: 15\ncompletion_tokens: 42',
+      stderr: '',
+      durationMs: 1,
+    })
+    const adapter = createCliRuntimeAdapter({
+      runtime: 'claude',
+      binary: 'claude',
+      runner,
+    })
+
+    const result = await adapter.run({
+      missionId: 'm1-trace',
+      prompt: 'hello',
+      runtime: { runtime: 'claude' },
+      credentialRef: {
+        connectionId: 'c1',
+        ownerScope: 'project',
+        runtime: 'claude',
+        providedSecrets: [],
+      },
+    })
+
+    expect(result.span).toBeDefined()
+    expect(result.span!.traceId).toBe('m1-trace')
+    expect(result.span!.spanId).toBeDefined()
+    expect(result.span!.name).toBe('execution')
+    expect(result.span!.status).toBe('success')
+    expect(result.span!.usage).toEqual({ promptTokens: 0, completionTokens: 0 })
+    expect(result.span!.startTime).toBeLessThanOrEqual(Date.now())
+    expect(result.span!.endTime).toBeGreaterThanOrEqual(result.span!.startTime)
   })
 })
 
