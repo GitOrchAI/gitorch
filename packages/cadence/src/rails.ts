@@ -1476,6 +1476,8 @@ export interface NodeStateContext {
   exitCriteriaMet: boolean
   guardrailPassed: boolean
   nextNode: string
+  qaVerdict?: 'approve' | 'request_changes'
+  qaRetries?: number
 }
 
 export type NodeTransitionResult = { nextNode: string } | { error: string }
@@ -1503,13 +1505,23 @@ export function validateDiagnosticIsolation(
   return { ok: errors.length === 0, errors }
 }
 
-export function evaluateNodeTransition(context: NodeStateContext): NodeTransitionResult {
+export function evaluateNodeTransition(
+  context: NodeStateContext,
+  maxRetries: number = 3
+): NodeTransitionResult {
   if (!context.exitCriteriaMet) {
     return { error: 'Critérios de saída não foram atendidos.' }
   }
 
   if (!context.guardrailPassed) {
     return { error: `Guardrail do papel ${context.role.toUpperCase()} não foi satisfeito.` }
+  }
+
+  if (context.role === 'qa' && context.qaVerdict === 'request_changes') {
+    if ((context.qaRetries || 0) >= maxRetries) {
+      return { nextNode: 'qa_failed_max_retries' }
+    }
+    return { nextNode: 'dev' }
   }
 
   return { nextNode: context.nextNode }
