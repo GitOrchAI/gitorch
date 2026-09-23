@@ -15,6 +15,8 @@ const workItem: GitHubWorkItem = {
   blockedByNodeIds: ['I_3'],
   blockingNodeIds: [],
   projectItemIds: ['PVTI_6'],
+  wishCreatedAt: '2026-06-23T11:00:00.000Z',
+  mergedAt: '2026-06-23T12:00:00.000Z',
 }
 
 const event: GitHubSyncEvent = {
@@ -64,6 +66,8 @@ test('plans blocked project status when dependencies are open', () => {
       projectItemId: 'PVTI_6',
       fieldName: 'Status',
       value: 'Blocked',
+      wishCreatedAt: '2026-06-23T11:00:00.000Z',
+      mergedAt: '2026-06-23T12:00:00.000Z',
     },
   ])
 })
@@ -110,6 +114,8 @@ test('plans weight and iteration fields when present', () => {
       projectItemId: 'PVTI_6',
       fieldName: 'Status',
       value: 'Blocked',
+      wishCreatedAt: '2026-06-23T11:00:00.000Z',
+      mergedAt: '2026-06-23T12:00:00.000Z',
     },
     {
       operationKey: 'project-weight:I_6:5',

@@ -8240,8 +8240,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 peso: dados.peso,
                 quemTocou: dados.quemTocou,
                 pedidoOuProativo: dados.pedidoOuProativo,
-                wishCreatedAt: dados.wishCreatedAt,
-                mergedAt: dados.mergedAt,
+                wishCreatedAt: dados.wishCreatedAt ?? null,
+                mergedAt: dados.mergedAt ?? null,
               },
             })
           },

@@ -51,6 +51,7 @@ const SCOPED_ACTIONS = [
   'findUnique',
   'findFirst',
   'create',
+  'upsert',
   'update',
   'updateMany',
   'delete',
@@ -73,6 +74,9 @@ export function applyTenantScope(params: Prisma.MiddlewareParams): void {
   if (userId && MODELS_WITH_USER.has(model)) {
     if (params.action === 'create') {
       params.args.data = { ...params.args.data, userId }
+    } else if (params.action === 'upsert') {
+      params.args.where = { ...params.args.where, userId }
+      params.args.create = { ...params.args.create, userId }
     } else {
       params.args.where = { ...params.args.where, userId }
     }
@@ -85,6 +89,9 @@ export function applyTenantScope(params: Prisma.MiddlewareParams): void {
   if (wingId && MODELS_WITH_WING.has(model)) {
     if (params.action === 'create') {
       params.args.data = { ...params.args.data, wingId }
+    } else if (params.action === 'upsert') {
+      params.args.where = { ...params.args.where, wingId }
+      params.args.create = { ...params.args.create, wingId }
     } else {
       params.args.where = { ...params.args.where, wingId }
     }

@@ -185,3 +185,30 @@ describe('normalize — eventos de segurança e CI (Fase 0.3)', () => {
     expect(evento.repository).toBe('dono/repo')
   })
 })
+
+test('normalizes issue with created_at timestamp', () => {
+  const normalizer = new GitHubWebhookNormalizer()
+  const event = normalizer.normalize({
+    receivedAt: '2026-06-23T11:05:00.000Z',
+    body: '{}',
+    headers: {
+      deliveryId: 'delivery-5',
+      eventName: 'issues',
+      signature256: 'sha256=abc',
+    },
+    payload: {
+      action: 'opened',
+      repository: { full_name: 'loureng/gitorch' },
+      issue: {
+        node_id: 'I_7',
+        number: 7,
+        title: 'Test Issue',
+        state: 'open',
+        created_at: '2026-06-23T11:00:00.000Z',
+        labels: [],
+      },
+    },
+  } satisfies GitHubDeliveryEnvelope)
+
+  expect(event.workItem?.wishCreatedAt).toEqual('2026-06-23T11:00:00.000Z')
+})

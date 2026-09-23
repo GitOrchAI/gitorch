@@ -44,9 +44,9 @@ export interface CamposDoDesenho {
   /** Nasceu de uma wish do dono (pedido) ou o produto criou por conta própria. */
   pedidoOuProativo: Origem
   /** Quando o DESEJO nasceu — o INÍCIO do ciclo do item (D4), não desta task. */
-  wishCreatedAt: Date | null
+  wishCreatedAt?: Date | null
   /** Quando o PR mesclou, lido do GitHub. */
-  mergedAt: Date | null
+  mergedAt?: Date | null
 }
 
 /** Uma entrega candidata, do jeito que o banco a tem. */
@@ -125,8 +125,8 @@ export async function registrarSePronto(
     peso: entrega.peso,
     quemTocou: entrega.quemTocou,
     pedidoOuProativo: entrega.pedidoOuProativo,
-    wishCreatedAt: entrega.wishCreatedAt,
-    mergedAt: entrega.mergedAt,
+    wishCreatedAt: entrega.wishCreatedAt ?? null,
+    mergedAt: entrega.mergedAt ?? null,
   })
 
   return veredito
