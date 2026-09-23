@@ -2,7 +2,7 @@ import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
 import { z } from 'zod'
 import { prisma, wingIdContext, tenantContext } from './prisma.js'
-import { generateProjectInvitation, validateProjectInvitation } from '../lib/entitlements.js'
+import { generateProjectInvitation, validateProjectInvitation, approveGuestMembership } from '../lib/entitlements.js'
 
 /**
  * O escopo de isolamento da requisição: o DONO (userId) quando há um, ou o
@@ -305,6 +305,42 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   app.decorate('verifyJwt', async (token: string) => {
     const env = getEnv()
     return jwt.verify(token, env.JWT_SECRET) as UserPayload
+  })
+
+
+  app.post('/projects/:id/guests/:guestId/approve', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const { id: projectId, guestId } = request.params as { id: string, guestId: string }
+    const _schema = z.object({
+      durationHours: z.number().int().positive().optional(),
+    }).optional()
+
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { userId: true },
+    })
+
+    if (!project || project.userId !== userId) {
+      const error = new Error('FORBIDDEN: You do not have permission to approve guests for this project') as Error & { statusCode: number }
+      error.statusCode = 403
+      throw error
+    }
+
+    const durationHours = parsedBody.data?.durationHours
+    const result = await approveGuestMembership(projectId, guestId, durationHours)
+
+    return reply.send({ status: 'APPROVED', validUntil: result.expiresAt })
   })
 
   app.post('/invitations/create', async (request, reply) => {
