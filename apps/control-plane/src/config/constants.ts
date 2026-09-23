@@ -44,3 +44,4 @@ export const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 30_000
 
 export const LANGFUSE_DEFAULT_HOST = 'https://cloud.langfuse.com'
 export const TELEMETRY_EXPORT_TIMEOUT_MS = 10_000
+export const DEFAULT_GUEST_DURATION_HOURS = 24

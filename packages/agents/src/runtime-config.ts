@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import {
   F6_AGENT_ROLES,
   F6_AGENT_RUNTIMES,
@@ -67,6 +68,16 @@ export const BACKOFF_CONFIG = {
   factor: 2,
   maxRetries: 5,
 }
+
+export const guestAgentEngineMappingSchema = z.object({
+  po: z.enum(F6_AGENT_RUNTIMES).optional(),
+  ra: z.enum(F6_AGENT_RUNTIMES).optional(),
+  sm: z.enum(F6_AGENT_RUNTIMES).optional(),
+  qa: z.enum(F6_AGENT_RUNTIMES).optional(),
+  dev: z.enum(F6_AGENT_RUNTIMES).optional(),
+})
+
+export type GuestAgentEngineMapping = z.infer<typeof guestAgentEngineMappingSchema>
 
 export function getTracingEnvironment(): TracingEnvironment {
   return {

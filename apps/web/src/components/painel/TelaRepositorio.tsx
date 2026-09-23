@@ -3,6 +3,7 @@
 // passo — mesmo contrato de dados vivos das outras telas (usePainelBusca).
 
 import { Cabeca, Card } from './PainelUI'
+import { Estados } from './PainelEstados'
 import { ROTAS } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 
@@ -18,7 +19,9 @@ interface RepositorioPayload {
 }
 
 export function TelaRepositorio() {
-  const dados = usePainelBusca<RepositorioPayload>(ROTAS.repositorio)
+  const dados = usePainelBusca<RepositorioPayload>(ROTAS.repositorio, {
+    vazio: (d) => d.itens.length === 0,
+  })
 
   return (
     <>
@@ -26,30 +29,28 @@ export function TelaRepositorio() {
         Cada pedido, tarefa e alerta, com origem e próximo passo.
       </Cabeca>
       <Card flush titulo="Itens">
-        {dados.estado === 'ok' &&
-          dados.dados?.itens.map((item) => (
-            <div key={`${item.tipo}-${item.numero}`} className="pn-row static">
-              <span className="pn-grow">
-                <span className="pn-rt">
-                  {item.tipo === 'pr'
-                    ? 'Pull request'
-                    : item.tipo === 'issue'
-                      ? 'Tarefa'
-                      : 'Alerta'}{' '}
-                  #{item.numero}
+        <Estados r={dados} o_que="o repositório" vazio="Nada por aqui ainda.">
+          {(payload) =>
+            payload.itens.map((item) => (
+              <div key={`${item.tipo}-${item.numero}`} className="pn-row static">
+                <span className="pn-grow">
+                  <span className="pn-rt">
+                    {item.tipo === 'pr'
+                      ? 'Pull request'
+                      : item.tipo === 'issue'
+                        ? 'Tarefa'
+                        : 'Alerta'}{' '}
+                    #{item.numero}
+                  </span>
+                  <span className="pn-rs">
+                    {item.origem ?? 'origem ainda não classificada'} —{' '}
+                    {item.proximoPasso ?? 'sem decisão registrada ainda'}
+                  </span>
                 </span>
-                <span className="pn-rs">
-                  {item.origem ?? 'origem ainda não classificada'} —{' '}
-                  {item.proximoPasso ?? 'sem decisão registrada ainda'}
-                </span>
-              </span>
-            </div>
-          ))}
-        {dados.estado === 'ok' && dados.dados?.itens.length === 0 && (
-          <p style={{ margin: 18, fontSize: 13.5, color: 'var(--gl-muted)' }}>
-            Nada por aqui ainda.
-          </p>
-        )}
+              </div>
+            ))
+          }
+        </Estados>
       </Card>
     </>
   )

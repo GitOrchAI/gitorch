@@ -26,6 +26,7 @@ export type ProjectV2FieldName =
   | 'Phase'
   | 'Iteration'
   | 'Severity'
+  | 'Weight'
   | 'Effort'
   | 'Type'
   | 'Parent issue'
@@ -59,6 +60,7 @@ export interface GitHubWorkItem {
   nodeId: string
   number: number
   repository: string
+  body?: string
   title: string
   type: GitHubIssueType
   state: GitHubWorkState
@@ -79,12 +81,14 @@ export interface GitHubDependencyEdge {
   blockedNodeId: string
   blockingNodeId: string
   repository: string
+  body?: string
 }
 
 export interface GitHubHierarchyEdge {
   parentNodeId: string
   childNodeId: string
   repository: string
+  body?: string
 }
 
 export interface ProjectV2ItemSnapshot {
@@ -132,4 +136,6 @@ export interface GitHubSyncOperation {
   projectItemId?: string
   fieldName?: ProjectV2FieldName
   value?: string | number
+  wishCreatedAt?: string
+  mergedAt?: string
 }

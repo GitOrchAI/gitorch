@@ -2,7 +2,14 @@ import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
 import { z } from 'zod'
 import { prisma, wingIdContext, tenantContext } from './prisma.js'
-import { generateProjectInvitation, validateProjectInvitation } from '../lib/entitlements.js'
+import {
+  generateProjectInvitation,
+  validateProjectInvitation,
+  approveGuestMembership,
+  updateGuestProjectScope,
+} from '../lib/entitlements.js'
+
+import { NIVEIS_DE_AUTONOMIA } from '@gitorch/cadence'
 
 /**
  * O escopo de isolamento da requisição: o DONO (userId) quando há um, ou o
@@ -17,6 +24,7 @@ import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
+import { guestAgentEngineMappingSchema, guestExecutionLimitsSchema } from '@gitorch/agents'
 
 interface ApiKeyPayload {
   projectId: string
@@ -64,6 +72,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     '/api/waitlist',
     '/api/billing/webhook',
     '/api/v1/invitations/validate/',
+    '/api/v1/invites/claim/',
   ]
 
   // O front estático (wizard Next export) é servido pela MESMA origem e é
@@ -307,6 +316,45 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     return jwt.verify(token, env.JWT_SECRET) as UserPayload
   })
 
+  app.post('/projects/:id/guests/:guestId/approve', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const { id: projectId, guestId } = request.params as { id: string; guestId: string }
+    const _schema = z
+      .object({
+        durationHours: z.number().int().positive().optional(),
+      })
+      .optional()
+
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { userId: true },
+    })
+
+    if (!project || project.userId !== userId) {
+      const error = new Error(
+        'FORBIDDEN: You do not have permission to approve guests for this project'
+      ) as Error & { statusCode: number }
+      error.statusCode = 403
+      throw error
+    }
+
+    const durationHours = parsedBody.data?.durationHours
+    const result = await approveGuestMembership(projectId, guestId, durationHours)
+
+    return reply.send({ status: 'APPROVED', validUntil: result.expiresAt })
+  })
+
   app.post('/invitations/create', async (request, reply) => {
     const userId = request.user?.id
     if (!userId) {
@@ -318,6 +366,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       ttlDays: z.number().int().positive(),
       email: z.string().email().optional(),
       githubLogin: z.string().optional(),
+      engineMapping: guestAgentEngineMappingSchema.optional(),
+      executionLimits: guestExecutionLimitsSchema.optional(),
     })
 
     const parsedBody = _schema.safeParse(request.body)
@@ -336,6 +386,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       expiresAt,
       ...(body.email ? { email: body.email } : {}),
       ...(body.githubLogin ? { githubLogin: body.githubLogin } : {}),
+      ...(body.engineMapping ? { engineMapping: body.engineMapping } : {}),
+      ...(body.executionLimits ? { executionLimits: body.executionLimits } : {}),
     })
 
     return reply.send({ token })
@@ -369,8 +421,135 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       if (err instanceof Error && err.message === 'Project invitation expired') {
         return reply.status(401).send({ error: 'Project invitation expired' })
       }
+      if (err instanceof Error && err.name === 'CredentialDecryptError') {
+        return reply.status(403).send({ error: 'Invalid or tampered invitation token' })
+      }
       return reply.status(400).send({ error: 'Invalid invitation token' })
     }
+  })
+
+  app.get('/api/v1/invites/claim/:token', async (request, reply) => {
+    const { token } = request.params as { token: string }
+    try {
+      const payload = validateProjectInvitation(token)
+
+      const invitationRecord = await prisma.projectInvitation.findUnique({
+        where: { id: payload.invitationId },
+      })
+
+      if (
+        !invitationRecord ||
+        (invitationRecord.status !== 'pending' && invitationRecord.status !== 'PENDING_APPROVAL')
+      ) {
+        return reply.status(400).send({ error: 'Invitation already claimed or revoked' })
+      }
+
+      const projects = await prisma.project.findMany({
+        where: { id: { in: payload.targetProjects }, userId: payload.userId },
+        select: { id: true, wingId: true, name: true },
+      })
+
+      const user = await prisma.user.findUnique({
+        where: { id: payload.userId },
+        select: { id: true, githubLogin: true },
+      })
+
+      return reply.send({
+        invitation: {
+          expiresAt: payload.expiresAt,
+          email: payload.email,
+          githubLogin: payload.githubLogin,
+        },
+        projects,
+        owner: user,
+      })
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Project invitation expired') {
+        return reply.status(401).send({ error: 'Project invitation expired' })
+      }
+      if (err instanceof Error && err.name === 'CredentialDecryptError') {
+        return reply.status(403).send({ error: 'Invalid or tampered invitation token' })
+      }
+      return reply.status(400).send({ error: 'Invalid invitation token' })
+    }
+  })
+
+  app.post('/api/v1/invites/claim/:token', async (request, reply) => {
+    const { token } = request.params as { token: string }
+    try {
+      const payload = validateProjectInvitation(token)
+
+      const invitationRecord = await prisma.projectInvitation.findUnique({
+        where: { id: payload.invitationId },
+      })
+
+      if (
+        !invitationRecord ||
+        (invitationRecord.status !== 'pending' && invitationRecord.status !== 'PENDING_APPROVAL')
+      ) {
+        return reply.status(400).send({ error: 'Invitation already claimed or revoked' })
+      }
+
+      await prisma.projectInvitation.update({
+        where: { id: payload.invitationId },
+        data: { status: 'claimed' },
+      })
+
+      return reply.send({ status: 'claimed' })
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Project invitation expired') {
+        return reply.status(401).send({ error: 'Project invitation expired' })
+      }
+      if (err instanceof Error && err.name === 'CredentialDecryptError') {
+        return reply.status(403).send({ error: 'Invalid or tampered invitation token' })
+      }
+      return reply.status(400).send({ error: 'Invalid invitation token' })
+    }
+  })
+
+  app.put('/guests/:guestId/scope', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const { guestId } = request.params as { guestId: string }
+    const _schema = z.object({
+      allowedProjectIds: z.array(z.string()).min(1),
+      autonomyLevel: z.string(),
+    })
+
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+
+    const { allowedProjectIds, autonomyLevel } = parsedBody.data
+
+    if (!NIVEIS_DE_AUTONOMIA.includes(autonomyLevel as (typeof NIVEIS_DE_AUTONOMIA)[number])) {
+      const error = new Error('BAD REQUEST: Invalid autonomyLevel') as Error & {
+        statusCode: number
+      }
+      error.statusCode = 400
+      throw error
+    }
+
+    const projectsCount = await prisma.project.count({
+      where: { id: { in: allowedProjectIds }, userId },
+    })
+
+    if (projectsCount !== allowedProjectIds.length) {
+      const error = new Error(
+        'FORBIDDEN: You do not have permission to manage scope for one or more requested projects'
+      ) as Error & { statusCode: number }
+      error.statusCode = 403
+      throw error
+    }
+
+    const scope = await updateGuestProjectScope(guestId, allowedProjectIds, autonomyLevel)
+    return reply.send({ status: 'UPDATED', scope })
   })
 }
 

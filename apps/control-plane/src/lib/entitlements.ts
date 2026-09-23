@@ -2,7 +2,10 @@
 // Evita `if (plan === 'pro')` espalhado pelo código (dívida). As flags vivem no
 // Plan.features (JSON) — ver prisma/seed.ts. Ver docs/business/pricing-strategy.md.
 import { prisma } from '../plugins/prisma.js'
-import { encryptCredential, decryptCredential } from './credential-crypto.js'
+import { generateHmacToken, verifyHmacToken } from './credential-crypto.js'
+import { approveGuestInDatabase } from '../plugins/prisma.js'
+import { DEFAULT_GUEST_DURATION_HOURS } from '../config/constants.js'
+import { type GuestMember } from '@gitorch/cadence'
 
 export type Capability =
   | 'autoAutonomy' // agente decide sozinho (vs. dono aprova cada missão)
@@ -52,23 +55,43 @@ export function canExecuteMissionToday(plan: PlanLike, missionsToday: number): b
   return missionsToday < plan.maxMissionsPerDay
 }
 
+import { Prisma } from '@prisma/client'
+import type { GuestAgentEngineMapping, GuestExecutionLimits } from '@gitorch/agents'
+
 export interface ProjectInvitationPayload {
   userId: string
   targetProjects: string[]
   expiresAt: Date
   email?: string
   githubLogin?: string
+  engineMapping?: GuestAgentEngineMapping
+  executionLimits?: GuestExecutionLimits
 }
 
 export async function generateProjectInvitation(
   payload: ProjectInvitationPayload
 ): Promise<string> {
+  const data: Prisma.ProjectInvitationUncheckedCreateInput = {
+    userId: payload.userId,
+    targetProjects: payload.targetProjects,
+    expiresAt: payload.expiresAt,
+    status: 'PENDING_APPROVAL',
+  }
+
+  if (payload.engineMapping) {
+    data.engineMapping = payload.engineMapping as Prisma.InputJsonValue
+  } else {
+    data.engineMapping = Prisma.JsonNull
+  }
+
+  if (payload.executionLimits) {
+    data.executionLimits = payload.executionLimits as Prisma.InputJsonValue
+  } else {
+    data.executionLimits = Prisma.JsonNull
+  }
+
   const invitation = await prisma.projectInvitation.create({
-    data: {
-      userId: payload.userId,
-      targetProjects: payload.targetProjects,
-      expiresAt: payload.expiresAt,
-    },
+    data,
   })
 
   const tokenPayload = {
@@ -76,17 +99,23 @@ export async function generateProjectInvitation(
     invitationId: invitation.id,
   }
 
-  const token = encryptCredential(JSON.stringify(tokenPayload))
+  // Converter ttl de expiração (ms) em minutos, já que generateHmacToken espera minutos
+  const diffInMs = payload.expiresAt.getTime() - Date.now()
+  const expirationMinutes = Math.max(1, Math.floor(diffInMs / 60000))
+
+  const token = generateHmacToken(JSON.stringify(tokenPayload), expirationMinutes)
   return token
 }
 
 export function validateProjectInvitation(
   token: string
 ): ProjectInvitationPayload & { invitationId: string } {
-  const decrypted = decryptCredential(token)
+  const decrypted = verifyHmacToken(token)
   const parsed = JSON.parse(decrypted)
   const expiresAt = new Date(parsed.expiresAt)
 
+  // VerifyHmacToken already checks expiration on the token level,
+  // but we can double check the parsed object payload if needed.
   if (expiresAt < new Date()) {
     throw new Error('Project invitation expired')
   }
@@ -94,5 +123,47 @@ export function validateProjectInvitation(
   return {
     ...parsed,
     expiresAt,
+  }
+}
+
+export async function approveGuestMembership(
+  projectId: string,
+  guestId: string,
+  durationHours?: number
+) {
+  const hours = durationHours ?? DEFAULT_GUEST_DURATION_HOURS
+  const validUntil = new Date()
+  validUntil.setHours(validUntil.getHours() + hours)
+
+  return approveGuestInDatabase(projectId, guestId, validUntil)
+}
+
+export async function updateGuestProjectScope(
+  guestId: string,
+  allowedProjectIds: string[],
+  autonomyLevel: string
+): Promise<GuestMember> {
+  const invitation = await prisma.projectInvitation.findUnique({
+    where: { id: guestId },
+  })
+
+  if (!invitation) {
+    throw new Error('Guest invitation not found')
+  }
+
+  const updated = await prisma.projectInvitation.update({
+    where: { id: guestId },
+    data: {
+      targetProjects: {
+        projects: allowedProjectIds,
+        autonomyLevel: autonomyLevel,
+      },
+    },
+  })
+
+  return {
+    id: updated.id,
+    targetProjects: allowedProjectIds,
+    autonomyLevel: autonomyLevel,
   }
 }

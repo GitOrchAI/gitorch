@@ -114,6 +114,7 @@ export interface MissionState {
   workspacePath?: string
   result?: unknown
   timeoutMs?: number
+  qaRetries?: number
 }
 
 export interface NodeTransition {
@@ -130,4 +131,19 @@ export interface StateGraph {
   nodes: Map<string, StateNode>
   addEdge(from: string, to: string): void
   run(initialState: MissionState): Promise<MissionState>
+}
+
+export interface Span {
+  traceId: string
+  spanId: string
+  name: string
+  input: string
+  output: string
+  usage: {
+    promptTokens: number
+    completionTokens: number
+  }
+  startTime: number
+  endTime: number
+  status: 'success' | 'error'
 }
