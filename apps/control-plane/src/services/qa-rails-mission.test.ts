@@ -326,6 +326,119 @@ describe('buildJulesReworkComment', () => {
   })
 })
 
+describe('QA: Definition of Done enforcement', () => {
+  it('PR with missing declared test file -> REQUEST_CHANGES', async () => {
+    // Diff explicitly missing the expected test file, but issue asks for it.
+    const f = fakeFetch(
+      [{ number: 7, user: 'jules[bot]', changedFiles: 1, additions: 10, deletions: 0 }],
+      ['jules', 'gitorch:task'],
+      50,
+      { patchArquivoUnico: '+ function code() {}' } // without test file
+    )
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const prompts: string[] = []
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async (prompt) => {
+        prompts.push(prompt)
+        return REQUEST_CHANGES
+      },
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7, sessionName: 'sessions/7' })],
+      fetchImpl: f,
+    })
+
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(r.podeMesclar).toBe(true)
+    expect(prompts[0]).toContain('CRITICAL DOD ENFORCEMENT RULES:')
+    expect(prompts[0]).toContain('1. Extract the DEFINICAO DE PRONTO (Definition of Done)')
+  })
+
+  it('PR modifying only scripts/ without tests -> REQUEST_CHANGES', async () => {
+    // Diff only touches scripts/
+    const f = fakeFetch(
+      [{ number: 8, user: 'jules[bot]', changedFiles: 1, additions: 10, deletions: 0 }],
+      ['jules', 'gitorch:task'],
+      50,
+      { patchArquivoUnico: '--- a/scripts/script.sh\n+++ b/scripts/script.sh\n+ echo "done"' }
+    )
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 8, sessionName: 'sessions/8' })],
+      fetchImpl: f,
+    })
+
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(r.podeMesclar).toBe(true)
+  })
+
+  it('PR modifying schema.prisma without service and tests -> REQUEST_CHANGES', async () => {
+    // Diff only touches schema.prisma
+    const f = fakeFetch(
+      [{ number: 9, user: 'jules[bot]', changedFiles: 1, additions: 10, deletions: 0 }],
+      ['jules', 'gitorch:task'],
+      50,
+      {
+        patchArquivoUnico:
+          '--- a/prisma/schema.prisma\n+++ b/prisma/schema.prisma\n+ model Test {}',
+      }
+    )
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 9, sessionName: 'sessions/9' })],
+      fetchImpl: f,
+    })
+
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(r.podeMesclar).toBe(true)
+  })
+
+  it('Complete case with all required files -> APPROVE', async () => {
+    const f = fakeFetch(
+      [{ number: 10, user: 'jules[bot]', changedFiles: 2, additions: 10, deletions: 0 }],
+      ['jules', 'gitorch:task'],
+      50,
+      {
+        patchArquivoUnico:
+          '--- a/src/service.ts\n+++ b/src/service.ts\n+ code\n--- a/src/service.test.ts\n+++ b/src/service.test.ts\n+ test',
+      }
+    )
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/10' })],
+      fetchImpl: f,
+    })
+
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(r.podeMesclar).toBe(true)
+  })
+})
+
 describe('runQaMissionViaRails', () => {
   // L3-T8 — O LADO DE QUEM LÊ.
   //

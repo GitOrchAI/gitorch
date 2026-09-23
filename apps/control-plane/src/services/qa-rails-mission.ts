@@ -1360,6 +1360,14 @@ export async function runQaMissionViaRails(
     ...(options.contextBlocks ?? []),
     `PR #${target.number} by ${target.user?.login}.`,
     `Verification Criteria (from linked issue #${linkedIssue ?? '?'}):\n${criteria}`,
+    '',
+    'CRITICAL DOD ENFORCEMENT RULES:',
+    '1. Extract the DEFINICAO DE PRONTO (Definition of Done) from the Verification Criteria: expected files/pieces, required tests, expected evidence in the PR body (e.g., acceptance test output).',
+    '2. Compare it with the real diff (list of files and content). If a required piece is missing, a required test is missing, or the PR body claims something not in the diff (e.g., "added test X" but the file doesn\'t exist), the verdict MUST be "request_changes" with an objective list of what is missing.',
+    '3. If the PR only touches directories not covered by CI (e.g., scripts/) without automated tests for the modified services, it MUST be "request_changes".',
+    '4. The `comment` field in the JSON response MUST register, in a readable way, the checklist of the DoD (item, found or not, where).',
+    '5. If the issue has no clear DoD, judge based on what the issue asks and explicitly state in the comment that DoD was absent.',
+    '',
     `CI status: ${ciState}${
       culpadoDoCancelamento && culpadoDoCancelamento.encontrado
         ? ` — ${frasarCausaDoCancelamento(culpadoDoCancelamento)}`
