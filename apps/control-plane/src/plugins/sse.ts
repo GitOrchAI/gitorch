@@ -14,6 +14,15 @@ interface EventMessage {
   comment?: string
 }
 
+export interface TelemetryGuestQuotaAlertEvent {
+  type: 'telemetry:guest_quota_alert'
+  guestId: string
+  projectId: string
+  fraction: number
+  used: number
+  limit: number
+}
+
 export interface TelemetrySpanEvent {
   type: 'telemetry:span'
   missionId: string

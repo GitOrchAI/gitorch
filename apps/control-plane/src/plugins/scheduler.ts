@@ -1733,6 +1733,13 @@ function buildRuntimeStack(
     // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
     enrichContext: buildMissionEnricher({ cortex: app.cortex }),
     preExecutionInterceptor: async (mission) => {
+      // 1) Guest quota (se a missão pertence a um convidado)
+      if (mission.userId && mission.userId !== mission.projectId) {
+        const { assertGuestQuotaAvailable } = await import('../lib/teto-do-ambiente.js')
+        await assertGuestQuotaAvailable(mission.userId, mission.projectId)
+      }
+
+      // 2) Plan features & Token budget (dono do projeto)
       const project = await app.prisma.project.findUnique({
         where: { id: mission.projectId },
       })
