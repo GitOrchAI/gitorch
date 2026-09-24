@@ -14,9 +14,8 @@ import {
 
 import { evaluateNodeTransition } from '@gitorch/cadence'
 
-import type { F6AgentRole, MissionState, NodeTransition, StateNode, AgentMission } from './types'
+import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
-import { checkMissionLimits } from './execution-limits'
 
 /**
  * Enriquece o CONTEXTO da missão com CONHECIMENTO do projeto, depois que o
@@ -53,7 +52,6 @@ export interface AgentOrchestratorOptions {
   synapse?: SynapseClient
   workspace?: WorkspaceProvider
   enrichContext?: MissionContextEnricher
-  preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
 }
 
 export abstract class BaseAgentNode implements StateNode {
@@ -156,14 +154,12 @@ export class AgentOrchestrator {
   private readonly workspace: WorkspaceProvider
   private readonly enrichContext?: MissionContextEnricher
   private readonly nodeRegistry: Map<string, StateNode>
-  private readonly preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
 
   constructor(options: AgentOrchestratorOptions) {
     this.registry = options.registry
     this.synapse = options.synapse ?? new SynapseClient()
     this.workspace = options.workspace ?? workspaceManager
     this.enrichContext = options.enrichContext
-    this.preExecutionInterceptor = options.preExecutionInterceptor
 
     this.nodeRegistry = new Map<string, StateNode>([
       ['po', new ProductOwnerNode(this)],
@@ -183,10 +179,6 @@ export class AgentOrchestrator {
 
     try {
       const adapter = this.registry.resolve(mission.runtime.runtime)
-
-      if (this.preExecutionInterceptor) {
-        await this.preExecutionInterceptor(mission)
-      }
 
       result = await withBackoffRetry(
         async () => {
@@ -288,34 +280,9 @@ export class AgentOrchestrator {
       timeoutMs: input.timeoutMs,
     }
     let currentRole: string | 'done' | 'failed' = mission.role
-    let stepCount = 0
-    const executionStartTimeMs = Date.now()
 
     try {
       while (currentRole !== 'done' && currentRole !== 'failed') {
-        const limitsCheck = checkMissionLimits(
-          executionStartTimeMs,
-          stepCount,
-          mission.executionLimits,
-          input.timeoutMs
-        )
-
-        if (limitsCheck.interrupted) {
-          currentRole = 'failed'
-          result = {
-            missionId: mission.id,
-            runtime: mission.runtime.runtime,
-            exitCode: 124,
-            output: '',
-            stderr: limitsCheck.reason || 'Mission interrupted by execution limits',
-            durationMs: Date.now() - executionStartTimeMs,
-            failedStep: 'orchestrator-loop',
-            errorDetails: limitsCheck.reason || 'Mission interrupted by execution limits',
-          }
-          currentState.result = result
-          break
-        }
-
         const node = this.nodeRegistry.get(currentRole)
         if (!node) {
           throw new Error(`No state node registered for role: ${currentRole}`)
@@ -324,21 +291,8 @@ export class AgentOrchestrator {
         const transition = await node.execute(currentState)
         currentState = missionStateReducer(currentState, transition.state)
         currentRole = transition.nextRole ?? 'done'
-        stepCount++
-
-        const runtimeResult = currentState.result as RuntimeExecutionResult | undefined
-        if (runtimeResult?.waitingStatus === 'QUOTA_EXHAUSTED') {
-          await this.synapse.recordStateCheckpoint(
-            mission.id,
-            currentRole,
-            currentState as unknown as Record<string, unknown>
-          )
-          break
-        }
       }
-      if (!result) {
-        result = currentState.result as RuntimeExecutionResult
-      }
+      result = currentState.result as RuntimeExecutionResult
     } catch (err: unknown) {
       if (this.workspace.handleRuntimeFailure) {
         this.workspace.handleRuntimeFailure(String(err), 'run-mission', false)

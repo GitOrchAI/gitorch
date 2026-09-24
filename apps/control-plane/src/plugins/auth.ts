@@ -28,8 +28,6 @@ import { guestAgentEngineMappingSchema, guestExecutionLimitsSchema } from '@gito
 import { revokeGuestAccess as revokeInSpendGuard, isGuestRevoked } from '../lib/spend-guard.js'
 import { revokeGuestAccess as revokeInSecurity } from './security.js'
 import { markGuestCredentialsRevoked } from '../lib/credential-archive.js'
-import { notifyOwnerGuestSubmission } from './telegram.js'
-import { resolveOwnerId } from '../lib/resolve-owner-id.js'
 
 interface ApiKeyPayload {
   projectId: string
@@ -328,79 +326,6 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     return jwt.verify(token, env.JWT_SECRET) as UserPayload
   })
 
-  app.get('/projects/:id/guest-proposals', async (request, reply) => {
-    const user = request.user
-    if (!user) {
-      throw unauthorized('UNAUTHORIZED: No user in context')
-    }
-
-    const { id: projectId } = request.params as { id: string }
-    const resolvedUserId = await resolveOwnerId(prisma, user)
-
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: { userId: true },
-    })
-
-    if (!project || project.userId !== resolvedUserId) {
-      const error = new Error(
-        'FORBIDDEN: You do not have permission to view proposals for this project'
-      ) as Error & { statusCode: number }
-      error.statusCode = 403
-      throw error
-    }
-
-    const proposals = await prisma.projectInvitation.findMany({
-      where: {
-        userId: resolvedUserId,
-      },
-    })
-
-    // Filter proposals that target the specific project
-    const filteredProposals = proposals.filter((p) => {
-      const targetProjects = p.targetProjects as string[] | { projects?: string[] } | null
-      if (Array.isArray(targetProjects)) {
-        return targetProjects.includes(projectId)
-      } else if (targetProjects && Array.isArray(targetProjects.projects)) {
-        return targetProjects.projects.includes(projectId)
-      }
-      return false
-    })
-
-    // Mask sensitive credentials
-    const safeProposals = filteredProposals.map((p) => {
-      const safeRecord = { ...p }
-
-      if (safeRecord.engineMapping) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const safeEngineMapping = { ...(safeRecord.engineMapping as Record<string, any>) }
-        for (const key of Object.keys(safeEngineMapping)) {
-          if (
-            typeof safeEngineMapping[key] === 'string' &&
-            safeEngineMapping[key].startsWith('gitorch_')
-          ) {
-            safeEngineMapping[key] = safeEngineMapping[key].substring(0, 15) + '***'
-          } else if (
-            typeof safeEngineMapping[key] === 'string' &&
-            safeEngineMapping[key].startsWith('sk-')
-          ) {
-            safeEngineMapping[key] = safeEngineMapping[key].substring(0, 7) + '***'
-          } else if (
-            typeof safeEngineMapping[key] === 'string' &&
-            safeEngineMapping[key].length > 10
-          ) {
-            safeEngineMapping[key] =
-              safeEngineMapping[key].substring(0, 4) + '***' + safeEngineMapping[key].slice(-4)
-          }
-        }
-        safeRecord.engineMapping = safeEngineMapping
-      }
-      return safeRecord
-    })
-
-    return reply.send({ proposals: safeProposals })
-  })
-
   app.post('/projects/:id/guests/:guestId/approve', async (request, reply) => {
     const userId = request.user?.id
     if (!userId) {
@@ -579,39 +504,6 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         where: { id: payload.invitationId },
         data: { status: 'claimed' },
       })
-
-      const engineMapping = invitationRecord.engineMapping as
-        Record<string, string> | undefined | null
-      const executionLimits = invitationRecord.executionLimits as
-        { memoryMax?: string; cpuMax?: string; pidsMax?: number } | undefined | null
-      const guestName = payload.githubLogin || payload.email || 'Convidado'
-
-      await notifyOwnerGuestSubmission(
-        prisma,
-        payload.userId,
-        guestName,
-        engineMapping,
-        executionLimits
-      )
-
-      const targetProjectsArr = Array.isArray(invitationRecord.targetProjects)
-        ? (invitationRecord.targetProjects as string[])
-        : // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ((invitationRecord.targetProjects as any)?.projects as string[]) || []
-
-      const firstTargetProject = targetProjectsArr[0]
-      if (firstTargetProject) {
-        await prisma.event.create({
-          data: {
-            projectId: firstTargetProject,
-            type: 'audit',
-            payload: {
-              texto: `Convidado ${guestName} finalizou o setup.`,
-              acao: 'guest_setup_completed',
-            },
-          },
-        })
-      }
 
       return reply.send({ status: 'claimed' })
     } catch (err) {

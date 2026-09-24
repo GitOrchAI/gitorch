@@ -453,6 +453,7 @@ async function rodar(over: {
     issueAberta: over.issueAberta ?? (async () => true),
     acoesAnteriores: over.acoesAnteriores ?? (async () => 0),
     vagasLivres: over.vagasLivres ?? 15,
+    pedirJulgamento: async () => {},
     abrirSessaoDeConserto: over.abrirSessaoDeConserto ?? (async () => true),
     fecharPr: over.fecharPr ?? (async () => true),
     avisarDono: over.avisarDono ?? (async () => true),

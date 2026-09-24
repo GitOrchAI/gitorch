@@ -194,7 +194,6 @@ export interface RamoDoPr {
   branchDoPr: string | null
   /** O ramo vive no repositório do projeto? Pull request de fork, não. */
   branchNoRepoDoProjeto: boolean
-  headSha?: string | null | undefined
 }
 
 /**
@@ -250,7 +249,7 @@ export interface PrOrfaoObservado extends RamoDoPr {
 }
 
 /** Por que o trabalho parou — o que o vigia vai pedir para o dev consertar. */
-export type CausaDaParada = 'conflito' | 'ci-vermelha' | 'qa-reprovou'
+export type CausaDaParada = 'conflito' | 'ci-vermelha'
 
 export type AcaoDoVigia =
   /** Não é assunto do vigia (é de gente, é da vigia de sessões, ou é cedo demais). */
@@ -269,6 +268,7 @@ export type AcaoDoVigia =
   | { acao: 'fechar'; motivo: string }
   /** O produto não resolve: o dono precisa saber. */
   | { acao: 'escalar'; motivo: string }
+  | { acao: 'pedir-julgamento'; motivo: string }
 
 function pedidoDeConsertarVerificacao(numeroDoPr: number): string {
   return [
@@ -465,6 +465,7 @@ export interface VigiaDoPrDeps {
   /** Vagas de sessão simultânea que sobram na conta do dev nesta passada. */
   vagasLivres: number
   decidirAcaoNoPrOrfao?: (pr: PrOrfaoObservado, rawPr: PrAberto) => Promise<AcaoDoVigia>
+  pedirJulgamento: (numeroDoPr: number) => Promise<void>
   abrirSessaoDeConserto: (args: {
     numeroDoPr: number
     issueNumber: number
@@ -563,7 +564,6 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         issueAberta: issueNumber === null ? true : await deps.issueAberta(issueNumber),
         branchDoPr: pr.branchDoPr,
         branchNoRepoDoProjeto: pr.branchNoRepoDoProjeto,
-        headSha: pr.headSha,
         mergeable: pr.mergeable,
         verificacao: pr.verificacao,
         paradoHaMs: pr.paradoHaMs,
@@ -640,6 +640,16 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
             numeroDoPr: pr.numero,
             acao: 'fechar',
             texto: `Fechei a entrega #${pr.numero}: ${decisao.motivo}`,
+          })
+          break
+        }
+
+        case 'pedir-julgamento': {
+          await deps.pedirJulgamento(pr.numero)
+          await deps.registrarDecisao({
+            numeroDoPr: pr.numero,
+            acao: 'pedir-julgamento',
+            texto: decisao.motivo,
           })
           break
         }
@@ -839,7 +849,6 @@ export async function listarPrsAbertosParaOVigia(args: {
       // agir — mesma disciplina conservadora dos três campos abaixo.
       branchDoPr: cru.head?.ref ?? null,
       branchNoRepoDoProjeto: (cru.head?.repo?.full_name ?? null) === args.repo,
-      headSha: cru.head?.sha ?? null,
       rascunho: cru.draft ?? false,
       mergeable: null,
       verificacao: 'pendente',

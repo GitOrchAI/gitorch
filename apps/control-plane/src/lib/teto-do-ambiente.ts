@@ -37,8 +37,6 @@ export interface LimitesDoPlano {
  * do plano e calaria a esteira inteira, que é o oposto do que ela vem fazer.
  * É o mesmo erro que já custou caro na cadência da reconciliação.
  */
-export { assertGuestQuotaAvailable } from './spend-guard.js'
-
 export function tetoDoAmbiente(
   planoId: string,
   padrao: LimitesDoPlano,

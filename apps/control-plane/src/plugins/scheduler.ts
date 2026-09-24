@@ -438,20 +438,13 @@ import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { cotasAReler } from '../services/cotas-a-reler.js'
 import { modelosARecoletar } from '../services/modelos-a-recoletar.js'
-import {
-  canRunMission,
-  shouldAlertForQuota,
-  verificarQuotaPreExecucao,
-  TOKENS_RESERVE_ESTIMATE,
-} from '../lib/spend-guard.js'
-import { computeConsumption, atualizarSaldoDaOrdem } from '../lib/consumption.js'
+import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
+import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
 import type { Prisma, PrismaClient } from '@prisma/client'
-
 import * as os from 'node:os'
-import type { TelemetrySpanEvent, TelemetryQuotaAlertEvent } from './sse.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // dist/plugins -> raiz do repo -> runtime/
@@ -1732,53 +1725,6 @@ function buildRuntimeStack(
     workspace: workspaceProvider,
     // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
     enrichContext: buildMissionEnricher({ cortex: app.cortex }),
-    preExecutionInterceptor: async (mission) => {
-      // 1) Guest quota (se a missão pertence a um convidado)
-      if (mission.userId && mission.userId !== mission.projectId) {
-        const { assertGuestQuotaAvailable } = await import('../lib/teto-do-ambiente.js')
-        await assertGuestQuotaAvailable(mission.userId, mission.projectId)
-      }
-
-      // 2) Plan features & Token budget (dono do projeto)
-      const project = await app.prisma.project.findUnique({
-        where: { id: mission.projectId },
-      })
-      if (!project || !project.userId) return
-
-      const user = await app.prisma.user.findUnique({
-        where: { id: project.userId },
-        include: { plan: true },
-      })
-      if (!user || !user.plan) return
-
-      const features = (user.plan.features ?? {}) as Record<string, unknown>
-      const tokenBudget =
-        typeof features['maxTokensPerMonth'] === 'number'
-          ? (features['maxTokensPerMonth'] as number)
-          : null
-
-      let tokensSpent = 0
-      if (tokenBudget) {
-        const startOfMonth = new Date()
-        startOfMonth.setDate(1)
-        startOfMonth.setHours(0, 0, 0, 0)
-        const agg = await (app.prisma as PrismaClient).mission.aggregate({
-          where: { createdAt: { gte: startOfMonth }, project: { userId: project.userId } },
-          _sum: { tokensUsed: true },
-        })
-        tokensSpent = agg._sum.tokensUsed ?? 0
-      }
-
-      verificarQuotaPreExecucao(
-        project.userId,
-        TOKENS_RESERVE_ESTIMATE,
-        tokenBudget,
-        tokensSpent,
-        null,
-        null,
-        (msg) => app.log.warn(`[Pre-Execution Quota Alert] ${msg}`)
-      )
-    },
   })
 
   return { registry, orchestrator, workspaceProvider }
@@ -3055,20 +3001,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.warn(
           `[Scheduler] Orçamento do plano ${plan.id} atingido para o usuário ${project.userId} (${ownerToday}/${plan.maxMissionsPerDay}); pulando`
         )
-        const quotaEventBudget: TelemetryQuotaAlertEvent = {
-          type: 'telemetry:quota_alert',
-          missionId: `no-mission-${project.wingId}`,
-          role,
-          reason: `Orçamento do plano ${plan.id} atingido para o usuário ${project.userId}`,
-        }
-        if ('broadcastEvent' in app)
-          app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEventBudget)
-        if ('emitter' in app)
-          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
-            'telemetry:quota_alert',
-            quotaEventBudget
-          )
-
         return { triggered: false, reason: 'plan-budget' }
       }
     }
@@ -3180,7 +3112,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const startOfMonth = new Date()
         startOfMonth.setDate(1)
         startOfMonth.setHours(0, 0, 0, 0)
-        const agg = await (app.prisma as PrismaClient).mission.aggregate({
+        const agg = await app.prisma.mission.aggregate({
           where: { createdAt: { gte: startOfMonth }, project: { userId: project.userId } },
           _sum: { tokensUsed: true },
         })
@@ -3202,20 +3134,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.warn(
           `[Scheduler] Gasto bloqueado (${decision.reason}) para ${project.userId}; pulando ${role}`
         )
-        const quotaEvent: TelemetryQuotaAlertEvent = {
-          type: 'telemetry:quota_alert',
-          missionId: `no-mission-${project.wingId}`, // Stable missionId for deduplication
-          role,
-          reason: `Gasto bloqueado (${decision.reason}) para o projeto ${project.id}`,
-        }
-        if ('broadcastEvent' in app)
-          app.broadcastEvent(project.wingId, 'telemetry:quota_alert', quotaEvent)
-        if ('emitter' in app)
-          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
-            'telemetry:quota_alert',
-            quotaEvent
-          )
-
         return { triggered: false, reason: decision.reason ?? 'spend-blocked' }
       }
     }
@@ -3438,23 +3356,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         .catch(() => undefined)
 
-      const spanExecutionStartTime = Date.now()
-
       try {
-        // Emit start span
-        const spanStartEvent: TelemetrySpanEvent = {
-          type: 'telemetry:span',
-          missionId,
-          role,
-        }
-        if ('broadcastEvent' in app)
-          app.broadcastEvent(project.wingId, 'telemetry:span', spanStartEvent)
-        if ('emitter' in app)
-          (app as unknown as { emitter: { emit: Function } }).emitter.emit(
-            'telemetry:span',
-            spanStartEvent
-          )
-
         const credentialRef = {
           connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
           ownerScope: 'project' as const,
@@ -4562,17 +4464,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,
           })
-
-          if ('span' in result && result.span) {
-            await atualizarSaldoDaOrdem(
-              result.span as { usage: { promptTokens: number; completionTokens: number } },
-              sel.runtime,
-              missionId,
-              app.prisma as PrismaClient
-            ).catch((e) => {
-              app.log.warn({ e }, `[Scheduler] Erro ao atualizar saldo do span para ${missionId}`)
-            })
-          }
           // Tarefa 16: só faz sentido AQUI, no caminho clássico — é o único
           // ramo deste if/else-if/else onde `result.output` é saída CRUA do
           // motor. Nos trilhos o sinal já foi checado dentro de `execute()`
@@ -4775,20 +4666,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   `[Scheduler] Consumo ${missionId}: antes=${before} depois=${c.quotaAfter} usou=${c.tokensUsed}`
                 )
               }
-              const spanSuccessEvent: TelemetrySpanEvent = {
-                type: 'telemetry:span',
-                missionId,
-                role,
-                cost: c.tokensUsed ?? 0,
-                latency: Date.now() - spanExecutionStartTime,
-              }
-              if ('broadcastEvent' in app)
-                app.broadcastEvent(project.wingId, 'telemetry:span', spanSuccessEvent)
-              if ('emitter' in app)
-                (app as unknown as { emitter: { emit: Function } }).emitter.emit(
-                  'telemetry:span',
-                  spanSuccessEvent
-                )
             } catch (e) {
               app.log.warn({ e }, `[Scheduler] medição de consumo falhou para ${missionId}`)
             }
@@ -4856,24 +4733,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         break
       } catch (err) {
         lastError = String((err as { stack?: string })?.stack ?? err)
-
-        const spanErrorEvent: TelemetrySpanEvent = {
-          type: 'telemetry:span',
-          missionId,
-          role,
-          error: lastError,
-          cost: 0,
-          latency: Date.now() - spanExecutionStartTime,
-        }
-        if ('broadcastEvent' in app)
-          app.broadcastEvent(project.wingId, 'telemetry:span', spanErrorEvent)
-        if ('emitter' in app && !isEngineFault(err, lastError)) {
-          ;(app as unknown as { emitter: { emit: Function } }).emitter.emit(
-            'telemetry:span',
-            spanErrorEvent
-          )
-        }
-
         // Classificação de origem do erro (Lei dos trilhos) — ver isEngineFault:
         // - GithubExecutionError: o GitHub falhou (token/rate-limit do REPO) —
         //   igual para TODOS os motores; failover só repetiria o dano. Falha já.
@@ -7173,6 +7032,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 }),
               },
             }),
+          pedirJulgamento: async (numeroDoPr) => {
+            filaDeJulgamento.enfileirar(projeto.id, 1)
+            app.log.info(
+              `[Scheduler] Vigia enfileirou julgamento para PR #${numeroDoPr} em ${projeto.wingId}`
+            )
+          },
           abrirSessaoDeConserto: ({ numeroDoPr, issueNumber, pedido, branchDoPr }) =>
             abrirSessaoDeConsertoDoPr({ projeto, numeroDoPr, issueNumber, pedido, branchDoPr }),
           // FECHA e só então comenta — a ordem é a correção do ACHADO 4 e vive

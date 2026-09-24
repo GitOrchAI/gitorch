@@ -30,9 +30,6 @@ vi.mock('@gitorch/agents', async (importOriginal) => {
     ...actual,
     AgentOrchestrator: class {
       constructor(_options: unknown) {}
-      events() {
-        return { subscribe: vi.fn() }
-      }
       async runMission(input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
         const runtime = input.runtime?.runtime as string
         const erro = resultadoDoMotor.erroPorRuntime?.[runtime]

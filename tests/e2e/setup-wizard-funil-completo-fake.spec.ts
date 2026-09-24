@@ -1,5 +1,4 @@
 import { test, expect, type Page } from '@playwright/test'
-// @ts-ignore
 import { PrismaClient } from '@prisma/client'
 import jwt from 'jsonwebtoken'
 import { EngineConnectionService } from '../../apps/control-plane/dist/services/engine-connection.js'

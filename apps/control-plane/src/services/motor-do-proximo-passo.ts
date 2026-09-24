@@ -33,6 +33,7 @@ export type AcaoDoMotor =
   | { acao: 'mesclar'; motivo: string }
   | { acao: 'perguntar-se-cuida'; motivo: string }
   | { acao: 'escalar'; motivo: string }
+  | { acao: 'pedir-julgamento'; motivo: string }
 
 export interface MotorDoProximoPassoDeps extends RamoDoPr {
   numero: number
@@ -54,16 +55,17 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
   janelaEmConstrucaoHoras: number
   /** Presentes só quando há veredito do QA para considerar (item já
    *  julgado) — ausentes, o motor nunca decide "mesclar". */
-  entendimentoCompleto?: boolean
-  vereditoDoQa?: 'approve' | 'request_changes'
-  ultimoParecerQa?: { body: string; timestamp: Date } | null
-  temDuvidaPendente?: boolean
-  ultimoEscalonamentoEm?: Date | null
+  entendimentoCompleto?: boolean | undefined
+  vereditoDoQa?: 'approve' | 'request_changes' | undefined
+  ultimoParecerQa?: { body: string; timestamp: Date } | null | undefined
+  temDuvidaPendente?: boolean | undefined
+  ultimoEscalonamentoEm?: Date | null | undefined
+  diffTruncado?: boolean | undefined
   /** Fase 5.5: true quando o plano do GitHub não permite a melhoria paga E
    *  a alternativa gratuita ainda não está instalada no repositório. O motor
    *  degrada a decisão de 'mesclar' para 'perguntar-se-cuida' para exigir
    *  revisão humana, pois não confia que o código está livre de segredos. */
-  exigeRevisaoDeSeguranca?: boolean
+  exigeRevisaoDeSeguranca?: boolean | undefined
 }
 
 /** 'jules_gitorch'/'jules_fora' caem no balde `jules` de cuidaPorOrigem;
@@ -108,14 +110,7 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
     return { acao: 'so-acompanhar', motivo: `#${deps.numero} recebeu novidade recente` }
   }
   if (deps.acoesAnteriores > MAX_ACOES_DO_VIGIA) {
-    if (
-      !deps.ultimoParecerQa ||
-      (deps.ultimoEscalonamentoEm &&
-        deps.ultimoEscalonamentoEm > deps.ultimoParecerQa.timestamp &&
-        deps.temDuvidaPendente)
-    ) {
-      return { acao: 'so-acompanhar', motivo: `#${deps.numero} já foi ao dono depois do teto` }
-    }
+    return { acao: 'so-acompanhar', motivo: `#${deps.numero} já foi ao dono depois do teto` }
   }
   if (deps.issueNumber === null) {
     return politica === 'perguntar'
@@ -135,17 +130,13 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
     return { acao: 'so-acompanhar', motivo: `#${deps.numero}: verificação ainda rodando` }
   }
 
-  let causa: CausaDaParada | null =
+  const causa: CausaDaParada | null =
     deps.mergeable === false ? 'conflito' : deps.verificacao === 'vermelha' ? 'ci-vermelha' : null
-
-  if (causa === null && deps.ultimoParecerQa) {
-    causa = 'qa-reprovou'
-  }
 
   if (causa === null) {
     // Nada para consertar. Pronto para julgar/mesclar — ou perguntar, ou
     // acompanhar, conforme a configuração. NUNCA "escalar" primeiro.
-    if (deps.vereditoDoQa === 'approve' && deps.entendimentoCompleto) {
+    if (deps.vereditoDoQa === 'approve') {
       if (deps.exigeRevisaoDeSeguranca) {
         return {
           acao: 'perguntar-se-cuida',
@@ -155,6 +146,13 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
       return {
         acao: 'mesclar',
         motivo: `#${deps.numero}: critérios batidos, mesclando conforme "${politica}"`,
+      }
+    }
+
+    if (deps.vereditoDoQa === undefined && politica === 'sim') {
+      return {
+        acao: 'pedir-julgamento',
+        motivo: `#${deps.numero}: aguardando julgamento, QA acionado`,
       }
     }
     return politica === 'perguntar'
@@ -184,25 +182,9 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
     causa,
     branchDoPr: branch,
     pedido:
-      causa === 'qa-reprovou'
-        ? deps.ultimoParecerQa?.body?.includes('<!-- gitorch:qa:entrega-grande-demais -->') ||
-          deps.ultimoParecerQa?.body
-            ?.toLowerCase()
-            .includes('não coube inteira na janela de revisão') ||
-          deps.ultimoParecerQa?.body
-            ?.toLowerCase()
-            .includes('nao coube inteira na janela de revisao')
-          ? `A entrega não coube inteira na janela de revisão. Divida esta entrega em partes menores e independentes (um propósito por PR). Abra os novos PRs e feche este aqui apontando para eles.`
-          : deps.ultimoParecerQa?.body || ''
-        : causa === 'conflito'
-          ? `Traga a base para o seu ramo e resolva o conflito do pull request #${deps.numero}.`
-          : `A verificação automática do pull request #${deps.numero} está vermelha — conserte a causa.`,
-    motivo: `#${deps.numero}: ${
-      causa === 'qa-reprovou'
-        ? 'parecer do QA pede mudanças'
-        : causa === 'conflito'
-          ? 'conflito'
-          : 'verificação vermelha'
-    }, abrindo sessão nova`,
+      causa === 'conflito'
+        ? `Traga a base para o seu ramo e resolva o conflito do pull request #${deps.numero}.`
+        : `A verificação automática do pull request #${deps.numero} está vermelha — conserte a causa.`,
+    motivo: `#${deps.numero}: ${causa === 'conflito' ? 'conflito' : 'verificação vermelha'}, abrindo sessão nova`,
   }
 }

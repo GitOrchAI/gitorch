@@ -3,7 +3,6 @@ import {
   analisarCustoDaOrdem,
   ordemQueMinimizaEspera,
   calcularCustoDeCI,
-  precificarSpan,
   MIN_PEDIDOS_PARA_AVALIAR,
   LIMIAR_PONTOS_MINIMOS,
   LIMIAR_RAZAO,
@@ -172,33 +171,5 @@ describe('analisarCustoDaOrdem — diferença pequena é silêncio (limiar de ru
     const analise = analisarCustoDaOrdem(fila)
     expect(analise.custaCaro).toBe(false)
     expect(analise.candidato).toBeNull()
-  })
-})
-
-describe('precificarSpan', () => {
-  it('calcula o custo correto para o modelo claude', () => {
-    const custo = precificarSpan({ promptTokens: 1_000_000, completionTokens: 1_000_000 }, 'claude')
-    expect(custo).toBe(18.0) // 3.0 + 15.0
-  })
-
-  it('calcula o custo correto para o modelo codex', () => {
-    const custo = precificarSpan({ promptTokens: 2_000_000, completionTokens: 500_000 }, 'codex')
-    expect(custo).toBe(17.5) // (2 * 5.0) + (0.5 * 15.0) = 10.0 + 7.5
-  })
-
-  it('calcula o custo correto para o modelo antigravity', () => {
-    const custo = precificarSpan(
-      { promptTokens: 10_000_000, completionTokens: 2_000_000 },
-      'antigravity'
-    )
-    expect(custo).toBe(1.35) // (10 * 0.075) + (2 * 0.3) = 0.75 + 0.6
-  })
-
-  it('usa o modelo antigravity como fallback caso o motor nao seja encontrado', () => {
-    const custo = precificarSpan(
-      { promptTokens: 1_000_000, completionTokens: 1_000_000 },
-      'unknown-model'
-    )
-    expect(custo).toBe(0.375) // 0.075 + 0.3
   })
 })

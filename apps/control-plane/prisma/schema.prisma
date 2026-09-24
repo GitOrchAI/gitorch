@@ -14,9 +14,6 @@ model User {
   email       String   @unique
   name        String?
   githubLogin String?  @unique @map("github_login")
-
-  wishlistItems WishlistItem[]
-
   // Âncora de identidade estável do GitHub (o `login` pode ser renomeado ou
   // reusado por outra conta depois que o dono original o abandona — sem esta
   // coluna, um upsert por githubLogin faria um usuário NOVO "herdar" o User
@@ -1011,18 +1008,4 @@ model PedidoDeDesejoPendente {
   @@index([userId, chatId])
   @@index([createdAt])
   @@map("pedidos_de_desejo_pendentes")
-}
-
-/// Item de wishlist adicionado pelo usuário.
-model WishlistItem {
-  id        String   @id @default(cuid())
-  userId    String   @map("user_id")
-  source    String
-  payload   String
-  createdAt DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("wishlist_items")
 }

@@ -74,20 +74,6 @@ export interface WrapWithLimitsOptions {
 
 const SYSTEMD_RUN_BINARY = 'systemd-run'
 
-export function isQuotaExhaustedFailure(exitCode?: number | null, stderr?: string): boolean {
-  if (stderr) {
-    const lowerStderr = stderr.toLowerCase()
-    if (
-      lowerStderr.includes('quota excedida') ||
-      lowerStderr.includes('quota exhausted') ||
-      lowerStderr.includes('quota_exhausted')
-    ) {
-      return true
-    }
-  }
-  return false
-}
-
 export function isRecoverableFailure(exitCode?: number | null, stderr?: string): boolean {
   if (exitCode === 124) {
     return true
@@ -105,35 +91,6 @@ export function isRecoverableFailure(exitCode?: number | null, stderr?: string):
   }
 
   return false
-}
-
-export function assertWithinStepLimit(stepCount: number, maxSteps?: number): void {
-  if (maxSteps !== undefined && stepCount >= maxSteps) {
-    throw new Error(`Mission exceeded maximum allowed steps (${maxSteps})`)
-  }
-}
-
-export function checkMissionLimits(
-  startTimeMs: number,
-  steps: number,
-  limits?: GuestExecutionLimits,
-  timeoutMs?: number
-): { interrupted: boolean; reason?: string } {
-  if (limits?.maxStepsPerMission !== undefined && steps >= limits.maxStepsPerMission) {
-    return {
-      interrupted: true,
-      reason: `Mission exceeded maximum allowed steps (${limits.maxStepsPerMission})`,
-    }
-  }
-
-  if (timeoutMs !== undefined) {
-    const elapsed = Date.now() - startTimeMs
-    if (elapsed >= timeoutMs) {
-      return { interrupted: true, reason: `Mission exceeded execution timeout of ${timeoutMs}ms` }
-    }
-  }
-
-  return { interrupted: false }
 }
 
 export function resolveExecutionLimitsMode(

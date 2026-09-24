@@ -121,18 +121,6 @@ export interface SetNumberFieldInput {
   number: number
 }
 
-export interface SetTextFieldInput {
-  projectId: string
-  itemId: string
-  fieldId: string
-  text: string
-}
-
-export interface AddAssigneesToAssignableInput {
-  assignableId: string
-  assigneeIds: string[]
-}
-
 /**
  * Um item do quadro do cliente, do jeito que o produto precisa dele.
  *
@@ -1094,66 +1082,6 @@ export class ProjectV2Client {
     )
 
     return unwrap(response).updateProjectV2ItemFieldValue.projectV2Item.id
-  }
-
-  async setTextField(input: SetTextFieldInput): Promise<string> {
-    const response = await this.request<{
-      updateProjectV2ItemFieldValue: { projectV2Item: { id: string } }
-    }>(
-      {
-        query: `
-          mutation SetProjectV2Text(
-            $projectId: ID!
-            $itemId: ID!
-            $fieldId: ID!
-            $text: String!
-          ) {
-            updateProjectV2ItemFieldValue(
-              input: {
-                projectId: $projectId
-                itemId: $itemId
-                fieldId: $fieldId
-                value: { text: $text }
-              }
-            ) {
-              projectV2Item { id }
-            }
-          }
-        `,
-        variables: { ...input },
-      },
-      this.token
-    )
-
-    return unwrap(response).updateProjectV2ItemFieldValue.projectV2Item.id
-  }
-
-  async addAssigneesToAssignable(input: AddAssigneesToAssignableInput): Promise<string> {
-    const response = await this.request<{
-      addAssigneesToAssignable: { assignable: { id: string } }
-    }>(
-      {
-        query: `
-          mutation AddAssigneesToAssignable(
-            $assignableId: ID!
-            $assigneeIds: [ID!]!
-          ) {
-            addAssigneesToAssignable(
-              input: {
-                assignableId: $assignableId
-                assigneeIds: $assigneeIds
-              }
-            ) {
-              assignable { id }
-            }
-          }
-        `,
-        variables: { ...input },
-      },
-      this.token
-    )
-
-    return unwrap(response).addAssigneesToAssignable.assignable.id
   }
 
   /**

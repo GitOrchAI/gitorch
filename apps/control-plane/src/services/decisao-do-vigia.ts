@@ -5,10 +5,14 @@ import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
 import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
+import {
+  acharParecerNesteHead,
+  ehAprovacao,
+  ehReprovacaoCondicional,
+  type ReviewDoGithub,
+} from './parecer-do-qa.js'
 import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
-import { acharParecerNesteHead, ehAprovacao, type ReviewDoGithub } from './parecer-do-qa.js'
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
-import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from './vigia-do-pr.js'
 import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
@@ -70,6 +74,10 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
 
   let origem = 'desconhecido'
   let emConstrucaoHa: number | null = null
+  let entendimentoCompleto = false
+  let vereditoDoQa: 'approve' | 'request_changes' | undefined
+  let currentHeadSha: string | undefined
+  let diffTruncado = false
 
   if (depsVigia.issueNumber !== null) {
     const ficha = await lerFichaDoItem({
@@ -85,6 +93,15 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
         ultimoCommitEm: ficha.estado.ultimoCommitEm ?? null,
         agora,
       })
+
+      const isIssueOpen = await depsVigia.issueAberta
+      if (
+        isIssueOpen &&
+        !(ficha.estado as unknown as Record<string, unknown>)['fechadoEAbandonado'] &&
+        ficha.entendimento
+      ) {
+        entendimentoCompleto = true
+      }
     }
   }
 
@@ -173,77 +190,33 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     onWarn,
   })
 
-  let ultimoParecerQa: { body: string; timestamp: Date } | null = null
-  let temDuvidaPendente = false
-  let ultimoEscalonamentoEm: Date | null = null
+  if (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules') {
+    try {
+      const prDetails = (await ghGet(
+        `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
+        token
+      )) as { head?: { sha?: string } }
+      currentHeadSha = prDetails?.head?.sha ?? undefined
 
-  if (origem !== 'dependabot') {
-    if (depsVigia.headSha) {
-      try {
+      if (currentHeadSha) {
         const reviews = (await ghGet(
           `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/reviews?per_page=100`,
           token
         )) as ReviewDoGithub[]
 
-        const review = acharParecerNesteHead(reviews, depsVigia.headSha)
-        if (review && review.body && !ehAprovacao(review)) {
-          ultimoParecerQa = {
-            body: review.body,
-            timestamp: review.submitted_at ? new Date(review.submitted_at) : new Date(0),
+        const reviewNoHead = acharParecerNesteHead(reviews, currentHeadSha)
+        if (reviewNoHead) {
+          if (ehAprovacao(reviewNoHead)) {
+            vereditoDoQa = 'approve'
+          } else if (ehReprovacaoCondicional(reviewNoHead)) {
+            vereditoDoQa = 'request_changes'
           }
         }
-      } catch (err) {
-        onWarn(
-          `decidirAcaoNoPrOrfaoIntegrado: falha ao buscar reviews do PR #${depsVigia.numero}: ${(err as Error).message}`
-        )
       }
-
-      if (depsVigia.issueNumber !== null) {
-        try {
-          const openQuestion = await prisma.agentQuestion.findFirst({
-            where: {
-              projectId: projeto.id,
-              status: 'open',
-              dedupKey: { contains: String(depsVigia.issueNumber) },
-            },
-          })
-          temDuvidaPendente = !!openQuestion
-        } catch (err) {}
-      }
-    }
-
-    try {
-      const events = await prisma.event.findMany({
-        where: {
-          projectId: projeto.id,
-          type: 'audit',
-          payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
-        },
-        orderBy: { createdAt: 'desc' },
-      })
-      const lastEscalation = events.find(
-        (e) =>
-          e.payload &&
-          typeof e.payload === 'object' &&
-          'vigiaDoPr' in e.payload &&
-          (e.payload as { vigiaDoPr?: { acao?: string } })['vigiaDoPr']?.acao === 'escalar'
+    } catch (err) {
+      onWarn(
+        `[decisao-do-vigia] falha ao buscar PR/reviews de ${projeto.wingId} #${depsVigia.numero}: ${(err as Error).message}`
       )
-      if (lastEscalation) {
-        ultimoEscalonamentoEm = lastEscalation.createdAt
-      }
-    } catch (err) {}
-
-    if (ultimoParecerQa) {
-      try {
-        depsVigia.acoesAnteriores = await prisma.event.count({
-          where: {
-            projectId: projeto.id,
-            type: 'audit',
-            payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
-            createdAt: { gt: ultimoParecerQa.timestamp },
-          },
-        })
-      } catch (err) {}
     }
   }
 
@@ -254,9 +227,9 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     cuidaPorOrigem,
     emConstrucaoHa,
     janelaEmConstrucaoHoras,
-    ultimoParecerQa,
-    temDuvidaPendente,
-    ultimoEscalonamentoEm,
+    ...(entendimentoCompleto !== undefined ? { entendimentoCompleto } : {}),
+    ...(vereditoDoQa !== undefined ? { vereditoDoQa } : {}),
+    ...(diffTruncado !== undefined ? { diffTruncado } : {}),
   })
 
   // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally
@@ -285,11 +258,9 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     } catch (err) {
       // Se a API falhar ou não trouxer changed_files, não age destrutivamente
     }
-    // Tarefa fechada, mas PR tem arquivos alterados.
-    // Em vez de deixar aberto, tratamos como PR substituído.
     return {
-      acao: 'fechar',
-      motivo: `A tarefa #${depsVigia.issueNumber} já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.`,
+      acao: 'ignorar',
+      motivo: `#${depsVigia.numero}: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto`,
     }
   }
   if (acaoMotor.acao === 'perguntar-se-cuida') {
@@ -350,13 +321,63 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
       `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
     )
-    // mapear 'mesclar' para o caminho de merge seguro existente
-    // (merge-do-pr.ts, exige tarefa aceita + CI verde + QA com entendimento).
-    // Por enquanto mantemos ignorar sem usar escalar
-    return {
-      acao: 'ignorar',
-      motivo: 'tarefa 3.10: mesclagem automática segura não implementada no scheduler',
+
+    try {
+      const result = await mesclarPr({
+        numeroDoPr: depsVigia.numero,
+        ciState: depsVigia.verificacao === 'verde' ? 'green' : 'red',
+        vereditoDoQa: vereditoDoQa ?? 'unknown',
+        diffTruncado: diffTruncado,
+        delegado: true,
+        shaRevisado: currentHeadSha ?? '',
+        shaAtual: currentHeadSha ?? '',
+        entendimentoPresente: entendimentoCompleto,
+        merge: async () => {
+          try {
+            await ghSend('PUT', `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`, token, {
+              sha: currentHeadSha,
+              commit_title: `Merge pull request #${depsVigia.numero} from GitOrch`,
+              commit_message: `Auto-merged by GitOrch (${origem} policy)`,
+            })
+            return true
+          } catch (err) {
+            return false
+          }
+        },
+      })
+
+      if (result.mesclado) {
+        await registrarNoPainel(
+          projeto.id,
+          `gitorch-merge:${projeto.wingId}:${depsVigia.numero}`,
+          `GitOrch: o PR #${depsVigia.numero} foi mesclado com sucesso porque a política manda mesclar sozinho. Issue associada pode ser fechada caso exista.`
+        )
+        await ghSend(
+          'POST',
+          `/repos/${projeto.wingId}/issues/${depsVigia.numero}/comments`,
+          token,
+          { body: `GitOrch: Mesclado com sucesso, critérios batidos.` }
+        ).catch(() => {})
+        return { acao: 'ignorar', motivo: 'Mesclado com sucesso' }
+      } else {
+        await registrarNoPainel(
+          projeto.id,
+          `gitorch-merge-fail:${projeto.wingId}:${depsVigia.numero}`,
+          `GitOrch: Falha ao mesclar o PR #${depsVigia.numero}. Motivo: ${result.motivo}`
+        )
+        return { acao: 'ignorar', motivo: `Falha na mesclagem segura: ${result.motivo}` }
+      }
+    } catch (err) {
+      return { acao: 'ignorar', motivo: `Erro na mesclagem segura: ${(err as Error).message}` }
     }
+  }
+  if (acaoMotor.acao === 'pedir-julgamento') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
+    return { acao: 'pedir-julgamento', motivo: acaoMotor.motivo }
   }
   if (acaoMotor.acao === 'retomar') {
     await registrarNoPainel(
@@ -364,52 +385,13 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
       `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
     )
-
-    let finalAcao: ReturnType<typeof decidirProximoPasso> = { ...acaoMotor }
-
-    if (acaoMotor.causa === 'conflito') {
-      try {
-        const dossie = await montarDossieDoConflito({
-          repo: projeto.wingId,
-          numeroDoPr: depsVigia.numero,
-          issueNumber: depsVigia.issueNumber,
-          ghGet: (path: string) => ghGet(path, token),
-        })
-
-        if (dossie.conclusao === 'duplicado') {
-          return {
-            acao: 'fechar',
-            motivo: `#${depsVigia.numero}: fechado porque duplica outro PR já mesclado.\n\n${dossie.texto}`,
-          }
-        } else if (dossie.conclusao === 'escopo_misturado') {
-          finalAcao = {
-            ...acaoMotor,
-            pedido: `A sua entrega tem conflitos de merge e mistura arquivos fora do escopo da tarefa.\n\nPor favor, crie uma nova branch a partir da main e traga apenas o que falta da issue original.\n\n${dossie.texto}`,
-          }
-        } else {
-          finalAcao = {
-            ...acaoMotor,
-            pedido: `${acaoMotor.pedido}\n\n${dossie.texto}`,
-          }
-        }
-      } catch (err) {
-        await registrarNoPainel(
-          projeto.id,
-          chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, 'erro-dossie'),
-          `Falha ao montar dossiê de conflito: ${(err as Error).message}`
-        )
-      }
-    }
-
-    const retomarAcao = finalAcao as typeof acaoMotor
-
     return {
       acao: 'retomar',
-      issueNumber: retomarAcao.issueNumber,
-      causa: retomarAcao.causa,
-      pedido: retomarAcao.pedido,
-      branchDoPr: retomarAcao.branchDoPr,
-      motivo: retomarAcao.motivo,
+      issueNumber: acaoMotor.issueNumber,
+      causa: acaoMotor.causa,
+      pedido: acaoMotor.pedido,
+      branchDoPr: acaoMotor.branchDoPr,
+      motivo: acaoMotor.motivo,
     }
   }
   if (acaoMotor.acao === 'escalar') {
