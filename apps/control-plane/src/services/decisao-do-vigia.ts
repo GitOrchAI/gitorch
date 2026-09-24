@@ -7,6 +7,7 @@ import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
 import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
+import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from './vigia-do-pr.js'
 import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
@@ -285,13 +286,52 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
       `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
     )
+
+    let finalAcao: ReturnType<typeof decidirProximoPasso> = { ...acaoMotor }
+
+    if (acaoMotor.causa === 'conflito') {
+      try {
+        const dossie = await montarDossieDoConflito({
+          repo: projeto.wingId,
+          numeroDoPr: depsVigia.numero,
+          issueNumber: depsVigia.issueNumber,
+          ghGet: (path: string) => ghGet(path, token),
+        })
+
+        if (dossie.conclusao === 'duplicado') {
+          return {
+            acao: 'fechar',
+            motivo: `#${depsVigia.numero}: fechado porque duplica outro PR já mesclado.\n\n${dossie.texto}`,
+          }
+        } else if (dossie.conclusao === 'escopo_misturado') {
+          finalAcao = {
+            ...acaoMotor,
+            pedido: `A sua entrega tem conflitos de merge e mistura arquivos fora do escopo da tarefa.\n\nPor favor, crie uma nova branch a partir da main e traga apenas o que falta da issue original.\n\n${dossie.texto}`,
+          }
+        } else {
+          finalAcao = {
+            ...acaoMotor,
+            pedido: `${acaoMotor.pedido}\n\n${dossie.texto}`,
+          }
+        }
+      } catch (err) {
+        await registrarNoPainel(
+          projeto.id,
+          chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, 'erro-dossie'),
+          `Falha ao montar dossiê de conflito: ${(err as Error).message}`
+        )
+      }
+    }
+
+    const retomarAcao = finalAcao as typeof acaoMotor
+
     return {
       acao: 'retomar',
-      issueNumber: acaoMotor.issueNumber,
-      causa: acaoMotor.causa,
-      pedido: acaoMotor.pedido,
-      branchDoPr: acaoMotor.branchDoPr,
-      motivo: acaoMotor.motivo,
+      issueNumber: retomarAcao.issueNumber,
+      causa: retomarAcao.causa,
+      pedido: retomarAcao.pedido,
+      branchDoPr: retomarAcao.branchDoPr,
+      motivo: retomarAcao.motivo,
     }
   }
   if (acaoMotor.acao === 'escalar') {

@@ -16,52 +16,68 @@ export interface DossierDoConflito {
  * Usa a API do GitHub (compare, pulls/files, commits) para identificar
  * os blocos, os arquivos fora de escopo e possíveis duplicações.
  */
+function ehRespostaDePR(
+  obj: unknown
+): obj is { base?: { ref?: string }; head?: { sha?: string }; title?: string } {
+  return typeof obj === 'object' && obj !== null
+}
+
+function ehListaDeArquivos(obj: unknown): obj is Array<{ filename?: string; patch?: string }> {
+  if (!Array.isArray(obj)) return false
+  return obj.every(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      (typeof item.filename === 'string' || item.filename === undefined)
+  )
+}
+
+function ehListaDeCommits(
+  obj: unknown
+): obj is Array<{ sha?: string; commit?: { message?: string } }> {
+  if (!Array.isArray(obj)) return false
+  return obj.every((item) => typeof item === 'object' && item !== null)
+}
+
+/**
+ * Monta o dossiê do conflito de merge sem fazer clone local.
+ * Usa a API do GitHub (compare, pulls/files, commits) para identificar
+ * os blocos, os arquivos fora de escopo e possíveis duplicações.
+ */
 export async function montarDossieDoConflito(deps: DepsDoDossie): Promise<DossierDoConflito> {
   let texto = ''
   let conclusao: DossierDoConflito['conclusao'] = 'conflito_legitimo'
 
   try {
-    const prAtual = (await deps.ghGet(`/repos/${deps.repo}/pulls/${deps.numeroDoPr}`)) as {
-      base?: { ref?: string }
-      head?: { sha?: string }
-      title?: string
+    const rawPrAtual = await deps.ghGet(`/repos/${deps.repo}/pulls/${deps.numeroDoPr}`)
+    if (!ehRespostaDePR(rawPrAtual)) {
+      throw new Error('Falha ao processar a resposta do PR atual: formato inválido')
     }
+    const prAtual = rawPrAtual
 
-    if (!prAtual?.base?.ref) {
+    if (!prAtual.base?.ref) {
       throw new Error('Não foi possível determinar a branch base do PR')
     }
 
-    const arquivosDoPr = (await deps.ghGet(
-      `/repos/${deps.repo}/pulls/${deps.numeroDoPr}/files`
-    )) as Array<{
-      filename?: string
-      patch?: string
-    }>
-
-    if (!Array.isArray(arquivosDoPr)) {
-      throw new Error('Falha ao listar arquivos do PR')
+    const rawArquivosDoPr = await deps.ghGet(`/repos/${deps.repo}/pulls/${deps.numeroDoPr}/files`)
+    if (!ehListaDeArquivos(rawArquivosDoPr)) {
+      throw new Error('Falha ao listar arquivos do PR: formato inválido')
     }
+    const arquivosDoPr = rawArquivosDoPr
 
     const filesDoPr = arquivosDoPr.map((f) => f.filename).filter(Boolean) as string[]
 
-    const baseCommits = (await deps.ghGet(
+    const rawBaseCommits = await deps.ghGet(
       `/repos/${deps.repo}/commits?sha=${prAtual.base.ref}&per_page=10`
-    )) as Array<{
-      sha?: string
-      commit?: { message?: string }
-    }>
-
-    if (!Array.isArray(baseCommits)) {
-      throw new Error('Falha ao buscar commits da base')
+    )
+    if (!ehListaDeCommits(rawBaseCommits)) {
+      throw new Error('Falha ao buscar commits da base: formato inválido')
     }
 
     texto = `Dossiê de Conflito para o PR #${deps.numeroDoPr}\n`
     texto += `\nArquivos em conflito identificados: ${filesDoPr.join(', ')}\n`
 
-    if (
-      filesDoPr.length > 5 &&
-      filesDoPr.some((f) => f?.includes('payments.ts') || f?.includes('webhooks.ts'))
-    ) {
+    if (filesDoPr.length > 5) {
       conclusao = 'escopo_misturado'
       texto += `\nAnálise de Escopo e Duplicação:
 O PR #${deps.numeroDoPr} possui ${filesDoPr.length} arquivos modificados.

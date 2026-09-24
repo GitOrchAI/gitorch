@@ -181,9 +181,8 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       expect(result.pedido).toContain(
         'Traga a base para o seu ramo e resolva o conflito do pull request #42.'
       )
-      // No dossiê mockado, ocorre erro pois não implementamos fetch real,
-      // ou no rollback do meu código ele retornou o mock de erro.
-      // Apenas garantimos a existência da base do pedido para n quebrar teste.
+      // The dossier text expects #42
+      expect(result.pedido).toContain('Dossiê de Conflito para o PR #42')
       expect(result.branchDoPr).toBe('ramo')
       expect(result.motivo).toBe('#42: conflito, abrindo sessão nova')
     }
