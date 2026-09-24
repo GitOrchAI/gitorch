@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { projetoTemRepositorioValido, acordarSmComSeguranca } from './telegram.js'
+import { projetoTemRepositorioValido, acordarSmComSeguranca, processarComandoWishlistAdd } from './telegram.js'
+import * as wishlistService from '../lib/wishlist-service.js'
 
 /**
  * Fix-up (revisão) do defeito 4: dentro de `aoResponderDuvidaDoDev` (o
@@ -80,5 +81,63 @@ describe('acordarSmComSeguranca', () => {
 
     expect(() => acordarSmComSeguranca(app, 'proj_1', 'dúvida do dev respondida')).not.toThrow()
     expect(warn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('processarComandoWishlistAdd', () => {
+  it('rejeita payload vazio', async () => {
+    const sendMsg = vi.fn()
+    const app = { prisma: {}, log: { error: vi.fn() } }
+
+    await processarComandoWishlistAdd({ userId: 'u1' }, '   ', app, sendMsg)
+
+    expect(sendMsg).toHaveBeenCalledWith('Use /wishlist add <item>')
+  })
+
+  it('adiciona o item, chama o serviço e emite o SSE', async () => {
+    const sendMsg = vi.fn()
+    const broadcastEvent = vi.fn()
+    const app = {
+      prisma: {},
+      log: { error: vi.fn() },
+      broadcastEvent
+    }
+
+    const spy = vi.spyOn(wishlistService, 'addItemToWishlist').mockResolvedValueOnce({
+      id: 'w1',
+      userId: 'u1',
+      payload: 'teste do bot',
+      source: 'telegram',
+      createdAt: new Date()
+    })
+
+    await processarComandoWishlistAdd({ userId: 'u1' }, ' teste do bot ', app, sendMsg)
+
+    expect(spy).toHaveBeenCalledWith('u1', 'teste do bot', 'telegram', { prisma: app.prisma })
+    expect(broadcastEvent).toHaveBeenCalledWith('user:u1', 'wishlist_updated', {
+      userId: 'u1',
+      payload: 'teste do bot'
+    })
+    expect(sendMsg).toHaveBeenCalledWith('Item adicionado à wishlist com sucesso.')
+  })
+
+  it('captura erros e não avisa sucesso ou omite erro silencioso', async () => {
+    const sendMsg = vi.fn()
+    const broadcastEvent = vi.fn()
+    const logError = vi.fn()
+    const app = {
+      prisma: {},
+      log: { error: logError },
+      broadcastEvent
+    }
+
+    const spy = vi.spyOn(wishlistService, 'addItemToWishlist').mockRejectedValueOnce(new Error('banco falhou'))
+
+    await processarComandoWishlistAdd({ userId: 'u1' }, ' falho ', app, sendMsg)
+
+    expect(spy).toHaveBeenCalled()
+    expect(broadcastEvent).not.toHaveBeenCalled()
+    expect(logError).toHaveBeenCalled()
+    expect(sendMsg).toHaveBeenCalledWith('Ocorreu um erro ao adicionar à wishlist.')
   })
 })
