@@ -950,10 +950,14 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
               // Notify the project owner
               const project = await app.prisma.project.findUnique({
                 where: { id: event.projectId },
-                select: { userId: true },
+                select: { userId: true, wingId: true },
               })
 
               if (project) {
+                if (event.fraction >= 1 && 'broadcastEvent' in app) {
+                  app.broadcastEvent(project.wingId, 'telemetry:guest_quota_alert', event)
+                }
+
                 const ownerChatId = await resolveNotifyChatId(app.prisma, {
                   userId: project.userId,
                 })

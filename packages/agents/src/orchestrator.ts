@@ -298,6 +298,16 @@ export class AgentOrchestrator {
         const transition = await node.execute(currentState)
         currentState = missionStateReducer(currentState, transition.state)
         currentRole = transition.nextRole ?? 'done'
+
+        const runtimeResult = currentState.result as RuntimeExecutionResult | undefined
+        if (runtimeResult?.waitingStatus === 'QUOTA_EXHAUSTED') {
+          await this.synapse.recordStateCheckpoint(
+            mission.id,
+            currentRole,
+            currentState as unknown as Record<string, unknown>
+          )
+          break
+        }
       }
       result = currentState.result as RuntimeExecutionResult
     } catch (err: unknown) {
