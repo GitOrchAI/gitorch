@@ -91,7 +91,8 @@ export async function buildApp(): Promise<FastifyInstance> {
       if (!dbUser || !dbUser.plan) return
 
       const { canExecuteMissionToday } = await import('./lib/entitlements.js')
-      const { canExecuteMission, reserveMissionTokens, TOKENS_RESERVE_ESTIMATE } = await import('./lib/spend-guard.js')
+      const { canExecuteMission, reserveMissionTokens, TOKENS_RESERVE_ESTIMATE } =
+        await import('./lib/spend-guard.js')
 
       const plan = dbUser.plan
 

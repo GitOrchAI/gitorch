@@ -177,18 +177,12 @@ describe('analisarCustoDaOrdem — diferença pequena é silêncio (limiar de ru
 
 describe('precificarSpan', () => {
   it('calcula o custo correto para o modelo claude', () => {
-    const custo = precificarSpan(
-      { promptTokens: 1_000_000, completionTokens: 1_000_000 },
-      'claude'
-    )
+    const custo = precificarSpan({ promptTokens: 1_000_000, completionTokens: 1_000_000 }, 'claude')
     expect(custo).toBe(18.0) // 3.0 + 15.0
   })
 
   it('calcula o custo correto para o modelo codex', () => {
-    const custo = precificarSpan(
-      { promptTokens: 2_000_000, completionTokens: 500_000 },
-      'codex'
-    )
+    const custo = precificarSpan({ promptTokens: 2_000_000, completionTokens: 500_000 }, 'codex')
     expect(custo).toBe(17.5) // (2 * 5.0) + (0.5 * 15.0) = 10.0 + 7.5
   })
 

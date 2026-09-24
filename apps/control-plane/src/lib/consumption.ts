@@ -27,7 +27,9 @@ export async function atualizarSaldoDaOrdem(
   const tokens = span.usage.promptTokens + span.usage.completionTokens
   if (tokens > 0) {
     // Log tracking for cost calculation
-    console.debug(`[consumption] Mission ${missionId} on ${runtime} consumed ${tokens} tokens (Cost: $${cost.toFixed(4)})`)
+    console.debug(
+      `[consumption] Mission ${missionId} on ${runtime} consumed ${tokens} tokens (Cost: $${cost.toFixed(4)})`
+    )
     await prisma.mission.update({
       where: { id: missionId },
       data: {

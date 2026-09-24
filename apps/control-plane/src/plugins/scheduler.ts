@@ -438,12 +438,18 @@ import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { cotasAReler } from '../services/cotas-a-reler.js'
 import { modelosARecoletar } from '../services/modelos-a-recoletar.js'
-import { canRunMission, shouldAlertForQuota, verificarQuotaPreExecucao, TOKENS_RESERVE_ESTIMATE } from '../lib/spend-guard.js'
+import {
+  canRunMission,
+  shouldAlertForQuota,
+  verificarQuotaPreExecucao,
+  TOKENS_RESERVE_ESTIMATE,
+} from '../lib/spend-guard.js'
 import { computeConsumption, atualizarSaldoDaOrdem } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
 import type { Prisma, PrismaClient } from '@prisma/client'
+
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -1764,7 +1770,7 @@ function buildRuntimeStack(
         null,
         (msg) => app.log.warn(`[Pre-Execution Quota Alert] ${msg}`)
       )
-    }
+    },
   })
 
   return { registry, orchestrator, workspaceProvider }
@@ -4505,10 +4511,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             timeoutMs: STALE_RUNNING_MS,
           })
 
-
           if ('span' in result && result.span) {
-
-            await atualizarSaldoDaOrdem(result.span as any, sel.runtime, missionId, app.prisma as PrismaClient).catch(e => {
+            await atualizarSaldoDaOrdem(
+              result.span as { usage: { promptTokens: number; completionTokens: number } },
+              sel.runtime,
+              missionId,
+              app.prisma as PrismaClient
+            ).catch((e) => {
               app.log.warn({ e }, `[Scheduler] Erro ao atualizar saldo do span para ${missionId}`)
             })
           }
