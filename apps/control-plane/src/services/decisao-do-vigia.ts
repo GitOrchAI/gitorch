@@ -6,6 +6,7 @@ import { mesclarPr } from './merge-do-pr.js'
 import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
 import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
+import { acharParecerNesteHead, ehAprovacao, type ReviewDoGithub } from './parecer-do-qa.js'
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from './vigia-do-pr.js'
@@ -171,6 +172,80 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     onWarn,
   })
 
+  let ultimoParecerQa: { body: string; timestamp: Date } | null = null
+  let temDuvidaPendente = false
+  let ultimoEscalonamentoEm: Date | null = null
+
+  if (origem !== 'dependabot') {
+    if (depsVigia.headSha) {
+      try {
+        const reviews = (await ghGet(
+          `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/reviews?per_page=100`,
+          token
+        )) as ReviewDoGithub[]
+
+        const review = acharParecerNesteHead(reviews, depsVigia.headSha)
+        if (review && review.body && !ehAprovacao(review)) {
+          ultimoParecerQa = {
+            body: review.body,
+            timestamp: review.submitted_at ? new Date(review.submitted_at) : new Date(0),
+          }
+        }
+      } catch (err) {
+        onWarn(
+          `decidirAcaoNoPrOrfaoIntegrado: falha ao buscar reviews do PR #${depsVigia.numero}: ${(err as Error).message}`
+        )
+      }
+
+      if (depsVigia.issueNumber !== null) {
+        try {
+          const openQuestion = await prisma.agentQuestion.findFirst({
+            where: {
+              projectId: projeto.id,
+              status: 'open',
+              dedupKey: { contains: String(depsVigia.issueNumber) },
+            },
+          })
+          temDuvidaPendente = !!openQuestion
+        } catch (err) {}
+      }
+    }
+
+    try {
+      const events = await prisma.event.findMany({
+        where: {
+          projectId: projeto.id,
+          type: 'audit',
+          payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+      const lastEscalation = events.find(
+        (e) =>
+          e.payload &&
+          typeof e.payload === 'object' &&
+          'vigiaDoPr' in e.payload &&
+          (e.payload as { vigiaDoPr?: { acao?: string } })['vigiaDoPr']?.acao === 'escalar'
+      )
+      if (lastEscalation) {
+        ultimoEscalonamentoEm = lastEscalation.createdAt
+      }
+    } catch (err) {}
+
+    if (ultimoParecerQa) {
+      try {
+        depsVigia.acoesAnteriores = await prisma.event.count({
+          where: {
+            projectId: projeto.id,
+            type: 'audit',
+            payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
+            createdAt: { gt: ultimoParecerQa.timestamp },
+          },
+        })
+      } catch (err) {}
+    }
+  }
+
   const acaoMotor = decidirProximoPasso({
     ...depsVigia,
     exigeRevisaoDeSeguranca,
@@ -178,6 +253,9 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     cuidaPorOrigem,
     emConstrucaoHa,
     janelaEmConstrucaoHoras,
+    ultimoParecerQa,
+    temDuvidaPendente,
+    ultimoEscalonamentoEm,
   })
 
   // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally

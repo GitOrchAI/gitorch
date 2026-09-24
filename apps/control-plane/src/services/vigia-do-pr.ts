@@ -194,6 +194,7 @@ export interface RamoDoPr {
   branchDoPr: string | null
   /** O ramo vive no repositório do projeto? Pull request de fork, não. */
   branchNoRepoDoProjeto: boolean
+  headSha?: string | null | undefined
 }
 
 /**
@@ -249,7 +250,7 @@ export interface PrOrfaoObservado extends RamoDoPr {
 }
 
 /** Por que o trabalho parou — o que o vigia vai pedir para o dev consertar. */
-export type CausaDaParada = 'conflito' | 'ci-vermelha'
+export type CausaDaParada = 'conflito' | 'ci-vermelha' | 'qa-reprovou'
 
 export type AcaoDoVigia =
   /** Não é assunto do vigia (é de gente, é da vigia de sessões, ou é cedo demais). */
@@ -562,6 +563,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         issueAberta: issueNumber === null ? true : await deps.issueAberta(issueNumber),
         branchDoPr: pr.branchDoPr,
         branchNoRepoDoProjeto: pr.branchNoRepoDoProjeto,
+        headSha: pr.headSha,
         mergeable: pr.mergeable,
         verificacao: pr.verificacao,
         paradoHaMs: pr.paradoHaMs,
@@ -837,6 +839,7 @@ export async function listarPrsAbertosParaOVigia(args: {
       // agir — mesma disciplina conservadora dos três campos abaixo.
       branchDoPr: cru.head?.ref ?? null,
       branchNoRepoDoProjeto: (cru.head?.repo?.full_name ?? null) === args.repo,
+      headSha: cru.head?.sha ?? null,
       rascunho: cru.draft ?? false,
       mergeable: null,
       verificacao: 'pendente',

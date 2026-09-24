@@ -2,6 +2,14 @@ import { describe, expect, it, beforeEach, vi, afterEach } from 'vitest'
 import Fastify from 'fastify'
 import { EventEmitter } from 'node:events'
 import { ssePlugin } from './sse.js'
+import type { FastifyReply } from 'fastify'
+
+interface SseClient {
+  id: string
+  wingId: string
+  reply: FastifyReply
+  lastHeartbeat: number
+}
 
 describe('SSE Plugin', () => {
   let app: ReturnType<typeof Fastify>
@@ -39,6 +47,25 @@ describe('SSE Plugin', () => {
 
     expect(res.statusCode).toBe(401)
     expect(mockRedis.exists).toHaveBeenCalledWith('waiting_room:invalidtoken')
+  })
+
+  it('broadcastEvent correctly sends data to a connected sseClient', async () => {
+    const mockReply = {
+      sse: vi.fn(),
+    }
+    const client = {
+      id: 'test-client',
+      wingId: 'test-wing',
+      reply: mockReply,
+      lastHeartbeat: Date.now(),
+    }
+    app.sseClients.set(client.id, client as unknown as SseClient)
+
+    app.broadcastEvent('test-wing', 'guest:invited', { token: '123' })
+    expect(mockReply.sse).toHaveBeenCalledWith({
+      data: JSON.stringify({ token: '123' }),
+      event: 'guest:invited',
+    })
   })
 
   it('connects successfully and yields connected event if token exists', async () => {
