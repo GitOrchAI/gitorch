@@ -80,6 +80,13 @@ export function canRunMission(check: SpendCheck): {
 /** Mock memory store to store reserved tokens during execution since actual token expenditure is settled asynchronously */
 const reservedTokensByOrg = new Map<string, number>()
 
+export class GuestQuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'GuestQuotaExceededError'
+  }
+}
+
 export class QuotaExcedidaError extends Error {
   constructor(message: string) {
     super(message)
@@ -162,6 +169,53 @@ export function isGuestRevoked(guestId: string): boolean {
 
 export function clearRevokedGuests(): void {
   revokedGuests.clear()
+}
+
+export async function checkGuestQuotaAvailable(guestId: string, projectId: string): Promise<void> {
+  const { prisma } = await import('../plugins/prisma.js')
+  const invitation = await prisma.projectInvitation.findUnique({
+    where: { id: guestId },
+  })
+  if (!invitation || !invitation.executionLimits) return
+
+  const limits = invitation.executionLimits as { maxQuota?: number; maxStepsPerMission?: number }
+  if (limits.maxQuota == null || limits.maxQuota <= 0) return
+
+  const usedQuota = await prisma.mission.count({
+    where: {
+      projectId: projectId,
+      payload: {
+        path: ['guestId'],
+        equals: guestId,
+      },
+    },
+  })
+
+  const appEmit = (globalThis as unknown as { appEmitter?: { emit: Function } }).appEmitter
+  if (appEmit && limits.maxQuota > 0) {
+    const fraction = usedQuota / limits.maxQuota
+    if (fraction >= 1) {
+      appEmit.emit('telemetry:guest_quota_alert', {
+        guestId,
+        projectId,
+        fraction,
+        used: usedQuota,
+        limit: limits.maxQuota,
+      })
+    } else if (fraction >= 0.8) {
+      appEmit.emit('telemetry:guest_quota_alert', {
+        guestId,
+        projectId,
+        fraction,
+        used: usedQuota,
+        limit: limits.maxQuota,
+      })
+    }
+  }
+
+  if (usedQuota >= limits.maxQuota) {
+    throw new GuestQuotaExceededError(`Quota excedida para o convidado ${guestId}`)
+  }
 }
 
 export async function assertGuestQuotaAvailable(guestId: string, projectId: string): Promise<void> {
