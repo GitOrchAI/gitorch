@@ -21,7 +21,6 @@
  *   pnpm exec tsx scripts/aplicar-retrato-inicial.ts
  */
 import { PrismaClient } from '@prisma/client'
-import { ProjectV2Client } from '@gitorch/github-sync'
 import { varrerRetratoDoProjeto } from '../src/services/varredura-do-retrato.js'
 import { atualizarFichaDoItem, lerFichaDoItem } from '../src/services/ficha-do-item.js'
 import { registrarNoPainelUmaVez } from '../src/services/registro-no-painel.js'
@@ -50,35 +49,54 @@ const TOKEN = requiredEnv('GITORCH_RETRATO_TOKEN')
 const REPOSITORY = requiredEnv('GITORCH_RETRATO_REPOSITORY')
 const PROJECT_ID = requiredEnv('GITORCH_RETRATO_PROJECT_ID')
 
-const projectV2Client = new ProjectV2Client({ token: TOKEN })
-
-async function ghGet(caminho: string): Promise<unknown> {
+async function ghGet(caminho: string, options?: RequestInit): Promise<unknown> {
   const resp = await fetch(`https://api.github.com${caminho}`, {
+    ...options,
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       Accept: 'application/vnd.github+json',
       'User-Agent': 'gitorch',
+      ...(options?.headers || {}),
     },
   })
   if (!resp.ok) throw new Error(`GET ${caminho} falhou (${resp.status})`)
   return resp.json()
 }
 
-async function main(): Promise<void> {
-  const prisma = new PrismaClient()
+export async function aplicarRetratoInicial(deps: {
+  prisma: PrismaClient
+  ghGet: (caminho: string, options?: RequestInit) => Promise<unknown>
+  REPOSITORY: string
+  PROJECT_ID: string
+}): Promise<void> {
+  const { prisma, ghGet, REPOSITORY, PROJECT_ID } = deps
   try {
     console.log(`[retrato-inicial] varrendo ${REPOSITORY}...`)
     const resumo = await varrerRetratoDoProjeto({
       repo: REPOSITORY,
       ghGet,
-      atualizarFicha: (args) =>
-        atualizarFichaDoItem({
+      atualizarFicha: async (args) => {
+        const fichaExistente = await lerFichaDoItem({
           prisma: prisma as never,
           projectId: PROJECT_ID,
           tipo: args.tipo,
           numero: args.numero,
-          estado: args.estado,
-        }).then(() => undefined),
+        })
+        const estadoMesclado = fichaExistente
+          ? {
+              ...(fichaExistente.estado as unknown as Record<string, unknown>),
+              ...(args.estado as unknown as Record<string, unknown>),
+            }
+          : args.estado
+
+        await atualizarFichaDoItem({
+          prisma: prisma as never,
+          projectId: PROJECT_ID,
+          tipo: args.tipo,
+          numero: args.numero,
+          estado: estadoMesclado as never,
+        })
+      },
       onWarn: (m) => console.warn(`[retrato-inicial] ${m}`),
     })
     console.log(`[retrato-inicial] fichas atualizadas: ${resumo.prs} PRs, ${resumo.issues} issues`)
@@ -135,21 +153,50 @@ async function main(): Promise<void> {
         let issueNumber: number | null = null
         const fetchClosingIssues = async (): Promise<number[]> => {
           const [owner, repo] = REPOSITORY.split('/')
-          return projectV2Client.closingIssuesDoPr({
-            owner: owner as string,
-            repo: repo as string,
-            prNumber: pr.number,
-          })
+          const result = (await ghGet('/graphql', {
+            method: 'POST',
+            body: JSON.stringify({
+              query: `
+                query ClosingIssuesDoPr($owner: String!, $repo: String!, $prNumber: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $prNumber) {
+                      closingIssuesReferences(first: 10) {
+                        nodes { number }
+                      }
+                    }
+                  }
+                }
+              `,
+              variables: { owner, repo, prNumber: pr.number },
+            }),
+          })) as {
+            data?: {
+              repository?: {
+                pullRequest?: { closingIssuesReferences?: { nodes?: Array<{ number: number }> } }
+              }
+            }
+          }
+          const nodes = result.data?.repository?.pullRequest?.closingIssuesReferences?.nodes ?? []
+          return nodes.map((n) => n.number)
         }
 
         const sessoesFechadas = await prisma.devSession.findMany({
           where: { projectId: PROJECT_ID, pullRequestNumber: pr.number, closedAt: { not: null } },
         })
 
-        // Pre-fetch labels for issues mentioned in the PR body, since `issueComEtiquetaDeDelegacao` needs them synchronously
+        // Pre-fetch labels for issues mentioned in the PR body or resolved formally, since `issueComEtiquetaDeDelegacao` needs them synchronously
         const ligacoes = (sinaisPr.corpo ?? '').matchAll(/\b(?:closes|fixes|resolves)\s+#(\d+)/gi)
+        const issuesToFetch = new Set<number>()
         for (const ligacao of ligacoes) {
-          const mentionedIssueNum = Number(ligacao[1])
+          issuesToFetch.add(Number(ligacao[1]))
+        }
+
+        const formalIssues = await fetchClosingIssues()
+        for (const num of formalIssues) {
+          issuesToFetch.add(num)
+        }
+
+        for (const mentionedIssueNum of issuesToFetch) {
           if (!issueCache.has(mentionedIssueNum)) {
             try {
               const issueData = (await ghGet(
@@ -172,7 +219,7 @@ async function main(): Promise<void> {
           corpo: sinaisPr.corpo ?? undefined,
           headRefName: pr.head?.ref ?? undefined,
           sessoes: sessoesFechadas as never, // Bypass LinhaDeSessao incompleta para script one-off
-          closingIssues: fetchClosingIssues,
+          closingIssues: async () => formalIssues,
           issueComEtiquetaDeDelegacao: (num) => issueCache.get(num) ?? false,
         })
 
@@ -209,7 +256,10 @@ async function main(): Promise<void> {
           projectId: PROJECT_ID,
           tipo: 'pr',
           numero: pr.number,
-          estado: { ...(fichaExistente?.estado as Record<string, unknown>), status: 'open' },
+          estado: {
+            ...(fichaExistente?.estado as unknown as Record<string, unknown>),
+            status: 'open',
+          } as never,
           origem: origemClassificada,
         })
 
@@ -244,7 +294,14 @@ async function main(): Promise<void> {
           orderBy: { id: 'desc' },
         })
         const prsComSessaoViva = new Set<number>(
-          linhas.filter((l) => l.closedAt === null).map((l) => l.pullRequestNumber as number)
+          linhas
+            .filter(
+              (l: { closedAt: Date | null; pullRequestNumber: number }) => l.closedAt === null
+            )
+            .map(
+              (l: { closedAt: Date | null; pullRequestNumber: number }) =>
+                l.pullRequestNumber as number
+            )
         )
         const issuePorPr = new Map<number, number>()
         for (const l of linhas) {
@@ -397,6 +454,15 @@ async function main(): Promise<void> {
     console.log(`pull requests reconhecidos (origem classificada): ${reconhecidos}`)
     console.log(`pull requests sem dado suficiente ainda:          ${semDadoSuficiente}`)
     console.log('decisões por ação:', decisoesPorAcao)
+  } finally {
+    // caller's responsibility to disconnect prisma if needed
+  }
+}
+
+async function main(): Promise<void> {
+  const prisma = new PrismaClient()
+  try {
+    await aplicarRetratoInicial({ prisma, ghGet, REPOSITORY, PROJECT_ID })
   } finally {
     await prisma.$disconnect()
   }
