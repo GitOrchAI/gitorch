@@ -21,13 +21,16 @@
  *   pnpm exec tsx scripts/aplicar-retrato-inicial.ts
  */
 import { PrismaClient } from '@prisma/client'
-import { ProjectV2Client } from '@gitorch/github-sync'
 import { varrerRetratoDoProjeto } from '../src/services/varredura-do-retrato.js'
 import { atualizarFichaDoItem, lerFichaDoItem } from '../src/services/ficha-do-item.js'
+import { ProjectV2Client } from '@gitorch/github-sync'
 import { registrarNoPainelUmaVez } from '../src/services/registro-no-painel.js'
 import { chaveDoRegistroDoMotor } from '../src/services/registro-do-motor.js'
 import { classificarOrigem } from '../src/services/origem-do-item.js'
-import { acharTarefaDoItem } from '../src/services/vinculo-da-tarefa.js'
+import {
+  descobrirVinculoDoRetrato,
+  mesclarEAtualizarFicha,
+} from '../src/services/retrato-inicial.js'
 import { decidirProximoPasso } from '../src/services/motor-do-proximo-passo.js'
 import {
   lerCuidaPorOrigem,
@@ -133,47 +136,18 @@ async function main(): Promise<void> {
 
         // Tentar buscar o número da issue associada
         let issueNumber: number | null = null
-        const fetchClosingIssues = async (): Promise<number[]> => {
-          const [owner, repo] = REPOSITORY.split('/')
-          return projectV2Client.closingIssuesDoPr({
-            owner: owner as string,
-            repo: repo as string,
-            prNumber: pr.number,
-          })
-        }
-
         const sessoesFechadas = await prisma.devSession.findMany({
           where: { projectId: PROJECT_ID, pullRequestNumber: pr.number, closedAt: { not: null } },
         })
 
-        // Pre-fetch labels for issues mentioned in the PR body, since `issueComEtiquetaDeDelegacao` needs them synchronously
-        const ligacoes = (sinaisPr.corpo ?? '').matchAll(/\b(?:closes|fixes|resolves)\s+#(\d+)/gi)
-        for (const ligacao of ligacoes) {
-          const mentionedIssueNum = Number(ligacao[1])
-          if (!issueCache.has(mentionedIssueNum)) {
-            try {
-              const issueData = (await ghGet(
-                `/repos/${REPOSITORY}/issues/${mentionedIssueNum}`
-              )) as { labels?: Array<string | { name?: string }> | null }
-              const hasTaskLabel =
-                issueData.labels?.some(
-                  (l) => (typeof l === 'string' ? l : l.name) === 'gitorch:task'
-                ) ?? false
-              issueCache.set(mentionedIssueNum, hasTaskLabel)
-            } catch (e) {
-              issueCache.set(mentionedIssueNum, false)
-            }
-          }
-        }
-
-        const vinculo = await acharTarefaDoItem({
+        const vinculo = await descobrirVinculoDoRetrato({
           numeroDoPr: pr.number,
-          autor: sinaisPr.autor ?? undefined,
-          corpo: sinaisPr.corpo ?? undefined,
-          headRefName: pr.head?.ref ?? undefined,
-          sessoes: sessoesFechadas as never, // Bypass LinhaDeSessao incompleta para script one-off
-          closingIssues: fetchClosingIssues,
-          issueComEtiquetaDeDelegacao: (num) => issueCache.get(num) ?? false,
+          repository: REPOSITORY,
+          sinaisPr: { ...sinaisPr, ...(pr.head?.ref ? { headRefName: pr.head.ref } : {}) },
+          sessoesFechadas,
+          projectV2Client,
+          ghGet,
+          issueCache,
         })
 
         if (vinculo) {
@@ -195,22 +169,11 @@ async function main(): Promise<void> {
           temSessaoGitOrch: sessoesFechadas.length > 0,
         })
 
-        // Recuperar ficha existente para não sobrescrever estado detalhado
-        const fichaExistente = await lerFichaDoItem({
+        await mesclarEAtualizarFicha({
           prisma: prisma as never,
           projectId: PROJECT_ID,
-          tipo: 'pr',
           numero: pr.number,
-        })
-
-        // Atualizar ficha com a origem
-        await atualizarFichaDoItem({
-          prisma: prisma as never,
-          projectId: PROJECT_ID,
-          tipo: 'pr',
-          numero: pr.number,
-          estado: { ...(fichaExistente?.estado as Record<string, unknown>), status: 'open' },
-          origem: origemClassificada,
+          origemClassificada,
         })
 
         const ficha = await lerFichaDoItem({
