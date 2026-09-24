@@ -130,7 +130,7 @@ describe('motor-do-proximo-passo (escalar)', () => {
       acoesAnteriores: MAX_ACOES_DO_VIGIA + 1,
       ultimoParecerQa: null,
       mergeable: true,
-      verificacao: 'verde'
+      verificacao: 'verde',
     })
     expect(d.acao).toBe('so-acompanhar')
     if (d.acao === 'so-acompanhar') {
