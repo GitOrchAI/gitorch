@@ -13,7 +13,7 @@ export default defineConfig({
       JWT_SECRET: 'test-secret',
       GITORCH_CREDENTIAL_KEY: '0000000000000000000000000000000000000000000000000000000000000000',
     },
-    include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'test/**/*.test.ts', 'scripts/**/*.test.ts'],
     globals: true,
     testTimeout: 15000,
     setupFiles: ['src/test/setup.ts'],

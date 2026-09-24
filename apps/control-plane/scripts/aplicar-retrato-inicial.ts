@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 /**
  * Fase 6.1 do plano do repositório inteiro: aplica as Fases 1-5 (retrato,
  * vínculo, julgamento, segurança) a TODO item já parado hoje nos repositórios
@@ -45,22 +47,33 @@ function requiredEnv(name: string): string {
   return v
 }
 
-const TOKEN = requiredEnv('GITORCH_RETRATO_TOKEN')
-const REPOSITORY = requiredEnv('GITORCH_RETRATO_REPOSITORY')
-const PROJECT_ID = requiredEnv('GITORCH_RETRATO_PROJECT_ID')
+function criarGhGet(token: string) {
+  return async function ghGet(caminho: string, options?: RequestInit): Promise<unknown> {
+    const resp = await fetch(`https://api.github.com${caminho}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'gitorch',
+        ...(options?.headers || {}),
+      },
+    })
+    if (!resp.ok) throw new Error(`GET ${caminho} falhou (${resp.status})`)
+    return resp.json()
+  }
+}
 
-async function ghGet(caminho: string, options?: RequestInit): Promise<unknown> {
-  const resp = await fetch(`https://api.github.com${caminho}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'gitorch',
-      ...(options?.headers || {}),
-    },
-  })
-  if (!resp.ok) throw new Error(`GET ${caminho} falhou (${resp.status})`)
-  return resp.json()
+function mesclarEstadoDaFicha(
+  existente: Record<string, unknown> | null | undefined,
+  novos: Record<string, unknown>
+): Record<string, unknown> {
+  const resultado: Record<string, unknown> = { ...(existente ?? {}) }
+  for (const [chave, valor] of Object.entries(novos)) {
+    if (valor !== null && valor !== undefined) {
+      resultado[chave] = valor
+    }
+  }
+  return resultado
 }
 
 export async function aplicarRetratoInicial(deps: {
@@ -82,12 +95,10 @@ export async function aplicarRetratoInicial(deps: {
           tipo: args.tipo,
           numero: args.numero,
         })
-        const estadoMesclado = fichaExistente
-          ? {
-              ...(fichaExistente.estado as unknown as Record<string, unknown>),
-              ...(args.estado as unknown as Record<string, unknown>),
-            }
-          : args.estado
+        const estadoMesclado = mesclarEstadoDaFicha(
+          fichaExistente?.estado as Record<string, unknown> | null | undefined,
+          args.estado as Record<string, unknown>
+        )
 
         await atualizarFichaDoItem({
           prisma: prisma as never,
@@ -180,9 +191,12 @@ export async function aplicarRetratoInicial(deps: {
           return nodes.map((n) => n.number)
         }
 
-        const sessoesFechadas = await prisma.devSession.findMany({
-          where: { projectId: PROJECT_ID, pullRequestNumber: pr.number, closedAt: { not: null } },
+        const sessoesDoProjeto = await prisma.devSession.findMany({
+          where: { projectId: PROJECT_ID },
         })
+        const sessoesFechadas = sessoesDoProjeto.filter(
+          (s) => s.pullRequestNumber === pr.number && s.closedAt !== null
+        )
 
         // Pre-fetch labels for issues mentioned in the PR body or resolved formally, since `issueComEtiquetaDeDelegacao` needs them synchronously
         const ligacoes = (sinaisPr.corpo ?? '').matchAll(/\b(?:closes|fixes|resolves)\s+#(\d+)/gi)
@@ -218,7 +232,7 @@ export async function aplicarRetratoInicial(deps: {
           autor: sinaisPr.autor ?? undefined,
           corpo: sinaisPr.corpo ?? undefined,
           headRefName: pr.head?.ref ?? undefined,
-          sessoes: sessoesFechadas as never, // Bypass LinhaDeSessao incompleta para script one-off
+          sessoes: sessoesDoProjeto as never, // Todas as sessões do projeto para casar por branch e texto
           closingIssues: async () => formalIssues,
           issueComEtiquetaDeDelegacao: (num) => issueCache.get(num) ?? false,
         })
@@ -233,13 +247,18 @@ export async function aplicarRetratoInicial(deps: {
         }>
 
         // Classificar origem
+        const temSessao =
+          sessoesFechadas.length > 0 ||
+          (vinculo !== null &&
+            (vinculo.origemDoVinculo === 'branch-do-jules' || vinculo.origemDoVinculo === 'texto'))
+
         const origemClassificada = classificarOrigem({
           ...sinaisPr,
           commits: commits.map((c) => ({
             mensagem: c.commit?.message ?? '',
             autorLogin: c.author?.login ?? null,
           })),
-          temSessaoGitOrch: sessoesFechadas.length > 0,
+          temSessaoGitOrch: temSessao,
         })
 
         // Recuperar ficha existente para não sobrescrever estado detalhado
@@ -251,15 +270,21 @@ export async function aplicarRetratoInicial(deps: {
         })
 
         // Atualizar ficha com a origem
+        const novoEstado = mesclarEstadoDaFicha(
+          fichaExistente?.estado as Record<string, unknown> | null | undefined,
+          {
+            status: 'open',
+            rascunho: !!pr.draft,
+            ...(issueNumber !== null ? { issueNumber } : {}),
+          }
+        )
+
         await atualizarFichaDoItem({
           prisma: prisma as never,
           projectId: PROJECT_ID,
           tipo: 'pr',
           numero: pr.number,
-          estado: {
-            ...(fichaExistente?.estado as unknown as Record<string, unknown>),
-            status: 'open',
-          } as never,
+          estado: novoEstado as never,
           origem: origemClassificada,
         })
 
@@ -460,15 +485,25 @@ export async function aplicarRetratoInicial(deps: {
 }
 
 async function main(): Promise<void> {
+  const token = requiredEnv('GITORCH_RETRATO_TOKEN')
+  const repository = requiredEnv('GITORCH_RETRATO_REPOSITORY')
+  const projectId = requiredEnv('GITORCH_RETRATO_PROJECT_ID')
   const prisma = new PrismaClient()
   try {
-    await aplicarRetratoInicial({ prisma, ghGet, REPOSITORY, PROJECT_ID })
+    await aplicarRetratoInicial({
+      prisma,
+      ghGet: criarGhGet(token),
+      REPOSITORY: repository,
+      PROJECT_ID: projectId,
+    })
   } finally {
     await prisma.$disconnect()
   }
 }
 
-main().catch((e) => {
-  console.error(e)
-  process.exit(1)
-})
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  main().catch((e) => {
+    console.error(e)
+    process.exit(1)
+  })
+}

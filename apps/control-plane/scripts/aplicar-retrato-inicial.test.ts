@@ -17,6 +17,9 @@ function ghGetFake(rotas: Record<string, unknown>) {
     for (const [padrao, resposta] of Object.entries(rotas)) {
       if (caminho.startsWith(padrao)) return resposta
     }
+    if (caminho.includes('/issues?')) {
+      return []
+    }
     throw new Error(`rota não mapeada no teste: ${caminho}`)
   })
 }
@@ -42,18 +45,29 @@ describe('aplicarRetratoInicial', () => {
         .mockResolvedValue({ id: 'proj-1', runtimeConfig: {}, devAccountId: 'dev-1' }),
     },
     devSession: {
-      findMany: vi.fn(async ({ where }) =>
-        devSessionData.filter((s) => s.pullRequestNumber === where.pullRequestNumber)
-      ),
+      findMany: vi.fn(async ({ where }: { where?: Record<string, unknown> }) => {
+        return devSessionData.filter((s) => {
+          if (!where) return true
+          if (
+            where.pullRequestNumber !== undefined &&
+            s.pullRequestNumber !== where.pullRequestNumber
+          ) {
+            return false
+          }
+          return true
+        })
+      }),
       count: vi.fn().mockResolvedValue(0),
+      findFirst: vi.fn().mockResolvedValue(null),
     },
     event: {
       count: vi.fn().mockResolvedValue(0),
+      findFirst: vi.fn().mockResolvedValue(null),
       create: vi.fn(async ({ data }) => {
         eventData.push(data)
       }),
     },
-    fichaDoItem: {
+    repoItem: {
       findUnique: vi.fn(async ({ where }) => {
         return (
           fichaData.find(
@@ -137,12 +151,17 @@ describe('aplicarRetratoInicial', () => {
       }) => f.projectId_tipo_numero.numero === 1 && f.projectId_tipo_numero.tipo === 'pr'
     )
     expect(ficha!).toBeDefined()
-    expect(ficha!.origem).toBe('desconhecido') // Not dev, no session, but processed
+    expect(ficha!.origem).toBe('pessoa') // Not dev, no session, but processed
   })
 
   it('vincula tarefa via corpo do PR (closes #N) e etiqueta', async () => {
     const ghGet = ghGetFake({
-      '/repos/dono/repo/pulls?state=open': [{ number: 2, body: 'fixes #200' }],
+      '/repos/dono/repo/pulls?state=open': [
+        {
+          number: 2,
+          body: 'fixes #200\n\nPR created automatically by Jules for task 200 started by @gitorch',
+        },
+      ],
       'graphql-2': {
         data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [] } } } },
       },
@@ -185,7 +204,11 @@ describe('aplicarRetratoInicial', () => {
   it('vincula tarefa via branch do jules', async () => {
     const ghGet = ghGetFake({
       '/repos/dono/repo/pulls?state=open': [
-        { number: 3, head: { ref: 'jules-1234567890123456-abc' } },
+        {
+          number: 3,
+          head: { ref: 'jules-1234567890123456-abc' },
+          body: 'PR created automatically by Jules for task 300 started by @gitorch',
+        },
       ],
       'graphql-3': {
         data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [] } } } },
@@ -254,7 +277,7 @@ describe('aplicarRetratoInicial', () => {
         origem?: string
       }) => f.projectId_tipo_numero.numero === 4 && f.projectId_tipo_numero.tipo === 'pr'
     )
-    expect(ficha!.origem).toBe('desconhecido')
+    expect(ficha!.origem).toBe('pessoa')
   })
 
   it('preserva campos existentes da ficha do banco (conflict, draft) ao aplicar', async () => {
@@ -282,7 +305,7 @@ describe('aplicarRetratoInicial', () => {
         ultimoCommitEm: '2026-01-01',
         arquivosMexidos: 10,
       },
-      origem: 'desconhecido',
+      origem: 'pessoa',
     })
 
     await aplicarRetratoInicial({
