@@ -5,6 +5,7 @@ import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
 import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
+import { tudoSobreOItem, montarContextoDoItem } from './tudo-sobre-o-item.js'
 import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import type { PrismaClient } from '@prisma/client'
@@ -234,6 +235,15 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     }
 
     try {
+      const contextData = await tudoSobreOItem({
+        prisma: prisma as never,
+        projectId: projeto.id,
+        tipo: 'pr',
+        numero: depsVigia.numero,
+      })
+      const contextStr = contextData
+        ? montarContextoDoItem(contextData.item, contextData.vinculos)
+        : ''
       const contexto = await montarContextoExecutivo(
         {
           projectId: projeto.id,
@@ -250,7 +260,12 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           numeroDoPr: depsVigia.numero,
           repository: projeto.wingId,
           origem: origem as OrigemDoItem,
-          contexto,
+          contexto: {
+            ...contexto,
+            lacunas: contextStr
+              ? [...contexto.lacunas, '\n\nGrafo de vínculos:\n' + contextStr]
+              : contexto.lacunas,
+          },
         },
         { agentQuestion }
       )

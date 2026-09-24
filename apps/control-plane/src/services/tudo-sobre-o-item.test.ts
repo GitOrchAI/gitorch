@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { tudoSobreOItem } from './tudo-sobre-o-item.js'
+import { tudoSobreOItem, montarContextoDoItem } from './tudo-sobre-o-item.js'
 
 describe('tudoSobreOItem', () => {
   it('retorna null se o item não existe', async () => {
@@ -54,5 +54,34 @@ describe('tudoSobreOItem', () => {
     expect(prisma.repoItemVinculos.findUnique).toHaveBeenCalledWith({
       where: { repoItemId: 'item-1' },
     })
+  })
+})
+
+describe('montarContextoDoItem', () => {
+  it('formata item corretamente com vínculos completos', () => {
+    const item = { tipo: 'pr', numero: 42, estado: { status: 'open' } } as never
+    const vinculos = {
+      hierarquia: { parents: [{ number: 1 }] },
+      milestone: { title: 'Sprint 1' },
+      projectFields: { Status: 'In Progress' },
+      sessoesJules: [{ sessionName: 'jules-123' }],
+      qaReview: { estado: 'APPROVED', sha: 'abc' },
+      statusCheckRollup: { state: 'SUCCESS' },
+    } as never
+
+    const resultado = montarContextoDoItem(item, vinculos)
+    expect(resultado).toContain('Item: pr #42')
+    expect(resultado).toContain('Sprint 1')
+    expect(resultado).toContain('In Progress')
+    expect(resultado).toContain('jules-123')
+    expect(resultado).toContain('APPROVED')
+    expect(resultado).toContain('SUCCESS')
+  })
+
+  it('formata item corretamente sem vínculos', () => {
+    const item = { tipo: 'issue', numero: 10, estado: { status: 'closed' } } as never
+    const resultado = montarContextoDoItem(item, null)
+    expect(resultado).toContain('Item: issue #10')
+    expect(resultado).toContain('Nenhum vínculo extra encontrado (grafo vazio).')
   })
 })

@@ -1,6 +1,8 @@
 import type { PrismaClient } from '@prisma/client'
 import { ProjectV2Client } from '@gitorch/github-sync'
 
+import { Prisma } from '@prisma/client'
+
 export interface AtualizarGrafoDeps {
   prisma: Pick<PrismaClient, 'repoItem' | 'repoItemVinculos'>
   githubToken: string
@@ -29,18 +31,18 @@ export async function atualizarGrafoDeVinculos(deps: AtualizarGrafoDeps): Promis
     where: { repoItemId: deps.repoItemId },
     create: {
       repoItemId: deps.repoItemId,
-      hierarquia: hierarquia as never,
-      milestone: milestone as never,
-      projectFields: projectFields as never,
-      labelsAndAssignees: labelsAndAssignees as never,
-      prsLigados: prsLigados as never,
+      hierarquia: hierarquia as Prisma.InputJsonValue,
+      milestone: milestone as Prisma.InputJsonValue,
+      projectFields: projectFields as Prisma.InputJsonValue,
+      labelsAndAssignees: labelsAndAssignees as Prisma.InputJsonValue,
+      prsLigados: prsLigados as Prisma.InputJsonValue,
     },
     update: {
-      hierarquia: hierarquia as never,
-      milestone: milestone as never,
-      projectFields: projectFields as never,
-      labelsAndAssignees: labelsAndAssignees as never,
-      prsLigados: prsLigados as never,
+      hierarquia: hierarquia as Prisma.InputJsonValue,
+      milestone: milestone as Prisma.InputJsonValue,
+      projectFields: projectFields as Prisma.InputJsonValue,
+      labelsAndAssignees: labelsAndAssignees as Prisma.InputJsonValue,
+      prsLigados: prsLigados as Prisma.InputJsonValue,
     },
   })
 }
