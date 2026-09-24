@@ -30,7 +30,11 @@ import {
   type ResultadoDoManipuladorDeResposta,
 } from '../services/agent-question.js'
 import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
-import type { TelemetrySpanEvent, TelemetryQuotaAlertEvent } from './sse.js'
+import type {
+  TelemetrySpanEvent,
+  TelemetryQuotaAlertEvent,
+  TelemetryGuestQuotaAlertEvent,
+} from './sse.js'
 
 import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-errors.js'
 import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
@@ -95,9 +99,9 @@ setInterval(() => {
   }
 }, DEDUP_TIMEOUT_MS).unref?.()
 
-import type { TelemetryGuestQuotaAlertEvent } from './sse.js'
-
-function formatObservabilityAlert(event: TelemetrySpanEvent | TelemetryQuotaAlertEvent | TelemetryGuestQuotaAlertEvent): string {
+function formatObservabilityAlert(
+  event: TelemetrySpanEvent | TelemetryQuotaAlertEvent | TelemetryGuestQuotaAlertEvent
+): string {
   if (event.type === 'telemetry:quota_alert') {
     return `🚨 Alerta de Orçamento Atingido\n\nNó: ${event.role || 'desconhecido'}\nCusto: ${event.used || 0} / ${event.limit || 'desconhecido'} tokens\nMotivo: ${event.reason}\nOrdem: ${event.missionId}`
   }
@@ -950,7 +954,9 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
               })
 
               if (project) {
-                const ownerChatId = await resolveNotifyChatId(app.prisma, { userId: project.userId })
+                const ownerChatId = await resolveNotifyChatId(app.prisma, {
+                  userId: project.userId,
+                })
                 if (ownerChatId) {
                   await sendTelegramMessage({
                     botToken,
@@ -960,30 +966,24 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                 }
               }
 
-              // Notify the guest (invitation email user)
+              // Notify the guest via the invitation user link
               const invitation = await app.prisma.projectInvitation.findUnique({
                 where: { id: event.guestId },
-                select: { email: true }
+                select: { userId: true },
               })
 
-              if (invitation) {
-                const guestUser = await app.prisma.user.findUnique({
-                  where: { email: invitation.email },
-                  select: { id: true }
+              if (invitation && invitation.userId) {
+                const guestChatId = await resolveNotifyChatId(app.prisma, {
+                  userId: invitation.userId,
                 })
-
-                if (guestUser) {
-                  const guestChatId = await resolveNotifyChatId(app.prisma, { userId: guestUser.id })
-                  if (guestChatId) {
-                    await sendTelegramMessage({
-                      botToken,
-                      chatId: guestChatId,
-                      text: message,
-                    })
-                  }
+                if (guestChatId) {
+                  await sendTelegramMessage({
+                    botToken,
+                    chatId: guestChatId,
+                    text: message,
+                  })
                 }
               }
-
             } catch (err) {
               app.log.error(err, '[Telegram] Falha ao enviar alerta de quota de convidado')
             }

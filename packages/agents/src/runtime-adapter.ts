@@ -10,8 +10,12 @@ import type {
   RuntimeCredentialRef,
   Span,
 } from './types.js'
-import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
-import { getTracingEnvironment, BACKOFF_CONFIG } from './runtime-config'
+import {
+  wrapWithLimits,
+  isQuotaExhaustedFailure,
+  type ExecutionLimits,
+} from './execution-limits.js'
+import { getTracingEnvironment, BACKOFF_CONFIG } from './runtime-config.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -141,10 +145,11 @@ function normalizeExitCode(code: unknown): number {
 // não existe motivo de produção pra subir isto perto do limite real do SO.
 const MAX_PROMPT_ARG_BYTES = Number(process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] ?? 96 * 1024)
 
-import { isQuotaExhaustedFailure } from './execution-limits.js'
-
 export function isQuotaError(text: string): boolean {
-  return /\b429\b|resource.?exhausted|quota|rate.?limit|usage limit/i.test(text) || isQuotaExhaustedFailure(null, text)
+  return (
+    /\b429\b|resource.?exhausted|quota|rate.?limit|usage limit/i.test(text) ||
+    isQuotaExhaustedFailure(null, text)
+  )
 }
 
 export async function withBackoffRetry<T>(
