@@ -14,6 +14,31 @@ export interface Consumption {
  * negativa (ex.: reset diário da quota no meio) → tokensUsed null (honesto,
  * não inventa número).
  */
+import { precificarSpan } from '@gitorch/cadence'
+import type { PrismaClient } from '@prisma/client'
+
+export async function atualizarSaldoDaOrdem(
+  span: { usage: { promptTokens: number; completionTokens: number } },
+  runtime: string,
+  missionId: string,
+  prisma: PrismaClient
+): Promise<void> {
+  const cost = precificarSpan(span.usage, runtime)
+  const tokens = span.usage.promptTokens + span.usage.completionTokens
+  if (tokens > 0) {
+    // Log tracking for cost calculation
+    console.debug(
+      `[consumption] Mission ${missionId} on ${runtime} consumed ${tokens} tokens (Cost: $${cost.toFixed(4)})`
+    )
+    await prisma.mission.update({
+      where: { id: missionId },
+      data: {
+        tokensUsed: { increment: tokens },
+      },
+    })
+  }
+}
+
 export function computeConsumption(
   quotaBefore: number | null | undefined,
   quotaAfter: number | null | undefined

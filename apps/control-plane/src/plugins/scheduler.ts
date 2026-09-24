@@ -438,12 +438,18 @@ import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { cotasAReler } from '../services/cotas-a-reler.js'
 import { modelosARecoletar } from '../services/modelos-a-recoletar.js'
-import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
-import { computeConsumption } from '../lib/consumption.js'
+import {
+  canRunMission,
+  shouldAlertForQuota,
+  verificarQuotaPreExecucao,
+  TOKENS_RESERVE_ESTIMATE,
+} from '../lib/spend-guard.js'
+import { computeConsumption, atualizarSaldoDaOrdem } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
 import type { Prisma, PrismaClient } from '@prisma/client'
+
 import * as os from 'node:os'
 import type { TelemetrySpanEvent, TelemetryQuotaAlertEvent } from './sse.js'
 
@@ -1726,6 +1732,46 @@ function buildRuntimeStack(
     workspace: workspaceProvider,
     // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
     enrichContext: buildMissionEnricher({ cortex: app.cortex }),
+    preExecutionInterceptor: async (mission) => {
+      const project = await app.prisma.project.findUnique({
+        where: { id: mission.projectId },
+      })
+      if (!project || !project.userId) return
+
+      const user = await app.prisma.user.findUnique({
+        where: { id: project.userId },
+        include: { plan: true },
+      })
+      if (!user || !user.plan) return
+
+      const features = (user.plan.features ?? {}) as Record<string, unknown>
+      const tokenBudget =
+        typeof features['maxTokensPerMonth'] === 'number'
+          ? (features['maxTokensPerMonth'] as number)
+          : null
+
+      let tokensSpent = 0
+      if (tokenBudget) {
+        const startOfMonth = new Date()
+        startOfMonth.setDate(1)
+        startOfMonth.setHours(0, 0, 0, 0)
+        const agg = await (app.prisma as PrismaClient).mission.aggregate({
+          where: { createdAt: { gte: startOfMonth }, project: { userId: project.userId } },
+          _sum: { tokensUsed: true },
+        })
+        tokensSpent = agg._sum.tokensUsed ?? 0
+      }
+
+      verificarQuotaPreExecucao(
+        project.userId,
+        TOKENS_RESERVE_ESTIMATE,
+        tokenBudget,
+        tokensSpent,
+        null,
+        null,
+        (msg) => app.log.warn(`[Pre-Execution Quota Alert] ${msg}`)
+      )
+    },
   })
 
   return { registry, orchestrator, workspaceProvider }
@@ -3127,7 +3173,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const startOfMonth = new Date()
         startOfMonth.setDate(1)
         startOfMonth.setHours(0, 0, 0, 0)
-        const agg = await app.prisma.mission.aggregate({
+        const agg = await (app.prisma as PrismaClient).mission.aggregate({
           where: { createdAt: { gte: startOfMonth }, project: { userId: project.userId } },
           _sum: { tokensUsed: true },
         })
@@ -4509,6 +4555,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,
           })
+
+          if ('span' in result && result.span) {
+            await atualizarSaldoDaOrdem(
+              result.span as { usage: { promptTokens: number; completionTokens: number } },
+              sel.runtime,
+              missionId,
+              app.prisma as PrismaClient
+            ).catch((e) => {
+              app.log.warn({ e }, `[Scheduler] Erro ao atualizar saldo do span para ${missionId}`)
+            })
+          }
           // Tarefa 16: só faz sentido AQUI, no caminho clássico — é o único
           // ramo deste if/else-if/else onde `result.output` é saída CRUA do
           // motor. Nos trilhos o sinal já foi checado dentro de `execute()`

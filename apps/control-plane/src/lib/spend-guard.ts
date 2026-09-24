@@ -80,15 +80,49 @@ export function canRunMission(check: SpendCheck): {
 /** Mock memory store to store reserved tokens during execution since actual token expenditure is settled asynchronously */
 const reservedTokensByOrg = new Map<string, number>()
 
+export class QuotaExcedidaError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'QuotaExcedidaError'
+  }
+}
+
+export const TOKENS_RESERVE_ESTIMATE = 10000
+
 export function canExecuteMission(
   orgId: string,
   tokensNeeded: number,
-  tokenBudget: number,
+  tokenBudget: number | null,
   tokensSpent: number
 ): boolean {
   if (tokenBudget == null || tokenBudget <= 0) return true
   const currentlyReserved = reservedTokensByOrg.get(orgId) || 0
   return tokensSpent + currentlyReserved + tokensNeeded <= tokenBudget
+}
+
+export function verificarQuotaPreExecucao(
+  orgId: string,
+  tokensNeeded: number,
+  tokenBudget?: number | null,
+  tokensSpent?: number,
+  quotaRemaining?: number | null,
+  quotaTotal?: number | null,
+  onAlert?: (msg: string) => void
+): void {
+  const budget = tokenBudget ?? null
+  const spent = tokensSpent ?? 0
+
+  const health = quotaHealth(quotaRemaining, quotaTotal)
+  if (shouldAlertForQuota(health) && onAlert) {
+    onAlert(`Quota ${health} no motor para a org ${orgId}`)
+  }
+
+  if (!canExecuteMission(orgId, tokensNeeded, budget, spent)) {
+    if (onAlert) {
+      onAlert(`Quota excedida: uso de tokens atingiu o orcamento na org ${orgId}`)
+    }
+    throw new QuotaExcedidaError('Quota excedida')
+  }
 }
 
 export function reserveMissionTokens(orgId: string, tokensNeeded: number): void {
