@@ -22,7 +22,7 @@
     "@gitorch/synapse": "workspace:*",
     "@gitorch/workspace-engine": "workspace:*",
     "node-pty-prebuilt-multiarch": "0.10.1-pre.5",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "22.20.1",
