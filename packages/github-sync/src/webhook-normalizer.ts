@@ -65,6 +65,7 @@ function normalizeIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
     body: optionalString(issue, 'body') ?? '',
     wishCreatedAt: optionalString(issue, 'created_at'),
     milestone: optionalString(optionalRecord(issue['milestone']), 'title'),
+    assignees: namedNodeIdsOrNames(issue['assignees'], 'node_id'),
   }
 
   return {
@@ -110,6 +111,7 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
       wishCreatedAt: optionalString(pullRequest, 'created_at'),
       mergedAt,
       milestone: optionalString(optionalRecord(pullRequest['milestone']), 'title'),
+      assignees: namedNodeIdsOrNames(pullRequest['assignees'], 'node_id'),
     },
   }
 }

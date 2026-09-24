@@ -171,7 +171,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     expect(ghGet).toHaveBeenCalledWith('/repos/org/repo/pulls/42', 'gh-token')
   })
 
-  it('(2) issue fechada mas PR com alteracoes reais -> NAO fecha', async () => {
+  it('(2) issue fechada mas PR com alteracoes reais -> FECHA como substituído', async () => {
     const depsVigia = buildDepsVigia({ issueAberta: false })
     const ghGet = vi.fn(async (url) => {
       if (url === '/repos/org/repo/pulls/42') {
@@ -194,13 +194,13 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     expect(result).toEqual({
-      acao: 'ignorar',
+      acao: 'fechar',
       motivo:
-        '#42: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto',
+        'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
     })
   })
 
-  it('(3) changed_files desconhecido -> NAO fecha', async () => {
+  it('(3) changed_files desconhecido -> FECHA como substituído', async () => {
     const depsVigia = buildDepsVigia({ issueAberta: false })
     const ghGet = vi.fn(async (url) => {
       if (url === '/repos/org/repo/pulls/42') {
@@ -223,9 +223,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     expect(result).toEqual({
-      acao: 'ignorar',
+      acao: 'fechar',
       motivo:
-        '#42: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto',
+        'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
     })
   })
 
@@ -239,20 +239,28 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       token,
       depsVigia,
       prisma: getPrismaMock({ rascunho: false, ultimoCommitEm: null }),
-      ghGet: vi.fn(),
+      ghGet: vi.fn().mockImplementation(async (path: string) => {
+        if (path.includes('/pulls/42/files')) return [{ filename: 'src/index.ts' }]
+        if (path.includes('/commits?')) return [{ sha: 'abc', commit: { message: 'Fix' } }]
+        return { base: { ref: 'main' }, head: { sha: 'xyz' }, title: 'Test PR' }
+      }),
       ghSend: vi.fn(),
       registrarNoPainel: vi.fn(),
       onWarn: vi.fn(),
     })
 
-    expect(result).toEqual({
-      acao: 'retomar',
-      issueNumber: 10,
-      causa: 'conflito',
-      pedido: 'Traga a base para o seu ramo e resolva o conflito do pull request #42.',
-      branchDoPr: 'ramo',
-      motivo: '#42: conflito, abrindo sessão nova',
-    })
+    expect(result.acao).toBe('retomar')
+    if (result.acao === 'retomar') {
+      expect(result.issueNumber).toBe(10)
+      expect(result.causa).toBe('conflito')
+      expect(result.pedido).toContain(
+        'Traga a base para o seu ramo e resolva o conflito do pull request #42.'
+      )
+      // The dossier text expects #42
+      expect(result.pedido).toContain('Dossiê de Conflito para o PR #42')
+      expect(result.branchDoPr).toBe('ramo')
+      expect(result.motivo).toBe('#42: conflito, abrindo sessão nova')
+    }
   })
 
   it('(5) perguntar-se-cuida e mesclar nunca resultam em escalar (mapiam para ignorar por enquanto)', async () => {
