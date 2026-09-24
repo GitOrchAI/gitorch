@@ -990,6 +990,8 @@ model RepoItemVinculos {
   labelsAndAssignees  Json? @map("labels_and_assignees")
   prsLigados          Json? @map("prs_ligados")
   sessoesJules        Json? @map("sessoes_jules")
+  qaReview            Json? @map("qa_review")
+  statusCheckRollup   Json? @map("status_check_rollup")
 
   criadoEm     DateTime @default(now()) @map("criado_em")
   atualizadoEm DateTime @updatedAt @map("atualizado_em")

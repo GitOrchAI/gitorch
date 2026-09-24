@@ -13,3 +13,6 @@ CREATE TABLE IF NOT EXISTS repo_item_vinculos (
   criado_em            TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   atualizado_em        TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE repo_item_vinculos ADD COLUMN qa_review JSONB;
+ALTER TABLE repo_item_vinculos ADD COLUMN status_check_rollup JSONB;
