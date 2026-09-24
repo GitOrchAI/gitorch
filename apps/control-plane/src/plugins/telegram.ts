@@ -15,9 +15,9 @@ import {
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { nascerDesejo } from '../services/nascer-desejo.js'
+import { addItemToWishlist } from '../lib/wishlist-service.js'
 import { PRAZO_DO_PENDENTE_MS } from '../services/desejo-pendente.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
-import { SynapseClient, type CortexClientLike } from '@gitorch/synapse'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   resolveNotifyChatId,
@@ -159,6 +159,39 @@ export function acordarSmComSeguranca(
       `[Telegram] acordarSmPorVagaLiberada falhou para o projeto ${projectId} — resposta ao dono segue normal: ${String(err)}`
     )
   }
+}
+
+export async function processarComandoWishlistAdd(
+  dono: { userId: string },
+  payload: string,
+  app: {
+    prisma: FastifyInstance['prisma']
+    log: { error: (err: unknown, msg: string) => void }
+    broadcastEvent?: (wingId: string, event: string, data: unknown) => void
+  },
+  sendMsg: (text: string) => Promise<void>
+) {
+  if (!payload || payload.trim() === '') {
+    await sendMsg('Use /wishlist add <item>')
+    return
+  }
+
+  try {
+    await addItemToWishlist(dono.userId, payload.trim(), 'telegram', { prisma: app.prisma })
+
+    if (app.broadcastEvent) {
+      app.broadcastEvent(`user:${dono.userId}`, 'wishlist_updated', {
+        userId: dono.userId,
+        payload: payload.trim(),
+      })
+    }
+  } catch (error) {
+    app.log.error(error, '[Telegram] Falha ao adicionar à wishlist')
+    await sendMsg('Ocorreu um erro ao adicionar à wishlist.')
+    return
+  }
+
+  await sendMsg('Item adicionado à wishlist com sucesso.')
 }
 
 export async function notifyOwnerGuestSubmission(
@@ -1427,79 +1460,18 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
 
               switch (action?.toLowerCase()) {
                 case 'add':
-                  if (!payload || payload.trim() === '') {
-                    await sendTelegramMessage({
-                      botToken,
-                      chatId: strChatId,
-                      text: 'Use /wishlist add <item>',
-                    })
-                  } else {
-                    const projetos = await projetosParaDesejo(app.prisma, dono.userId)
-                    const wingId = projetos[0]?.repo
-                    const projectId = projetos[0]?.id
-
-                    if (!wingId || !projectId) {
+                  await processarComandoWishlistAdd(
+                    dono,
+                    payload || '',
+                    app as unknown as Parameters<typeof processarComandoWishlistAdd>[2],
+                    async (text) => {
                       await sendTelegramMessage({
                         botToken,
                         chatId: strChatId,
-                        text: 'Nenhum projeto ativo encontrado para adicionar à wishlist.',
-                      })
-                      break
-                    }
-
-                    const synapse = new SynapseClient({
-                      cortexClient: app.cortex as unknown as CortexClientLike,
-                    })
-                    const queryStr = payload.trim()
-
-                    const results = await synapse.queryContextualSimilarity(wingId, queryStr, 5)
-
-                    if (results.length > 1) {
-                      const buttons = results.map((r) => [
-                        {
-                          text:
-                            (r.content || '').substring(0, 40) +
-                            ((r.content || '').length > 40 ? '...' : ''),
-                          callback_data: `wadd:${r.drawerId}`,
-                        },
-                      ])
-
-                      await sendTelegramMessage({
-                        botToken,
-                        chatId: strChatId,
-                        text: `Foram encontrados múltiplos resultados para '${queryStr}'. Escolha um:`,
-                        teclado: { inline_keyboard: buttons },
-                      })
-                    } else if (results.length === 1) {
-                      const itemContent = results[0]?.content || ''
-                      await nascerDesejo(
-                        {
-                          projectId,
-                          repo: wingId,
-                          titulo: itemContent,
-                          corpo: '',
-                          etiquetas: ['wishlist'],
-                        },
-                        {
-                          prisma: app.prisma,
-                          engineConnections: app.engineConnections,
-                          onInfo: (msg) => app.log.info(msg),
-                        }
-                      )
-
-                      await sendTelegramMessage({
-                        botToken,
-                        chatId: strChatId,
-                        text: `Item '${itemContent.trim()}' adicionado à wishlist.`,
-                      })
-                    } else {
-                      await sendTelegramMessage({
-                        botToken,
-                        chatId: strChatId,
-                        text: `Nenhum item encontrado para '${queryStr}'.`,
+                        text,
                       })
                     }
-                  }
+                  )
                   break
                 default:
                   await sendTelegramMessage({
