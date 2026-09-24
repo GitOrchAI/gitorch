@@ -33,6 +33,7 @@ export type AcaoDoMotor =
   | { acao: 'mesclar'; motivo: string }
   | { acao: 'perguntar-se-cuida'; motivo: string }
   | { acao: 'escalar'; motivo: string }
+  | { acao: 'pedir-julgamento'; motivo: string }
 
 export interface MotorDoProximoPassoDeps extends RamoDoPr {
   numero: number
@@ -59,6 +60,7 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
   ultimoParecerQa?: { body: string; timestamp: Date } | null
   temDuvidaPendente?: boolean
   ultimoEscalonamentoEm?: Date | null
+  diffTruncado?: boolean
   /** Fase 5.5: true quando o plano do GitHub não permite a melhoria paga E
    *  a alternativa gratuita ainda não está instalada no repositório. O motor
    *  degrada a decisão de 'mesclar' para 'perguntar-se-cuida' para exigir
@@ -138,14 +140,14 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
   let causa: CausaDaParada | null =
     deps.mergeable === false ? 'conflito' : deps.verificacao === 'vermelha' ? 'ci-vermelha' : null
 
-  if (causa === null && deps.ultimoParecerQa) {
+  if (causa === null && (deps.ultimoParecerQa || deps.vereditoDoQa === 'request_changes')) {
     causa = 'qa-reprovou'
   }
 
   if (causa === null) {
     // Nada para consertar. Pronto para julgar/mesclar — ou perguntar, ou
     // acompanhar, conforme a configuração. NUNCA "escalar" primeiro.
-    if (deps.vereditoDoQa === 'approve' && deps.entendimentoCompleto) {
+    if (deps.vereditoDoQa === 'approve') {
       if (deps.exigeRevisaoDeSeguranca) {
         return {
           acao: 'perguntar-se-cuida',
@@ -155,6 +157,13 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
       return {
         acao: 'mesclar',
         motivo: `#${deps.numero}: critérios batidos, mesclando conforme "${politica}"`,
+      }
+    }
+
+    if (deps.vereditoDoQa === undefined && politica === 'sim') {
+      return {
+        acao: 'pedir-julgamento',
+        motivo: `#${deps.numero}: aguardando julgamento, QA acionado`,
       }
     }
     return politica === 'perguntar'

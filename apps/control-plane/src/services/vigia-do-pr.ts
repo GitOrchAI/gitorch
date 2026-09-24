@@ -269,6 +269,7 @@ export type AcaoDoVigia =
   | { acao: 'fechar'; motivo: string }
   /** O produto não resolve: o dono precisa saber. */
   | { acao: 'escalar'; motivo: string }
+  | { acao: 'pedir-julgamento'; motivo: string }
 
 function pedidoDeConsertarVerificacao(numeroDoPr: number): string {
   return [
@@ -465,6 +466,7 @@ export interface VigiaDoPrDeps {
   /** Vagas de sessão simultânea que sobram na conta do dev nesta passada. */
   vagasLivres: number
   decidirAcaoNoPrOrfao?: (pr: PrOrfaoObservado, rawPr: PrAberto) => Promise<AcaoDoVigia>
+  pedirJulgamento: (numeroDoPr: number) => Promise<void>
   abrirSessaoDeConserto: (args: {
     numeroDoPr: number
     issueNumber: number
@@ -640,6 +642,16 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
             numeroDoPr: pr.numero,
             acao: 'fechar',
             texto: `Fechei a entrega #${pr.numero}: ${decisao.motivo}`,
+          })
+          break
+        }
+
+        case 'pedir-julgamento': {
+          await deps.pedirJulgamento(pr.numero)
+          await deps.registrarDecisao({
+            numeroDoPr: pr.numero,
+            acao: 'pedir-julgamento',
+            texto: decisao.motivo,
           })
           break
         }
