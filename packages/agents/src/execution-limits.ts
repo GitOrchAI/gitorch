@@ -74,6 +74,20 @@ export interface WrapWithLimitsOptions {
 
 const SYSTEMD_RUN_BINARY = 'systemd-run'
 
+export function isQuotaExhaustedFailure(exitCode?: number | null, stderr?: string): boolean {
+  if (stderr) {
+    const lowerStderr = stderr.toLowerCase()
+    if (
+      lowerStderr.includes('quota excedida') ||
+      lowerStderr.includes('quota exhausted') ||
+      lowerStderr.includes('quota_exhausted')
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
 export function isRecoverableFailure(exitCode?: number | null, stderr?: string): boolean {
   if (exitCode === 124) {
     return true

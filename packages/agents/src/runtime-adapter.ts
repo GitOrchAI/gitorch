@@ -141,8 +141,10 @@ function normalizeExitCode(code: unknown): number {
 // não existe motivo de produção pra subir isto perto do limite real do SO.
 const MAX_PROMPT_ARG_BYTES = Number(process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] ?? 96 * 1024)
 
+import { isQuotaExhaustedFailure } from './execution-limits.js'
+
 export function isQuotaError(text: string): boolean {
-  return /\b429\b|resource.?exhausted|quota|rate.?limit/i.test(text)
+  return /\b429\b|resource.?exhausted|quota|rate.?limit|usage limit/i.test(text) || isQuotaExhaustedFailure(null, text)
 }
 
 export async function withBackoffRetry<T>(
@@ -479,6 +481,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         }
 
         if (isQuotaError(errorMessage)) {
+          const isGuestQuota = isQuotaExhaustedFailure(null, errorMessage)
           return {
             missionId: request.missionId,
             runtime: options.runtime,
@@ -486,8 +489,8 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
             stderr: errorMessage,
             exitCode: 0,
             durationMs: 0,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
+            waitingStatus: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'waiting_quota',
+            waitingReason: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'Quota or rate limit exceeded',
             span,
           }
         }
@@ -521,6 +524,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         }
 
         if (failed && isQuotaError(result.stderr)) {
+          const isGuestQuota = isQuotaExhaustedFailure(null, result.stderr)
           return {
             missionId: request.missionId,
             runtime: options.runtime,
@@ -528,8 +532,8 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
             stderr: result.stderr,
             exitCode: 0,
             durationMs: result.durationMs,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
+            waitingStatus: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'waiting_quota',
+            waitingReason: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'Quota or rate limit exceeded',
             span,
           }
         }
@@ -663,6 +667,7 @@ export function createPythonSdkRuntimeAdapter(
         }
 
         if (!timedOut && isQuotaError(errorMessage)) {
+          const isGuestQuota = isQuotaExhaustedFailure(null, errorMessage)
           return {
             missionId: request.missionId,
             runtime: options.runtime,
@@ -670,8 +675,8 @@ export function createPythonSdkRuntimeAdapter(
             stderr: errorMessage,
             exitCode: 0,
             durationMs: endTime - start,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
+            waitingStatus: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'waiting_quota',
+            waitingReason: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'Quota or rate limit exceeded',
             span,
           }
         }

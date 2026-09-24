@@ -95,9 +95,16 @@ setInterval(() => {
   }
 }, DEDUP_TIMEOUT_MS).unref?.()
 
-function formatObservabilityAlert(event: TelemetrySpanEvent | TelemetryQuotaAlertEvent): string {
+import type { TelemetryGuestQuotaAlertEvent } from './sse.js'
+
+function formatObservabilityAlert(event: TelemetrySpanEvent | TelemetryQuotaAlertEvent | TelemetryGuestQuotaAlertEvent): string {
   if (event.type === 'telemetry:quota_alert') {
     return `🚨 Alerta de Orçamento Atingido\n\nNó: ${event.role || 'desconhecido'}\nCusto: ${event.used || 0} / ${event.limit || 'desconhecido'} tokens\nMotivo: ${event.reason}\nOrdem: ${event.missionId}`
+  }
+  if (event.type === 'telemetry:guest_quota_alert') {
+    const isEsgotado = event.fraction >= 1
+    const badge = isEsgotado ? '🔴' : '🟡'
+    return `${badge} Alerta de Quota de Convidado\n\nConvidado: ${event.guestId}\nProjeto: ${event.projectId}\nUso: ${event.used} / ${event.limit} missões\n`
   }
   if (event.type === 'telemetry:span') {
     return `❌ Falha de Execução no Nó\n\nNó: ${event.role || 'desconhecido'}\nErro: ${event.error}\nCusto acumulado: ${event.cost || 0} tokens\nOrdem: ${event.missionId}`
@@ -923,6 +930,66 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           }
         )
       } // End of if ('emitter' in app) for quota_alert
+
+      if ('emitter' in app) {
+        ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+          'telemetry:guest_quota_alert',
+          async (event: TelemetryGuestQuotaAlertEvent) => {
+            try {
+              const dedupKey = `guest_quota:${event.guestId}:${event.fraction}`
+              const lastSent = alertDedupState.get(dedupKey)
+              if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
+              alertDedupState.set(dedupKey, Date.now())
+
+              const message = formatObservabilityAlert(event)
+
+              // Notify the project owner
+              const project = await app.prisma.project.findUnique({
+                where: { id: event.projectId },
+                select: { userId: true },
+              })
+
+              if (project) {
+                const ownerChatId = await resolveNotifyChatId(app.prisma, { userId: project.userId })
+                if (ownerChatId) {
+                  await sendTelegramMessage({
+                    botToken,
+                    chatId: ownerChatId,
+                    text: `[Dono do Projeto] ${message}`,
+                  })
+                }
+              }
+
+              // Notify the guest (invitation email user)
+              const invitation = await app.prisma.projectInvitation.findUnique({
+                where: { id: event.guestId },
+                select: { email: true }
+              })
+
+              if (invitation) {
+                const guestUser = await app.prisma.user.findUnique({
+                  where: { email: invitation.email },
+                  select: { id: true }
+                })
+
+                if (guestUser) {
+                  const guestChatId = await resolveNotifyChatId(app.prisma, { userId: guestUser.id })
+                  if (guestChatId) {
+                    await sendTelegramMessage({
+                      botToken,
+                      chatId: guestChatId,
+                      text: message,
+                    })
+                  }
+                }
+              }
+
+            } catch (err) {
+              app.log.error(err, '[Telegram] Falha ao enviar alerta de quota de convidado')
+            }
+          }
+        )
+      }
 
       if ('emitter' in app) {
         ;(app as unknown as { emitter: { on: Function } }).emitter.on(
