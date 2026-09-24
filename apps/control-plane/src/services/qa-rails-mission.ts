@@ -1700,10 +1700,20 @@ export async function runQaMissionViaRails(
         //
         // Commit novo zera o contador e o aviso volta — situação nova merece
         // recado novo.
-        // O aviso cru "falhou MAX vezes, precisa ação humana" com o erro do
-        // GitHub deixou de ser enviado aqui. A decisão agora vira uma Pergunta
-        // Contextual criada pelo agente, sem empurrar stack traces ou JSON
-        // via Telegram pro dono.
+        if (
+          quemResolve.quem === 'dono' &&
+          fracassosAgora === MAX_TENTATIVAS_DE_MERGE &&
+          options.avisarDono
+        ) {
+          await options
+            .avisarDono(
+              `GitOrch: o merge do PR #${target.number} (${options.repository}) falhou ` +
+                `${MAX_TENTATIVAS_DE_MERGE} vezes seguidas para o mesmo commit — ${resultadoDoMerge.motivo}. ` +
+                'GitOrch parou de tentar mesclar este commit; é preciso ação humana (ex.: ' +
+                'resolver o conflito) antes de uma nova tentativa.'
+            )
+            .catch(() => undefined)
+        }
       }
     }
   } else {

@@ -5,7 +5,6 @@ import {
   shouldAlertForQuota,
   withinTokenBudget,
   canRunMission,
-  verificarQuotaPreExecucao,
 } from './spend-guard.js'
 
 describe('quotaHealth', () => {
@@ -84,19 +83,5 @@ describe('canRunMission', () => {
     const r = canRunMission({ orgId: 'org1', quotaRemaining: null, tokensSpent: 0 })
     expect(r.ok).toBe(true)
     expect(r.health).toBe('unknown')
-  })
-})
-
-describe('verificarQuotaPreExecucao', () => {
-  it('nao lanca excecao quando dentro do budget', () => {
-    expect(() => verificarQuotaPreExecucao('org2', 1000, 5000, 1000)).not.toThrow()
-  })
-
-  it('lanca QuotaExcedidaError quando ultrapassa budget', () => {
-    expect(() => verificarQuotaPreExecucao('org2', 1000, 5000, 4500)).toThrow('Quota excedida')
-  })
-
-  it('nao lanca excecao quando tokenBudget e null (sem limite)', () => {
-    expect(() => verificarQuotaPreExecucao('org2', 1000, null, 100000)).not.toThrow()
   })
 })

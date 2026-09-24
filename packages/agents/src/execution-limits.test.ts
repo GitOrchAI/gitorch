@@ -9,21 +9,6 @@ import {
   isRecoverableFailure,
 } from './execution-limits'
 
-import { isQuotaExhaustedFailure } from './execution-limits'
-
-describe('isQuotaExhaustedFailure', () => {
-  test('returns true for stderr containing quota exhaustion keywords', () => {
-    expect(isQuotaExhaustedFailure(null, 'Quota excedida')).toBe(true)
-    expect(isQuotaExhaustedFailure(null, 'quota exhausted')).toBe(true)
-    expect(isQuotaExhaustedFailure(null, 'QUOTA_EXHAUSTED')).toBe(true)
-  })
-
-  test('returns false for other stderr messages', () => {
-    expect(isQuotaExhaustedFailure(null, 'Some other error')).toBe(false)
-    expect(isQuotaExhaustedFailure(null, 'rate limit exceeded')).toBe(false)
-  })
-})
-
 describe('isRecoverableFailure', () => {
   test('returns true for exit code 124 (timeout)', () => {
     expect(isRecoverableFailure(124)).toBe(true)

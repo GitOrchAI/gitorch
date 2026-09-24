@@ -21,11 +21,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # O build precisa ler vars.GITORCH_PAGES_BASE_PATH, que vive no ambiente
-    # github-pages. Em PRs de fork, apontar para um ambiente restrito causa
-    # bloqueio/falha de autorização. Condicionamos o environment apenas para
-    # push/dispatch na main.
-    environment: ${{ github.event_name != 'pull_request' && 'github-pages' || '' }}
     env:
       NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
       NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH || format('/{0}', github.event.repository.name) }}

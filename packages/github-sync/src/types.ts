@@ -75,7 +75,6 @@ export interface GitHubWorkItem {
   mergedAt?: string | undefined
   leadTime?: number
   milestone?: string | undefined
-  assignees?: string[]
 }
 
 export interface GitHubDependencyEdge {
@@ -132,7 +131,6 @@ export interface GitHubSyncOperation {
     | 'create-issue'
     | 'link-sub-issue'
     | 'link-dependency'
-    | 'update-assignees'
   nodeId?: string
   projectId?: string
   projectItemId?: string
@@ -140,5 +138,4 @@ export interface GitHubSyncOperation {
   value?: string | number
   wishCreatedAt?: string
   mergedAt?: string
-  assignees?: string[]
 }

@@ -13,7 +13,6 @@ import {
 } from './parecer-do-qa.js'
 import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
-import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from './vigia-do-pr.js'
 import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
@@ -79,9 +78,6 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   let vereditoDoQa: 'approve' | 'request_changes' | undefined
   let currentHeadSha: string | undefined
   let diffTruncado = false
-  let ultimoParecerQa: { body: string; timestamp: Date } | null = null
-  let temDuvidaPendente = false
-  let ultimoEscalonamentoEm: Date | null = null
 
   if (depsVigia.issueNumber !== null) {
     const ficha = await lerFichaDoItem({
@@ -194,20 +190,15 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     onWarn,
   })
 
-  if (origem !== 'dependabot') {
-    if (!currentHeadSha) {
-      try {
-        const prDetails = (await ghGet(
-          `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
-          token
-        )) as { head?: { sha?: string } }
-        currentHeadSha = prDetails?.head?.sha
-      } catch (err) {}
-    }
-    if (!currentHeadSha) {
-      currentHeadSha = depsVigia.headSha
-    }
-    if (currentHeadSha) {
+  if (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules') {
+    try {
+      const prDetails = (await ghGet(
+        `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
+        token
+      )) as { head?: { sha?: string } }
+      currentHeadSha = prDetails?.head?.sha ?? undefined
+
+      if (currentHeadSha) {
         const reviews = (await ghGet(
           `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/reviews?per_page=100`,
           token
@@ -217,62 +208,15 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
         if (reviewNoHead) {
           if (ehAprovacao(reviewNoHead)) {
             vereditoDoQa = 'approve'
-          } else {
+          } else if (ehReprovacaoCondicional(reviewNoHead)) {
             vereditoDoQa = 'request_changes'
           }
-          if (reviewNoHead.body && !ehAprovacao(reviewNoHead)) {
-            ultimoParecerQa = {
-              body: reviewNoHead.body,
-              timestamp: reviewNoHead.submitted_at ? new Date(reviewNoHead.submitted_at) : new Date(0),
-            }
-          }
         }
-      if (depsVigia.issueNumber !== null) {
-        try {
-          const openQuestion = await prisma.agentQuestion.findFirst({
-            where: {
-              projectId: projeto.id,
-              status: 'open',
-              dedupKey: { contains: String(depsVigia.issueNumber) },
-            },
-          })
-          temDuvidaPendente = !!openQuestion
-        } catch (err) {}
       }
-    }
-
-    try {
-      const events = await prisma.event.findMany({
-        where: {
-          projectId: projeto.id,
-          type: 'audit',
-          payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
-        },
-        orderBy: { createdAt: 'desc' },
-      })
-      const lastEscalation = events.find(
-        (e) =>
-          e.payload &&
-          typeof e.payload === 'object' &&
-          'vigiaDoPr' in e.payload &&
-          (e.payload as { vigiaDoPr?: { acao?: string } })['vigiaDoPr']?.acao === 'escalar'
+    } catch (err) {
+      onWarn(
+        `[decisao-do-vigia] falha ao buscar PR/reviews de ${projeto.wingId} #${depsVigia.numero}: ${(err as Error).message}`
       )
-      if (lastEscalation) {
-        ultimoEscalonamentoEm = lastEscalation.createdAt
-      }
-    } catch (err) {}
-
-    if (ultimoParecerQa) {
-      try {
-        depsVigia.acoesAnteriores = await prisma.event.count({
-          where: {
-            projectId: projeto.id,
-            type: 'audit',
-            payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
-            createdAt: { gt: ultimoParecerQa.timestamp },
-          },
-        })
-      } catch (err) {}
     }
   }
 
@@ -286,9 +230,6 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     entendimentoCompleto,
     vereditoDoQa,
     diffTruncado,
-    ultimoParecerQa,
-    temDuvidaPendente,
-    ultimoEscalonamentoEm,
   })
 
   // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally
@@ -318,8 +259,8 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       // Se a API falhar ou não trouxer changed_files, não age destrutivamente
     }
     return {
-      acao: 'fechar',
-      motivo: `A tarefa #${depsVigia.issueNumber} já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.`,
+      acao: 'ignorar',
+      motivo: `#${depsVigia.numero}: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto`,
     }
   }
   if (acaoMotor.acao === 'perguntar-se-cuida') {
@@ -439,37 +380,6 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     return { acao: 'pedir-julgamento', motivo: acaoMotor.motivo }
   }
   if (acaoMotor.acao === 'retomar') {
-    let pedidoFinal = acaoMotor.pedido
-    if (acaoMotor.causa === 'conflito') {
-      try {
-        const dossie = await montarDossieDoConflito({
-          repo: projeto.wingId,
-          numeroDoPr: depsVigia.numero,
-          issueNumber: depsVigia.issueNumber,
-          ghGet: (path: string) => ghGet(path, token),
-        })
-
-        if (dossie.conclusao === 'duplicado') {
-          return {
-            acao: 'fechar',
-            motivo: `#${depsVigia.numero}: fechado porque duplica outro PR já mesclado.
-
-${dossie.texto}`,
-          }
-        } else if (dossie.conclusao === 'escopo_misturado') {
-          pedidoFinal = `A sua entrega tem conflitos de merge e mistura arquivos fora do escopo da tarefa.
-
-Por favor, crie uma nova branch a partir da main e traga apenas o que falta da issue original.
-
-${dossie.texto}`
-        } else {
-          pedidoFinal = `${acaoMotor.pedido}
-
-${dossie.texto}`
-        }
-      } catch (err) {}
-    }
-
     await registrarNoPainel(
       projeto.id,
       chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
@@ -479,7 +389,7 @@ ${dossie.texto}`
       acao: 'retomar',
       issueNumber: acaoMotor.issueNumber,
       causa: acaoMotor.causa,
-      pedido: pedidoFinal,
+      pedido: acaoMotor.pedido,
       branchDoPr: acaoMotor.branchDoPr,
       motivo: acaoMotor.motivo,
     }
