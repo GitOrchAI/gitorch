@@ -14,7 +14,7 @@ import {
 
 import { evaluateNodeTransition } from '@gitorch/cadence'
 
-import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
+import type { F6AgentRole, MissionState, NodeTransition, StateNode, AgentMission } from './types'
 import { primeWorkspace } from './workspace-priming'
 
 /**
@@ -52,6 +52,7 @@ export interface AgentOrchestratorOptions {
   synapse?: SynapseClient
   workspace?: WorkspaceProvider
   enrichContext?: MissionContextEnricher
+  preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
 }
 
 export abstract class BaseAgentNode implements StateNode {
@@ -154,12 +155,14 @@ export class AgentOrchestrator {
   private readonly workspace: WorkspaceProvider
   private readonly enrichContext?: MissionContextEnricher
   private readonly nodeRegistry: Map<string, StateNode>
+  private readonly preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
 
   constructor(options: AgentOrchestratorOptions) {
     this.registry = options.registry
     this.synapse = options.synapse ?? new SynapseClient()
     this.workspace = options.workspace ?? workspaceManager
     this.enrichContext = options.enrichContext
+    this.preExecutionInterceptor = options.preExecutionInterceptor
 
     this.nodeRegistry = new Map<string, StateNode>([
       ['po', new ProductOwnerNode(this)],
@@ -179,6 +182,10 @@ export class AgentOrchestrator {
 
     try {
       const adapter = this.registry.resolve(mission.runtime.runtime)
+
+      if (this.preExecutionInterceptor) {
+        await this.preExecutionInterceptor(mission)
+      }
 
       result = await withBackoffRetry(
         async () => {
@@ -291,6 +298,16 @@ export class AgentOrchestrator {
         const transition = await node.execute(currentState)
         currentState = missionStateReducer(currentState, transition.state)
         currentRole = transition.nextRole ?? 'done'
+
+        const runtimeResult = currentState.result as RuntimeExecutionResult | undefined
+        if (runtimeResult?.waitingStatus === 'QUOTA_EXHAUSTED') {
+          await this.synapse.recordStateCheckpoint(
+            mission.id,
+            currentRole,
+            currentState as unknown as Record<string, unknown>
+          )
+          break
+        }
       }
       result = currentState.result as RuntimeExecutionResult
     } catch (err: unknown) {

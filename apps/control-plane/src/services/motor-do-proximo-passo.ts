@@ -193,8 +193,8 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
           deps.ultimoParecerQa?.body
             ?.toLowerCase()
             .includes('nao coube inteira na janela de revisao')
-          ? `A entrega não coube inteira na janela de revisão do QA.\n\nDivida esta entrega em partes menores e independentes (um propósito por PR), cada um ligado à respectiva issue. Abra os novos PRs e feche este aqui apontando para eles.\n\nMotivo apontado pelo QA:\n${deps.ultimoParecerQa?.body || ''}`
-          : `O QA solicitou as seguintes mudanças no pull request #${deps.numero}:\n\n${deps.ultimoParecerQa?.body || ''}`
+          ? `O QA rejeitou o PR porque a entrega não coube inteira na janela de revisão. Instrução: Divida esta entrega em partes menores e independentes (um propósito por PR). Abra os novos PRs e feche este aqui apontando para eles.\n\nParecer original do QA:\n${deps.ultimoParecerQa?.body || ''}`
+          : deps.ultimoParecerQa?.body || ''
         : causa === 'conflito'
           ? `Traga a base para o seu ramo e resolva o conflito do pull request #${deps.numero}.`
           : `A verificação automática do pull request #${deps.numero} está vermelha — conserte a causa.`,

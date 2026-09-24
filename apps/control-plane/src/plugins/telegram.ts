@@ -15,9 +15,9 @@ import {
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { nascerDesejo } from '../services/nascer-desejo.js'
+import { addItemToWishlist } from '../lib/wishlist-service.js'
 import { PRAZO_DO_PENDENTE_MS } from '../services/desejo-pendente.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
-import { SynapseClient, type CortexClientLike } from '@gitorch/synapse'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   resolveNotifyChatId,
@@ -30,7 +30,11 @@ import {
   type ResultadoDoManipuladorDeResposta,
 } from '../services/agent-question.js'
 import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
-import type { TelemetrySpanEvent, TelemetryQuotaAlertEvent } from './sse.js'
+import type {
+  TelemetrySpanEvent,
+  TelemetryQuotaAlertEvent,
+  TelemetryGuestQuotaAlertEvent,
+} from './sse.js'
 
 import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-errors.js'
 import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
@@ -95,9 +99,16 @@ setInterval(() => {
   }
 }, DEDUP_TIMEOUT_MS).unref?.()
 
-function formatObservabilityAlert(event: TelemetrySpanEvent | TelemetryQuotaAlertEvent): string {
+function formatObservabilityAlert(
+  event: TelemetrySpanEvent | TelemetryQuotaAlertEvent | TelemetryGuestQuotaAlertEvent
+): string {
   if (event.type === 'telemetry:quota_alert') {
     return `🚨 Alerta de Orçamento Atingido\n\nNó: ${event.role || 'desconhecido'}\nCusto: ${event.used || 0} / ${event.limit || 'desconhecido'} tokens\nMotivo: ${event.reason}\nOrdem: ${event.missionId}`
+  }
+  if (event.type === 'telemetry:guest_quota_alert') {
+    const isEsgotado = event.fraction >= 1
+    const badge = isEsgotado ? '🔴' : '🟡'
+    return `${badge} Alerta de Quota de Convidado\n\nConvidado: ${event.guestId}\nProjeto: ${event.projectId}\nUso: ${event.used} / ${event.limit} missões\n`
   }
   if (event.type === 'telemetry:span') {
     return `❌ Falha de Execução no Nó\n\nNó: ${event.role || 'desconhecido'}\nErro: ${event.error}\nCusto acumulado: ${event.cost || 0} tokens\nOrdem: ${event.missionId}`
@@ -147,6 +158,97 @@ export function acordarSmComSeguranca(
     app.log.warn(
       `[Telegram] acordarSmPorVagaLiberada falhou para o projeto ${projectId} — resposta ao dono segue normal: ${String(err)}`
     )
+  }
+}
+
+export async function processarComandoWishlistAdd(
+  dono: { userId: string },
+  payload: string,
+  app: {
+    prisma: FastifyInstance['prisma']
+    log: { error: (err: unknown, msg: string) => void }
+    broadcastEvent?: (wingId: string, event: string, data: unknown) => void
+  },
+  sendMsg: (text: string) => Promise<void>
+) {
+  if (!payload || payload.trim() === '') {
+    await sendMsg('Use /wishlist add <item>')
+    return
+  }
+
+  try {
+    await addItemToWishlist(dono.userId, payload.trim(), 'telegram', { prisma: app.prisma })
+
+    if (app.broadcastEvent) {
+      app.broadcastEvent(`user:${dono.userId}`, 'wishlist_updated', {
+        userId: dono.userId,
+        payload: payload.trim(),
+      })
+    }
+  } catch (error) {
+    app.log.error(error, '[Telegram] Falha ao adicionar à wishlist')
+    await sendMsg('Ocorreu um erro ao adicionar à wishlist.')
+    return
+  }
+
+  await sendMsg('Item adicionado à wishlist com sucesso.')
+}
+
+export async function notifyOwnerGuestSubmission(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  prisma: any,
+  userId: string,
+  guestName: string,
+  engineMapping: Record<string, string> | undefined | null,
+  executionLimits: { memoryMax?: string; cpuMax?: string; pidsMax?: number } | undefined | null
+): Promise<void> {
+  const botToken = process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN']
+  if (!botToken) return
+
+  const link = await prisma.telegramLink.findUnique({
+    where: { userId },
+  })
+
+  if (!link || !link.chatId) return
+
+  const chatId = String(link.chatId)
+
+  let msg = `🎉 *Novo convidado finalizou o setup!*\n\n`
+  msg += `*Nome:* ${guestName}\n\n`
+
+  if (engineMapping && Object.keys(engineMapping).length > 0) {
+    msg += `*Motores Alocados:*\n`
+    for (const [role, engine] of Object.entries(engineMapping)) {
+      let safeEngine = engine
+      if (typeof safeEngine === 'string') {
+        if (safeEngine.startsWith('gitorch_')) {
+          safeEngine = safeEngine.substring(0, 15) + '***'
+        } else if (safeEngine.startsWith('sk-')) {
+          safeEngine = safeEngine.substring(0, 7) + '***'
+        } else if (safeEngine.length > 10) {
+          safeEngine = safeEngine.substring(0, 4) + '***' + safeEngine.slice(-4)
+        }
+      }
+      msg += `- ${role}: \`${safeEngine}\`\n`
+    }
+    msg += `\n`
+  }
+
+  if (executionLimits) {
+    msg += `*Quota Proposta:*\n`
+    if (executionLimits.memoryMax) msg += `- Memória Max: \`${executionLimits.memoryMax}\`\n`
+    if (executionLimits.cpuMax) msg += `- CPU Max: \`${executionLimits.cpuMax}\`\n`
+    if (executionLimits.pidsMax) msg += `- PIDs Max: \`${executionLimits.pidsMax}\`\n`
+  }
+
+  try {
+    await sendTelegramMessage({
+      botToken,
+      chatId,
+      text: msg,
+    })
+  } catch (err) {
+    console.error(`[Telegram] Falha ao notificar dono sobre submissão de convidado: ${err}`)
   }
 }
 
@@ -868,6 +970,66 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
 
       if ('emitter' in app) {
         ;(app as unknown as { emitter: { on: Function } }).emitter.on(
+          'telemetry:guest_quota_alert',
+          async (event: TelemetryGuestQuotaAlertEvent) => {
+            try {
+              const dedupKey = `guest_quota:${event.guestId}:${event.fraction}`
+              const lastSent = alertDedupState.get(dedupKey)
+              if (lastSent && Date.now() - lastSent < DEDUP_TIMEOUT_MS) return
+              alertDedupState.set(dedupKey, Date.now())
+
+              const message = formatObservabilityAlert(event)
+
+              // Notify the project owner
+              const project = await app.prisma.project.findUnique({
+                where: { id: event.projectId },
+                select: { userId: true, wingId: true },
+              })
+
+              if (project) {
+                if (event.fraction >= 1 && 'broadcastEvent' in app) {
+                  app.broadcastEvent(project.wingId, 'telemetry:guest_quota_alert', event)
+                }
+
+                const ownerChatId = await resolveNotifyChatId(app.prisma, {
+                  userId: project.userId,
+                })
+                if (ownerChatId) {
+                  await sendTelegramMessage({
+                    botToken,
+                    chatId: ownerChatId,
+                    text: `[Dono do Projeto] ${message}`,
+                  })
+                }
+              }
+
+              // Notify the guest via the invitation user link
+              const invitation = await app.prisma.projectInvitation.findUnique({
+                where: { id: event.guestId },
+                select: { userId: true },
+              })
+
+              if (invitation && invitation.userId) {
+                const guestChatId = await resolveNotifyChatId(app.prisma, {
+                  userId: invitation.userId,
+                })
+                if (guestChatId) {
+                  await sendTelegramMessage({
+                    botToken,
+                    chatId: guestChatId,
+                    text: message,
+                  })
+                }
+              }
+            } catch (err) {
+              app.log.error(err, '[Telegram] Falha ao enviar alerta de quota de convidado')
+            }
+          }
+        )
+      }
+
+      if ('emitter' in app) {
+        ;(app as unknown as { emitter: { on: Function } }).emitter.on(
           'telemetry:span',
           async (event: TelemetrySpanEvent) => {
             try {
@@ -1302,79 +1464,18 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
 
               switch (action?.toLowerCase()) {
                 case 'add':
-                  if (!payload || payload.trim() === '') {
-                    await sendTelegramMessage({
-                      botToken,
-                      chatId: strChatId,
-                      text: 'Use /wishlist add <item>',
-                    })
-                  } else {
-                    const projetos = await projetosParaDesejo(app.prisma, dono.userId)
-                    const wingId = projetos[0]?.repo
-                    const projectId = projetos[0]?.id
-
-                    if (!wingId || !projectId) {
+                  await processarComandoWishlistAdd(
+                    dono,
+                    payload || '',
+                    app as unknown as Parameters<typeof processarComandoWishlistAdd>[2],
+                    async (text) => {
                       await sendTelegramMessage({
                         botToken,
                         chatId: strChatId,
-                        text: 'Nenhum projeto ativo encontrado para adicionar à wishlist.',
-                      })
-                      break
-                    }
-
-                    const synapse = new SynapseClient({
-                      cortexClient: app.cortex as unknown as CortexClientLike,
-                    })
-                    const queryStr = payload.trim()
-
-                    const results = await synapse.queryContextualSimilarity(wingId, queryStr, 5)
-
-                    if (results.length > 1) {
-                      const buttons = results.map((r) => [
-                        {
-                          text:
-                            (r.content || '').substring(0, 40) +
-                            ((r.content || '').length > 40 ? '...' : ''),
-                          callback_data: `wadd:${r.drawerId}`,
-                        },
-                      ])
-
-                      await sendTelegramMessage({
-                        botToken,
-                        chatId: strChatId,
-                        text: `Foram encontrados múltiplos resultados para '${queryStr}'. Escolha um:`,
-                        teclado: { inline_keyboard: buttons },
-                      })
-                    } else if (results.length === 1) {
-                      const itemContent = results[0]?.content || ''
-                      await nascerDesejo(
-                        {
-                          projectId,
-                          repo: wingId,
-                          titulo: itemContent,
-                          corpo: '',
-                          etiquetas: ['wishlist'],
-                        },
-                        {
-                          prisma: app.prisma,
-                          engineConnections: app.engineConnections,
-                          onInfo: (msg) => app.log.info(msg),
-                        }
-                      )
-
-                      await sendTelegramMessage({
-                        botToken,
-                        chatId: strChatId,
-                        text: `Item '${itemContent.trim()}' adicionado à wishlist.`,
-                      })
-                    } else {
-                      await sendTelegramMessage({
-                        botToken,
-                        chatId: strChatId,
-                        text: `Nenhum item encontrado para '${queryStr}'.`,
+                        text,
                       })
                     }
-                  }
+                  )
                   break
                 default:
                   await sendTelegramMessage({
