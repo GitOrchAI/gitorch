@@ -107,10 +107,7 @@ export function isRecoverableFailure(exitCode?: number | null, stderr?: string):
   return false
 }
 
-export function assertWithinStepLimit(
-  stepCount: number,
-  maxSteps?: number
-): void {
+export function assertWithinStepLimit(stepCount: number, maxSteps?: number): void {
   if (maxSteps !== undefined && stepCount >= maxSteps) {
     throw new Error(`Mission exceeded maximum allowed steps (${maxSteps})`)
   }
@@ -123,7 +120,10 @@ export function checkMissionLimits(
   timeoutMs?: number
 ): { interrupted: boolean; reason?: string } {
   if (limits?.maxStepsPerMission !== undefined && steps >= limits.maxStepsPerMission) {
-    return { interrupted: true, reason: `Mission exceeded maximum allowed steps (${limits.maxStepsPerMission})` }
+    return {
+      interrupted: true,
+      reason: `Mission exceeded maximum allowed steps (${limits.maxStepsPerMission})`,
+    }
   }
 
   if (timeoutMs !== undefined) {

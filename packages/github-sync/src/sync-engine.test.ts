@@ -92,6 +92,49 @@ test('plans ready project status when dependencies are closed', () => {
   })
 })
 
+test('plans Done status when item state is closed', () => {
+  const engine = new GitHubSyncEngine()
+  const result = engine.planOperations(
+    {
+      ...event,
+      workItem: {
+        ...workItem,
+        state: 'closed',
+      },
+    },
+    []
+  )
+
+  expect(result.operations[0]).toMatchObject({
+    operationKey: 'project-status:I_6:Done',
+    value: 'Done',
+  })
+})
+
+test('plans update-assignees when assignees are present', () => {
+  const engine = new GitHubSyncEngine()
+  const result = engine.planOperations(
+    {
+      ...event,
+      workItem: {
+        ...workItem,
+        assignees: ['U_1', 'U_2'],
+      },
+    },
+    []
+  )
+
+  expect(result.operations).toContainEqual(
+    expect.objectContaining({
+      operationKey: 'project-assignees:I_6:U_1,U_2',
+      kind: 'update-assignees',
+      nodeId: 'I_6',
+      projectItemId: 'PVTI_6',
+      assignees: ['U_1', 'U_2'],
+    })
+  )
+})
+
 test('plans weight and iteration fields when present', () => {
   const engine = new GitHubSyncEngine()
   const result = engine.planOperations(

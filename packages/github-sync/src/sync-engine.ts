@@ -139,7 +139,11 @@ export class GitHubSyncEngine {
                 })
                 .catch(() => {})
             }
-          } else if (operation.kind === 'update-assignees' && operation.assignees && operation.nodeId) {
+          } else if (
+            operation.kind === 'update-assignees' &&
+            operation.assignees &&
+            operation.nodeId
+          ) {
             await client
               .addAssigneesToAssignable({
                 assignableId: operation.nodeId,
