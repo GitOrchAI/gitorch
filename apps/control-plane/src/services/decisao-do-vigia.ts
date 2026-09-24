@@ -227,9 +227,9 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     cuidaPorOrigem,
     emConstrucaoHa,
     janelaEmConstrucaoHoras,
-    entendimentoCompleto,
-    vereditoDoQa,
-    diffTruncado,
+    ...(entendimentoCompleto !== undefined ? { entendimentoCompleto } : {}),
+    ...(vereditoDoQa !== undefined ? { vereditoDoQa } : {}),
+    ...(diffTruncado !== undefined ? { diffTruncado } : {}),
   })
 
   // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally

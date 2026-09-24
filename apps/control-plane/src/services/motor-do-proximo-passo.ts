@@ -55,17 +55,17 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
   janelaEmConstrucaoHoras: number
   /** Presentes só quando há veredito do QA para considerar (item já
    *  julgado) — ausentes, o motor nunca decide "mesclar". */
-  entendimentoCompleto?: boolean
+  entendimentoCompleto?: boolean | undefined
   vereditoDoQa?: 'approve' | 'request_changes' | undefined
-  ultimoParecerQa?: { body: string; timestamp: Date } | null
-  temDuvidaPendente?: boolean
-  ultimoEscalonamentoEm?: Date | null
-  diffTruncado?: boolean
+  ultimoParecerQa?: { body: string; timestamp: Date } | null | undefined
+  temDuvidaPendente?: boolean | undefined
+  ultimoEscalonamentoEm?: Date | null | undefined
+  diffTruncado?: boolean | undefined
   /** Fase 5.5: true quando o plano do GitHub não permite a melhoria paga E
    *  a alternativa gratuita ainda não está instalada no repositório. O motor
    *  degrada a decisão de 'mesclar' para 'perguntar-se-cuida' para exigir
    *  revisão humana, pois não confia que o código está livre de segredos. */
-  exigeRevisaoDeSeguranca?: boolean
+  exigeRevisaoDeSeguranca?: boolean | undefined
 }
 
 /** 'jules_gitorch'/'jules_fora' caem no balde `jules` de cuidaPorOrigem;
