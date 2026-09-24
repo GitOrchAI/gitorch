@@ -2,10 +2,10 @@ name: pages
 
 on:
   push:
-    branches: [main]
+    branches: ['*']
     paths: ['apps/web/**', '.github/workflows/pages.yml']
   pull_request:
-    branches: [main]
+    branches: ['*']
     paths: ['apps/web/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
