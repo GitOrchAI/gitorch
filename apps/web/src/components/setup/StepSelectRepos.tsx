@@ -186,7 +186,9 @@ export default function StepSelectRepos({
     const base = window.location.href.split('/setup')[0]
     const returnTo = encodeURIComponent(base)
     const planParam = encodeURIComponent(plan)
-    window.location.href = `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}&plan=${planParam}`
+    window.location.assign(
+      `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}&plan=${planParam}`
+    )
   }
 
   // Leva a pessoa pra instalar o GitHub App numa organização (ver
@@ -196,7 +198,7 @@ export default function StepSelectRepos({
   // instalação do App vale para a conta DONA do repositório — instalar na
   // conta pessoal não dá acesso a repositório de organização nenhuma.
   const handleInstallApp = () => {
-    window.location.href = buildInstallAppUrl({ apiBaseUrl, currentHref: window.location.href })
+    window.location.assign(buildInstallAppUrl({ apiBaseUrl, currentHref: window.location.href }))
   }
 
   const toggleRepo = (fullName: string) => {

@@ -21,7 +21,9 @@ export default function StepGitHubLogin({ apiBaseUrl, plan }: StepGitHubLoginPro
     const base = window.location.href.split('/setup')[0]
     const returnTo = encodeURIComponent(base)
     const planParam = encodeURIComponent(plan)
-    window.location.href = `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}&plan=${planParam}`
+    window.location.assign(
+      `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}&plan=${planParam}`
+    )
   }
 
   return (

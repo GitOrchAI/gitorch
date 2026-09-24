@@ -145,7 +145,9 @@ function ReguaDePronto() {
   }, [projeto])
 
   useEffect(() => {
-    void carregar()
+    setTimeout(() => {
+      void carregar()
+    }, 0)
   }, [carregar])
 
   const alternar = async (chave: string) => {
@@ -254,7 +256,9 @@ function DuracaoDaSprint() {
   }, [projeto])
 
   useEffect(() => {
-    void carregar()
+    setTimeout(() => {
+      void carregar()
+    }, 0)
   }, [carregar])
 
   const escolher = async (dias: number) => {
@@ -374,7 +378,9 @@ function CuidaPorOrigem() {
   }, [projeto])
 
   useEffect(() => {
-    void carregar()
+    setTimeout(() => {
+      void carregar()
+    }, 0)
   }, [carregar])
 
   const escolher = async (origem: string, politica: string) => {

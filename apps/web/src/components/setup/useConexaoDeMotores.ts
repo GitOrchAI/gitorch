@@ -23,12 +23,15 @@ export function useConexaoDeMotores(apiBaseUrl: string, erroPadrao: string): Con
   // da loja, trocar de idioma no meio de um login recriaria tudo e a pessoa
   // perderia a conexão pela metade.
   const frase = useRef(erroPadrao)
-  frase.current = erroPadrao
+  useEffect(() => {
+    frase.current = erroPadrao
+  }, [erroPadrao])
 
-  const conexao = useMemo(
-    () => criarConexaoDeMotores({ apiBaseUrl, erroPadrao: () => frase.current }),
-    [apiBaseUrl]
-  )
+  const conexao = useMemo(() => {
+    const erroPadraoGetter = () => frase.current
+
+    return criarConexaoDeMotores({ apiBaseUrl, erroPadrao: erroPadraoGetter })
+  }, [apiBaseUrl])
 
   // Sair da tela fecha os streams abertos — sem isto, cada visita ao painel
   // deixaria uma conexão SSE viva atrás de si.

@@ -20,8 +20,8 @@ function ClaimInvitationContent() {
 
   useEffect(() => {
     if (!token) {
-      setStatus('error')
-      setErrorMessage(t('invitation.invalidToken'))
+      setTimeout(() => setStatus('error'), 0)
+      setTimeout(() => setErrorMessage(t('invitation.invalidToken')), 0)
       return
     }
 
@@ -39,11 +39,11 @@ function ClaimInvitationContent() {
         }
 
         const data = await response.json()
-        setProjectData(data)
-        setStatus('success')
+        setTimeout(() => setProjectData(data), 0)
+        setTimeout(() => setStatus('success'), 0)
       } catch (err) {
-        setStatus('error')
-        setErrorMessage(t('invitation.invalidToken'))
+        setTimeout(() => setStatus('error'), 0)
+        setTimeout(() => setErrorMessage(t('invitation.invalidToken')), 0)
       }
     }
 
@@ -65,8 +65,8 @@ function ClaimInvitationContent() {
 
       router.push('/setup')
     } catch (err) {
-      setErrorMessage(t('invitation.invalidToken'))
-      setStatus('error')
+      setTimeout(() => setErrorMessage(t('invitation.invalidToken')), 0)
+      setTimeout(() => setStatus('error'), 0)
     } finally {
       setClaiming(false)
     }

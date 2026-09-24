@@ -325,7 +325,9 @@ function CascataDoProjeto({ projectId, nome }: { projectId: string; nome: string
   }, [projectId])
 
   useEffect(() => {
-    void carregar()
+    setTimeout(() => {
+      void carregar()
+    }, 0)
   }, [carregar])
 
   const temMudanca = useMemo(
@@ -375,7 +377,14 @@ function CascataDoProjeto({ projectId, nome }: { projectId: string; nome: string
   if (falhouAoLer) {
     return (
       <Card titulo="Motores de cada agente">
-        <Indisponivel o_que="a cascata deste projeto" onTentar={() => void carregar()} />
+        <Indisponivel
+          o_que="a cascata deste projeto"
+          onTentar={() =>
+            setTimeout(() => {
+              void carregar()
+            }, 0)
+          }
+        />
       </Card>
     )
   }
