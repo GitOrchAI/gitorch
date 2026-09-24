@@ -40,7 +40,11 @@ export class GitHubSyncEngine {
     }
 
     const availability = this.workModel.availabilityFor(event.workItem, dependencyItems)
-    const status = availability.available ? 'Ready' : 'Blocked'
+    let status = availability.available ? 'Ready' : 'Blocked'
+    if (event.workItem.state === 'closed' || event.workItem.state === 'merged') {
+      status = 'Done'
+    }
+
     const weight = this.workModel.weightFor(event.workItem)
     const iteration = this.workModel.iterationFor(event.workItem)
 
@@ -57,6 +61,16 @@ export class GitHubSyncEngine {
         wishCreatedAt: event.workItem.wishCreatedAt,
         mergedAt: event.workItem.mergedAt,
       })
+
+      if (event.workItem.assignees && event.workItem.assignees.length > 0) {
+        operations.push({
+          operationKey: `project-assignees:${event.workItem.nodeId}:${event.workItem.assignees.join(',')}`,
+          kind: 'update-assignees',
+          nodeId: event.workItem.nodeId,
+          projectItemId,
+          assignees: event.workItem.assignees,
+        })
+      }
 
       if (weight !== undefined) {
         operations.push({
@@ -125,6 +139,13 @@ export class GitHubSyncEngine {
                 })
                 .catch(() => {})
             }
+          } else if (operation.kind === 'update-assignees' && operation.assignees && operation.nodeId) {
+            await client
+              .addAssigneesToAssignable({
+                assignableId: operation.nodeId,
+                assigneeIds: operation.assignees,
+              })
+              .catch(() => {})
           }
         })
       }

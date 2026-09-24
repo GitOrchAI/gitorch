@@ -16,6 +16,7 @@ import { evaluateNodeTransition } from '@gitorch/cadence'
 
 import type { F6AgentRole, MissionState, NodeTransition, StateNode, AgentMission } from './types'
 import { primeWorkspace } from './workspace-priming'
+import { checkMissionLimits } from './execution-limits'
 
 /**
  * Enriquece o CONTEXTO da missão com CONHECIMENTO do projeto, depois que o
@@ -287,9 +288,34 @@ export class AgentOrchestrator {
       timeoutMs: input.timeoutMs,
     }
     let currentRole: string | 'done' | 'failed' = mission.role
+    let stepCount = 0
+    const executionStartTimeMs = Date.now()
 
     try {
       while (currentRole !== 'done' && currentRole !== 'failed') {
+        const limitsCheck = checkMissionLimits(
+          executionStartTimeMs,
+          stepCount,
+          mission.executionLimits,
+          input.timeoutMs
+        )
+
+        if (limitsCheck.interrupted) {
+          currentRole = 'failed'
+          result = {
+            missionId: mission.id,
+            runtime: mission.runtime.runtime,
+            exitCode: 124,
+            output: '',
+            stderr: limitsCheck.reason || 'Mission interrupted by execution limits',
+            durationMs: Date.now() - executionStartTimeMs,
+            failedStep: 'orchestrator-loop',
+            errorDetails: limitsCheck.reason || 'Mission interrupted by execution limits',
+          }
+          currentState.result = result
+          break
+        }
+
         const node = this.nodeRegistry.get(currentRole)
         if (!node) {
           throw new Error(`No state node registered for role: ${currentRole}`)
@@ -298,6 +324,7 @@ export class AgentOrchestrator {
         const transition = await node.execute(currentState)
         currentState = missionStateReducer(currentState, transition.state)
         currentRole = transition.nextRole ?? 'done'
+        stepCount++
 
         const runtimeResult = currentState.result as RuntimeExecutionResult | undefined
         if (runtimeResult?.waitingStatus === 'QUOTA_EXHAUSTED') {
@@ -309,7 +336,9 @@ export class AgentOrchestrator {
           break
         }
       }
-      result = currentState.result as RuntimeExecutionResult
+      if (!result) {
+        result = currentState.result as RuntimeExecutionResult
+      }
     } catch (err: unknown) {
       if (this.workspace.handleRuntimeFailure) {
         this.workspace.handleRuntimeFailure(String(err), 'run-mission', false)
