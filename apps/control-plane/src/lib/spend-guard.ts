@@ -167,7 +167,7 @@ export function clearRevokedGuests(): void {
 export async function assertGuestQuotaAvailable(guestId: string, projectId: string): Promise<void> {
   const { prisma } = await import('../plugins/prisma.js')
   const invitation = await prisma.projectInvitation.findUnique({
-    where: { id: guestId }
+    where: { id: guestId },
   })
   if (!invitation || !invitation.executionLimits) return
 
@@ -179,18 +179,30 @@ export async function assertGuestQuotaAvailable(guestId: string, projectId: stri
       projectId: projectId,
       payload: {
         path: ['guestId'],
-        equals: guestId
-      }
-    }
+        equals: guestId,
+      },
+    },
   })
 
-  const appEmit = (globalThis as any).appEmitter
+  const appEmit = (globalThis as unknown as { appEmitter?: { emit: Function } }).appEmitter
   if (appEmit && limits.maxQuota > 0) {
     const fraction = usedQuota / limits.maxQuota
     if (fraction >= 1) {
-      appEmit.emit('telemetry:guest_quota_alert', { guestId, projectId, fraction, used: usedQuota, limit: limits.maxQuota })
+      appEmit.emit('telemetry:guest_quota_alert', {
+        guestId,
+        projectId,
+        fraction,
+        used: usedQuota,
+        limit: limits.maxQuota,
+      })
     } else if (fraction >= 0.8) {
-      appEmit.emit('telemetry:guest_quota_alert', { guestId, projectId, fraction, used: usedQuota, limit: limits.maxQuota })
+      appEmit.emit('telemetry:guest_quota_alert', {
+        guestId,
+        projectId,
+        fraction,
+        used: usedQuota,
+        limit: limits.maxQuota,
+      })
     }
   }
 
