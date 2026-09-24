@@ -12,8 +12,8 @@ describe('Wishlist Service', () => {
           payload: 'my item',
           source: 'telegram',
           createdAt: new Date(),
-        })
-      }
+        }),
+      },
     } as unknown as PrismaClient
 
     const result = await addItemToWishlist('user1', 'my item', 'telegram', { prisma: mockPrisma })
@@ -23,7 +23,7 @@ describe('Wishlist Service', () => {
         userId: 'user1',
         payload: 'my item',
         source: 'telegram',
-      }
+      },
     })
     expect(result.id).toBe('test-id')
   })

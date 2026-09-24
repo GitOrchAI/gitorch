@@ -154,9 +154,9 @@ export async function processarComandoWishlistAdd(
   dono: { userId: string },
   payload: string,
   app: {
-    prisma: any
-    log: { error: (err: any, msg: string) => void }
-    broadcastEvent?: (wingId: string, event: string, data: any) => void
+    prisma: FastifyInstance['prisma']
+    log: { error: (err: unknown, msg: string) => void }
+    broadcastEvent?: (wingId: string, event: string, data: unknown) => void
   },
   sendMsg: (text: string) => Promise<void>
 ) {
@@ -166,20 +166,14 @@ export async function processarComandoWishlistAdd(
   }
 
   try {
-    await addItemToWishlist(
-      dono.userId,
-      payload.trim(),
-      'telegram',
-      { prisma: app.prisma }
-    )
+    await addItemToWishlist(dono.userId, payload.trim(), 'telegram', { prisma: app.prisma })
 
     if (app.broadcastEvent) {
       app.broadcastEvent(`user:${dono.userId}`, 'wishlist_updated', {
         userId: dono.userId,
-        payload: payload.trim()
+        payload: payload.trim(),
       })
     }
-
   } catch (error) {
     app.log.error(error, '[Telegram] Falha ao adicionar à wishlist')
     await sendMsg('Ocorreu um erro ao adicionar à wishlist.')
@@ -1402,7 +1396,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                   await processarComandoWishlistAdd(
                     dono,
                     payload || '',
-                    app as unknown as any,
+                    app as unknown as Parameters<typeof processarComandoWishlistAdd>[2],
                     async (text) => {
                       await sendTelegramMessage({
                         botToken,

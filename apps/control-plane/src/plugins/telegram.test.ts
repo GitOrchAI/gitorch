@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { projetoTemRepositorioValido, acordarSmComSeguranca, processarComandoWishlistAdd } from './telegram.js'
+import {
+  projetoTemRepositorioValido,
+  acordarSmComSeguranca,
+  processarComandoWishlistAdd,
+} from './telegram.js'
 import * as wishlistService from '../lib/wishlist-service.js'
 
 /**
@@ -87,7 +91,10 @@ describe('acordarSmComSeguranca', () => {
 describe('processarComandoWishlistAdd', () => {
   it('rejeita payload vazio', async () => {
     const sendMsg = vi.fn()
-    const app = { prisma: {}, log: { error: vi.fn() } }
+    const app = {
+      prisma: {} as Parameters<typeof processarComandoWishlistAdd>[2]['prisma'],
+      log: { error: vi.fn() },
+    }
 
     await processarComandoWishlistAdd({ userId: 'u1' }, '   ', app, sendMsg)
 
@@ -98,9 +105,9 @@ describe('processarComandoWishlistAdd', () => {
     const sendMsg = vi.fn()
     const broadcastEvent = vi.fn()
     const app = {
-      prisma: {},
+      prisma: {} as Parameters<typeof processarComandoWishlistAdd>[2]['prisma'],
       log: { error: vi.fn() },
-      broadcastEvent
+      broadcastEvent,
     }
 
     const spy = vi.spyOn(wishlistService, 'addItemToWishlist').mockResolvedValueOnce({
@@ -108,7 +115,7 @@ describe('processarComandoWishlistAdd', () => {
       userId: 'u1',
       payload: 'teste do bot',
       source: 'telegram',
-      createdAt: new Date()
+      createdAt: new Date(),
     })
 
     await processarComandoWishlistAdd({ userId: 'u1' }, ' teste do bot ', app, sendMsg)
@@ -116,7 +123,7 @@ describe('processarComandoWishlistAdd', () => {
     expect(spy).toHaveBeenCalledWith('u1', 'teste do bot', 'telegram', { prisma: app.prisma })
     expect(broadcastEvent).toHaveBeenCalledWith('user:u1', 'wishlist_updated', {
       userId: 'u1',
-      payload: 'teste do bot'
+      payload: 'teste do bot',
     })
     expect(sendMsg).toHaveBeenCalledWith('Item adicionado à wishlist com sucesso.')
   })
@@ -126,12 +133,14 @@ describe('processarComandoWishlistAdd', () => {
     const broadcastEvent = vi.fn()
     const logError = vi.fn()
     const app = {
-      prisma: {},
+      prisma: {} as Parameters<typeof processarComandoWishlistAdd>[2]['prisma'],
       log: { error: logError },
-      broadcastEvent
+      broadcastEvent,
     }
 
-    const spy = vi.spyOn(wishlistService, 'addItemToWishlist').mockRejectedValueOnce(new Error('banco falhou'))
+    const spy = vi
+      .spyOn(wishlistService, 'addItemToWishlist')
+      .mockRejectedValueOnce(new Error('banco falhou'))
 
     await processarComandoWishlistAdd({ userId: 'u1' }, ' falho ', app, sendMsg)
 
