@@ -49,9 +49,9 @@ export class GitHubSyncEngine {
     const isAllClosedOrMerged = allGroupItems.every(
       (item) => item.state === 'closed' || item.state === 'merged'
     )
-    const isAnyBlocked = !isAllClosedOrMerged && allGroupItems.some(
-      (item) => !this.workModel.availabilityFor(item, dependencyItems).available
-    )
+    const isAnyBlocked =
+      !isAllClosedOrMerged &&
+      allGroupItems.some((item) => !this.workModel.availabilityFor(item, dependencyItems).available)
 
     let status = 'Ready'
     if (isAllClosedOrMerged) {
@@ -65,9 +65,8 @@ export class GitHubSyncEngine {
     for (const groupItem of allGroupItems) {
       const weight = this.workModel.weightFor(groupItem)
       const iteration = this.workModel.iterationFor(groupItem)
-      const assigneesToUpdate = groupItem.assignees && groupItem.assignees.length > 0
-        ? groupItem.assignees
-        : undefined
+      const assigneesToUpdate =
+        groupItem.assignees && groupItem.assignees.length > 0 ? groupItem.assignees : undefined
 
       for (const projectItemId of groupItem.projectItemIds) {
         operations.push({

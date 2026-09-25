@@ -60,10 +60,11 @@ test('aggregates PR events from 4 simultaneous repositories based on branch pref
     projectItemIds: ['PVTI_I'],
   }
 
-  const result = engine.planOperations(
-    { ...event, workItem: frontWorkItem },
-    [backWorkItem, dbWorkItem, infraWorkItem]
-  )
+  const result = engine.planOperations({ ...event, workItem: frontWorkItem }, [
+    backWorkItem,
+    dbWorkItem,
+    infraWorkItem,
+  ])
 
   const statusOperations = result.operations.filter((op) => op.fieldName === 'Status')
   expect(statusOperations).toHaveLength(4)
