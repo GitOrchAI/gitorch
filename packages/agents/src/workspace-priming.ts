@@ -138,3 +138,113 @@ export async function primeWorkspace(
     await git(workspacePath, ['commit', '--no-verify', '-m', 'gitorch: workspace priming'])
   }
 }
+
+export interface MultiRepoManifest {
+  repos: Record<string, { role: string; path: string }>
+  contracts: string[]
+}
+
+async function walkDir(dir: string, fileList: string[] = []): Promise<string[]> {
+  try {
+    const files = await fs.readdir(dir, { withFileTypes: true })
+    for (const file of files) {
+      if (file.name === 'node_modules' || file.name === '.git') continue
+      const filePath = path.join(dir, file.name)
+      if (file.isDirectory()) {
+        await walkDir(filePath, fileList)
+      } else {
+        fileList.push(filePath)
+      }
+    }
+  } catch (err) {
+    // Ignore errors for unreadable dirs
+  }
+  return fileList
+}
+
+async function mergeEnvFile(envPath: string, newEnvVars: Record<string, string>): Promise<void> {
+  let existingContent = ''
+  try {
+    existingContent = await fs.readFile(envPath, 'utf8')
+  } catch (err) {
+    // File does not exist
+  }
+
+  const existingVars = new Set()
+  for (const line of existingContent.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed && !trimmed.startsWith('#')) {
+      const match = trimmed.match(/^([^=]+)=/)
+      if (match) {
+        existingVars.add(match[1])
+      }
+    }
+  }
+
+  let varsToAdd = ''
+  for (const [key, value] of Object.entries(newEnvVars)) {
+    if (!existingVars.has(key)) {
+      varsToAdd += `${key}=${value}\n`
+    }
+  }
+
+  if (varsToAdd) {
+    await fs.appendFile(
+      envPath,
+      (existingContent.endsWith('\n') || !existingContent ? '' : '\n') + varsToAdd
+    )
+  }
+}
+
+export async function generateMultiRepoManifest(
+  workspaceRoot: string,
+  repos: Array<{ name: string; role: string; relativePath: string }>
+): Promise<void> {
+  const gitorchDir = path.join(workspaceRoot, '.gitorch')
+  await fs.mkdir(gitorchDir, { recursive: true })
+
+  const manifest: MultiRepoManifest = {
+    repos: {},
+    contracts: [],
+  }
+
+  const globalEnvVars: Record<string, string> = {}
+
+  for (const repo of repos) {
+    const absolutePath = path.join(workspaceRoot, repo.relativePath)
+    manifest.repos[repo.name] = {
+      role: repo.role,
+      path: absolutePath,
+    }
+
+    const envKey = `${repo.role.toUpperCase()}_DIR`
+    globalEnvVars[envKey] = absolutePath
+
+    // Scan for contracts
+    const allFiles = await walkDir(absolutePath)
+    for (const file of allFiles) {
+      if (
+        file.endsWith('.openapi.yml') ||
+        file.endsWith('.openapi.json') ||
+        file.endsWith('.prisma') ||
+        file.endsWith('.proto')
+      ) {
+        manifest.contracts.push(file)
+      }
+    }
+  }
+
+  const manifestPath = path.join(gitorchDir, 'workspace-manifest.json')
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
+
+  // Merge runner .env
+  const rootEnvPath = path.join(workspaceRoot, '.env')
+  await mergeEnvFile(rootEnvPath, globalEnvVars)
+
+  // Merge local .envs
+  for (const repo of repos) {
+    const absolutePath = path.join(workspaceRoot, repo.relativePath)
+    const localEnvPath = path.join(absolutePath, '.env')
+    await mergeEnvFile(localEnvPath, globalEnvVars)
+  }
+}
