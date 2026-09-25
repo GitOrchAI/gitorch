@@ -18,6 +18,8 @@ const EXT_LANG: Record<string, string> = {
   '.py': 'python',
   '.go': 'go',
   '.rs': 'rust',
+  '.prisma': 'prisma',
+  '.sql': 'sql',
 }
 
 const SKIP_DIRS = new Set([
@@ -155,6 +157,8 @@ export interface WorkspaceIndexAnalysis {
   mostCalled: Array<{ name: string; file: string; callCount: number }>
   orphanModules: string[]
   crossPackageDependencies: Array<{ source: string; target: string }>
+  sharedRoutes?: Array<{ method: string; path: string; backendFile: string; frontendFile: string }>
+  sharedModels?: Array<{ model: string; dbFile: string; backendFile: string }>
 }
 
 /**
@@ -230,6 +234,132 @@ export async function analyzeWorkspace(
       )
       .map((s) => s.relPath)
 
+    // Extracao de contratos inter-repositório por heurística
+    const frontendCalls: Array<{ method: string; path: string; file: string }> = []
+    const backendEndpoints: Array<{ method: string; path: string; file: string }> = []
+    const dbModels: Array<{ model: string; file: string }> = []
+    const backendDbRefs: Array<{ model: string; file: string }> = []
+
+    // Pattern matching simples para inferir contratos top-level
+    // Rotas de backend: (app|router)\.(get|post|put|delete|patch)\(['"`](.+?)['"`]
+    // Rotas de NestJS/Decorators: @(Get|Post|Put|Delete|Patch)\(['"`](.+?)['"`]
+    // Calls de frontend: (fetch|axios(\.(get|post|put|delete|patch))?)\(['"`](.+?)['"`]
+    // Models de Prisma: model (\w+) {
+    // SQL: CREATE TABLE (\w+)
+    // Uso de db no backend: prisma\.(\w+)\.
+    for (const file of sources) {
+      if (isTestLike(file.relPath)) continue
+
+      const content = file.content
+      const isPrisma = file.relPath.endsWith('.prisma')
+      const isSql = file.relPath.endsWith('.sql')
+      const isTsOrJs = file.relPath.match(/\.(ts|js|tsx|jsx)$/)
+
+      if (isPrisma) {
+        const modelRegex = /model\s+(\w+)\s+\{/g
+        let match
+        while ((match = modelRegex.exec(content)) !== null) {
+          dbModels.push({ model: match[1]!, file: file.relPath })
+        }
+      } else if (isSql) {
+        const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)/gi
+        let match
+        while ((match = tableRegex.exec(content)) !== null) {
+          dbModels.push({ model: match[1]!, file: file.relPath })
+        }
+      } else if (isTsOrJs) {
+        // Backend endpoints
+        const expressRegex = /(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/gi
+        let match
+        while ((match = expressRegex.exec(content)) !== null) {
+          backendEndpoints.push({
+            method: match[1]!.toUpperCase(),
+            path: match[2]!,
+            file: file.relPath,
+          })
+        }
+
+        const decoratorRegex = /@(Get|Post|Put|Delete|Patch)\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/gi
+        while ((match = decoratorRegex.exec(content)) !== null) {
+          backendEndpoints.push({
+            method: match[1]!.toUpperCase(),
+            path: match[2]!,
+            file: file.relPath,
+          })
+        }
+
+        // Frontend calls
+        const fetchRegex = /fetch\s*\(\s*['"`]([^'"`]+)['"`]/gi
+        while ((match = fetchRegex.exec(content)) !== null) {
+          frontendCalls.push({
+            method: 'ANY', // fetch method might be in options, fallback
+            path: match[1]!,
+            file: file.relPath,
+          })
+        }
+
+        const axiosRegex = /axios\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/gi
+        while ((match = axiosRegex.exec(content)) !== null) {
+          frontendCalls.push({
+            method: match[1]!.toUpperCase(),
+            path: match[2]!,
+            file: file.relPath,
+          })
+        }
+
+        // Backend DB refs
+        const prismaRefRegex = /prisma\.([a-zA-Z0-9_]+)\./g
+        while ((match = prismaRefRegex.exec(content)) !== null) {
+          // Prisma client properties are usually camelCase, db models PascalCase.
+          // Store raw string, will case-insensitively match
+          backendDbRefs.push({ model: match[1]!, file: file.relPath })
+        }
+      }
+    }
+
+    const sharedRoutes: Array<{ method: string; path: string; backendFile: string; frontendFile: string }> = []
+    for (const caller of frontendCalls) {
+      for (const endpoint of backendEndpoints) {
+        // Simplified path matching, handling potential base path diffs or just exact suffixes
+        if (
+          caller.path === endpoint.path ||
+          caller.path.endsWith(endpoint.path) ||
+          endpoint.path.endsWith(caller.path)
+        ) {
+          if (caller.method === 'ANY' || caller.method === endpoint.method) {
+            sharedRoutes.push({
+              method: endpoint.method,
+              path: endpoint.path,
+              backendFile: endpoint.file,
+              frontendFile: caller.file,
+            })
+          }
+        }
+      }
+    }
+
+    const sharedModels: Array<{ model: string; dbFile: string; backendFile: string }> = []
+    for (const ref of backendDbRefs) {
+      for (const dbm of dbModels) {
+        if (ref.model.toLowerCase() === dbm.model.toLowerCase()) {
+          // Avoid duplicate entries per file pair
+          const exists = sharedModels.find(
+            (m) =>
+              m.model === dbm.model &&
+              m.dbFile === dbm.file &&
+              m.backendFile === ref.file
+          )
+          if (!exists) {
+            sharedModels.push({
+              model: dbm.model,
+              dbFile: dbm.file,
+              backendFile: ref.file,
+            })
+          }
+        }
+      }
+    }
+
     return {
       sources,
       fileCount: num(fileCountRows[0]?.n),
@@ -244,6 +374,8 @@ export async function analyzeWorkspace(
       })),
       orphanModules,
       crossPackageDependencies: crossPackageRows,
+      sharedRoutes,
+      sharedModels,
     }
   } catch (err) {
     // Veneno NÃO pode ser engolido: o chamador precisa saber o culpado para
@@ -313,6 +445,22 @@ export async function summarizeWorkspace(
   lines.push('- File inventory (every indexed file, by directory — cite these paths verbatim):')
   for (const dir of [...byDir.keys()].sort()) {
     lines.push(`  ${dir}/: ${byDir.get(dir)!.sort().join(', ')}`)
+  }
+
+  if (analysis.sharedRoutes && analysis.sharedRoutes.length > 0) {
+    lines.push(
+      `- Shared routes (cross-repo API calls): ${analysis.sharedRoutes
+        .map((r) => `${r.method} ${r.path} (${r.frontendFile} -> ${r.backendFile})`)
+        .join(', ')}.`
+    )
+  }
+
+  if (analysis.sharedModels && analysis.sharedModels.length > 0) {
+    lines.push(
+      `- Shared models (database entities): ${analysis.sharedModels
+        .map((m) => `${m.model} (${m.backendFile} -> ${m.dbFile})`)
+        .join(', ')}.`
+    )
   }
 
   lines.push(
