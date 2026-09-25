@@ -103,7 +103,7 @@ describe('WishlistService', () => {
           defaultBranch: 'main',
           role: 'backend',
         },
-        ,
+
         {
           id: 'frontend-repo',
           url: 'repo-url-2',
@@ -160,7 +160,7 @@ describe('WishlistService', () => {
             defaultBranch: 'main',
             role: 'backend',
           },
-          ,
+
           {
             id: 'frontend-repo',
             url: 'repo-url-2',
