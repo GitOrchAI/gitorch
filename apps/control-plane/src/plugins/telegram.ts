@@ -161,6 +161,30 @@ export function acordarSmComSeguranca(
   }
 }
 
+export async function processarComandoWishlistList(
+  dono: { userId: string },
+  app: { prisma: FastifyInstance['prisma']; log: { error: (err: unknown, msg: string) => void } },
+  sendMsg: (text: string) => Promise<void>
+) {
+  try {
+    const items = await app.prisma.wishlistItem.findMany({
+      where: { userId: dono.userId },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    if (items.length === 0) {
+      await sendMsg('Your wishlist is empty.')
+      return
+    }
+
+    const lines = items.map((item, index) => `${index + 1}. ${item.payload}`)
+    await sendMsg(lines.join('\n'))
+  } catch (err) {
+    app.log.error(err, '[Telegram] Falha ao listar wishlist')
+    await sendMsg('Erro interno ao listar a wishlist.')
+  }
+}
+
 export async function processarComandoWishlistAdd(
   dono: { userId: string },
   payload: string,
@@ -1453,6 +1477,22 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
               }
 
               const text = update.message.text.trim()
+
+              if (text === '/wishlist') {
+                await processarComandoWishlistList(
+                  dono,
+                  app as unknown as Parameters<typeof processarComandoWishlistList>[1],
+                  async (text) => {
+                    await sendTelegramMessage({
+                      botToken,
+                      chatId: strChatId,
+                      text,
+                    })
+                  }
+                )
+                continue
+              }
+
               const match = text.match(/^\/wishlist\s+(\w+)(?:\s+(.+))?$/)
 
               if (!match) {
