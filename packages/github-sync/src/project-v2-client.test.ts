@@ -1467,3 +1467,198 @@ describe('closingIssuesDoPr', () => {
     expect(await client.closingIssuesDoPr({ owner: 'dono', repo: 'repo', prNumber: 7 })).toEqual([])
   })
 })
+
+describe('Novos métodos de consulta de vínculos', () => {
+  it('getIssueHierarchy traz parents aninhados e subIssues', async () => {
+    const client = new ProjectV2Client({
+      token: 'test-token',
+      request: async (request) => {
+        expect(request.variables).toEqual({ owner: 'GitOrchAI', repo: 'gitorch', number: 580 })
+        return {
+          data: {
+            repository: {
+              issue: {
+                parent: {
+                  number: 578,
+                  title: 'Parent',
+                  state: 'OPEN',
+                  parent: { number: 500, title: 'Epic', state: 'CLOSED' },
+                },
+                subIssues: {
+                  nodes: [{ number: 581, title: 'Task 1', state: 'OPEN' }],
+                },
+              },
+            },
+          },
+        }
+      },
+    })
+
+    const result = await client.getIssueHierarchy({
+      owner: 'GitOrchAI',
+      repo: 'gitorch',
+      number: 580,
+    })
+    expect(result.parents).toEqual([
+      { number: 578, title: 'Parent', state: 'OPEN' },
+      { number: 500, title: 'Epic', state: 'CLOSED' },
+    ])
+    expect(result.subIssues).toEqual([{ number: 581, title: 'Task 1', state: 'OPEN' }])
+  })
+
+  it('getItemMilestone retorna title e dueOn', async () => {
+    const client = new ProjectV2Client({
+      token: 'test-token',
+      request: async (request) => {
+        expect(request.variables).toEqual({ owner: 'O', repo: 'R', number: 10 })
+        return {
+          data: {
+            repository: {
+              issue: {
+                milestone: {
+                  title: 'Sprint 1',
+                  number: 2,
+                  dueOn: '2026-09-23T00:00:00Z',
+                  state: 'OPEN',
+                },
+              },
+            },
+          },
+        }
+      },
+    })
+
+    const milestone = await client.getItemMilestone({
+      owner: 'O',
+      repo: 'R',
+      number: 10,
+      type: 'issue',
+    })
+    expect(milestone).toEqual({
+      title: 'Sprint 1',
+      number: 2,
+      dueOn: '2026-09-23T00:00:00Z',
+      state: 'OPEN',
+    })
+  })
+
+  it('getProjectsV2Fields extrai status, sprint, peso e demais fields', async () => {
+    const client = new ProjectV2Client({
+      token: 'test-token',
+      request: async () => ({
+        data: {
+          repository: {
+            issue: {
+              projectItems: {
+                nodes: [
+                  {
+                    project: { id: 'PVT_1', title: 'Project 1' },
+                    fieldValues: {
+                      nodes: [
+                        {
+                          __typename: 'ProjectV2ItemFieldSingleSelectValue',
+                          field: { name: 'Status' },
+                          name: 'In Progress',
+                        },
+                        {
+                          __typename: 'ProjectV2ItemFieldIterationValue',
+                          field: { name: 'Sprint' },
+                          title: 'Sprint 1',
+                          startDate: '2026-09-23',
+                          duration: 3,
+                        },
+                        {
+                          __typename: 'ProjectV2ItemFieldNumberValue',
+                          field: { name: 'Peso' },
+                          number: 2,
+                        },
+                        {
+                          __typename: 'ProjectV2ItemFieldTextValue',
+                          field: { name: 'Custom' },
+                          text: 'abc',
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    })
+
+    const fields = await client.getProjectsV2Fields({
+      owner: 'O',
+      repo: 'R',
+      number: 580,
+      type: 'issue',
+    })
+    expect(fields.length).toBe(1)
+    expect(fields[0]?.status).toBe('In Progress')
+    expect(fields[0]?.iteration).toEqual({
+      title: 'Sprint 1',
+      startDate: '2026-09-23',
+      duration: 3,
+    })
+    expect(fields[0]?.peso).toBe(2)
+    expect(fields[0]?.fields).toContainEqual({ name: 'Custom', value: 'abc' })
+  })
+
+  it('getItemLabelsAndAssignees', async () => {
+    const client = new ProjectV2Client({
+      token: 'test-token',
+      request: async () => ({
+        data: {
+          repository: {
+            issue: {
+              labels: { nodes: [{ name: 'bug' }, { name: 'help wanted' }] },
+              assignees: { nodes: [{ login: 'loureng' }] },
+            },
+          },
+        },
+      }),
+    })
+
+    const result = await client.getItemLabelsAndAssignees({
+      owner: 'O',
+      repo: 'R',
+      number: 1,
+      type: 'issue',
+    })
+    expect(result.labels).toEqual(['bug', 'help wanted'])
+    expect(result.assignees).toEqual(['loureng'])
+  })
+
+  it('getPullRequestCrossReferences', async () => {
+    const client = new ProjectV2Client({
+      token: 'test-token',
+      request: async () => ({
+        data: {
+          repository: {
+            issue: {
+              closedByPullRequestsReferences: { nodes: [{ number: 583 }] },
+              timelineItems: {
+                nodes: [
+                  {
+                    __typename: 'CrossReferencedEvent',
+                    source: { __typename: 'PullRequest', number: 848 },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    })
+
+    const result = await client.getPullRequestCrossReferences({
+      owner: 'O',
+      repo: 'R',
+      number: 580,
+      type: 'issue',
+    })
+    expect(result.closedByPullRequests).toEqual([583])
+    expect(result.crossReferencedPullRequests).toEqual([848])
+  })
+})

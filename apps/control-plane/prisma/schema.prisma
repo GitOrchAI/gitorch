@@ -973,10 +973,31 @@ model RepoItem {
   parecerTravadoAte   DateTime? @map("parecer_travado_ate")
   parecerTravaHeadSha String?   @map("parecer_trava_head_sha")
 
+  vinculos RepoItemVinculos?
+
   /// Uma ficha por (projeto, tipo, número) — upsert nunca duplica.
   @@unique([projectId, tipo, numero])
   @@index([projectId, tipo])
   @@map("repo_items")
+}
+
+/// Grafo completo de vínculos do RepoItem (milestone, campos, PRs, etc).
+model RepoItemVinculos {
+  id         String   @id @default(cuid())
+  repoItemId String   @unique @map("repo_item_id")
+  repoItem   RepoItem @relation(fields: [repoItemId], references: [id], onDelete: Cascade)
+
+  hierarquia          Json?
+  milestone           Json?
+  projectFields       Json? @map("project_fields")
+  labelsAndAssignees  Json? @map("labels_and_assignees")
+  prsLigados          Json? @map("prs_ligados")
+  sessoesJules        Json? @map("sessoes_jules")
+
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  @@map("repo_item_vinculos")
 }
 
 /// O pedido de desejo que ficou ESPERANDO o dono dizer a qual projeto ele

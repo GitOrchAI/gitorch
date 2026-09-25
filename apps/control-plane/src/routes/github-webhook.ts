@@ -885,13 +885,30 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           // "retrato" existir mesmo quando ninguém está julgando agora.
           if (eventName === 'pull_request' && parsedPayload.pull_request?.number) {
             try {
-              await atualizarFichaDoItem({
+              const ficha = await atualizarFichaDoItem({
                 prisma: app.prisma as never,
                 projectId: project.id,
                 tipo: 'pr',
                 numero: parsedPayload.pull_request.number,
                 estado: estadoDoPrAPartirDoPayload(parsedPayload),
               })
+              const { atualizarGrafoDeVinculos } = await import('../services/grafo-de-vinculos.js')
+              const repoValido = nomeDeRepositorioValido(project.wingId)
+              const token = repoValido
+                ? await mintInstallationToken({ repository: project.wingId }).catch(() => null)
+                : null
+              if (token) {
+                const [dono = '', repo = ''] = project.wingId.split('/')
+                await atualizarGrafoDeVinculos({
+                  prisma: app.prisma as never,
+                  githubToken: token,
+                  owner: dono,
+                  repo: repo,
+                  numero: parsedPayload.pull_request.number,
+                  tipo: 'pr',
+                  repoItemId: ficha.id,
+                })
+              }
             } catch (err) {
               // Best-effort, mesmo padrão do resto do handler: a ficha nunca
               // pode derrubar o 200 do webhook.
@@ -904,13 +921,30 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
 
           if (eventName === 'issues' && parsedPayload.issue?.number) {
             try {
-              await atualizarFichaDoItem({
+              const ficha = await atualizarFichaDoItem({
                 prisma: app.prisma as never,
                 projectId: project.id,
                 tipo: 'issue',
                 numero: parsedPayload.issue.number,
                 estado: estadoDaIssueAPartirDoPayload(parsedPayload),
               })
+              const { atualizarGrafoDeVinculos } = await import('../services/grafo-de-vinculos.js')
+              const repoValido = nomeDeRepositorioValido(project.wingId)
+              const token = repoValido
+                ? await mintInstallationToken({ repository: project.wingId }).catch(() => null)
+                : null
+              if (token) {
+                const [dono = '', repo = ''] = project.wingId.split('/')
+                await atualizarGrafoDeVinculos({
+                  prisma: app.prisma as never,
+                  githubToken: token,
+                  owner: dono,
+                  repo: repo,
+                  numero: parsedPayload.issue.number,
+                  tipo: 'issue',
+                  repoItemId: ficha.id,
+                })
+              }
             } catch (err) {
               app.log.warn({ err, projectId: project.id }, 'Falha ao atualizar a ficha da tarefa')
             }

@@ -54,8 +54,9 @@ export function classificarOrigem(sinais: SinaisDeOrigem): OrigemDoItem {
   if (['dependabot[bot]', 'dependabot-preview[bot]'].includes(sinais.autor ?? ''))
     return 'dependabot'
 
-  // 2) O dev assíncrono (Jules): rodapé próprio, verificável sem rede.
-  if (temRodapeDoDev(sinais.corpo)) {
+  // 2) O dev assíncrono (Jules): rodapé próprio, verificável sem rede
+  // OU via fallback pelo branch vinculado à sessão ativa do GitOrch.
+  if (temRodapeDoDev(sinais.corpo) || sinais.temSessaoGitOrch) {
     return sinais.temSessaoGitOrch ? 'jules_gitorch' : 'jules_fora'
   }
 

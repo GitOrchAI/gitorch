@@ -602,6 +602,401 @@ export class ProjectV2Client {
     return nodes.map((n) => n.number)
   }
 
+  async getIssueHierarchy(input: { owner: string; repo: string; number: number }): Promise<{
+    parents: Array<{ number: number; title: string; state: string }>
+    subIssues: Array<{ number: number; title: string; state: string }>
+  }> {
+    const response = await this.request<{
+      repository: {
+        issue: {
+          parent: { number: number; title: string; state: string; parent?: unknown } | null
+          subIssues: { nodes: Array<{ number: number; title: string; state: string }> }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetIssueHierarchy($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $number) {
+                parent {
+                  number
+                  title
+                  state
+                  parent {
+                    number
+                    title
+                    state
+                    parent {
+                      number
+                      title
+                      state
+                      parent {
+                        number
+                        title
+                        state
+                      }
+                    }
+                  }
+                }
+                subIssues(first: 100) {
+                  nodes {
+                    number
+                    title
+                    state
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const issue = unwrap(response).repository?.issue
+    if (!issue) return { parents: [], subIssues: [] }
+
+    const parents: Array<{ number: number; title: string; state: string }> = []
+    let currentParent = issue.parent
+    while (currentParent) {
+      parents.push({
+        number: currentParent.number,
+        title: currentParent.title,
+        state: currentParent.state,
+      })
+      currentParent = currentParent.parent as {
+        number: number
+        title: string
+        state: string
+        parent?: unknown
+      } | null
+    }
+
+    const subIssues = issue.subIssues.nodes.map((n) => ({
+      number: n.number,
+      title: n.title,
+      state: n.state,
+    }))
+
+    return { parents, subIssues }
+  }
+
+  async getItemMilestone(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<{
+    title: string
+    number: number
+    dueOn: string | null
+    state: string
+  } | null> {
+    const typeField = input.type === 'issue' ? 'issue' : 'pullRequest'
+    const response = await this.request<{
+      repository: {
+        [key: string]: {
+          milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetItemMilestone($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${typeField}(number: $number) {
+                milestone {
+                  title
+                  number
+                  dueOn
+                  state
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    return unwrap(response).repository?.[typeField]?.milestone ?? null
+  }
+
+  async getProjectsV2Fields(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<
+    Array<{
+      project: { id: string; title: string }
+      status: string | null
+      iteration: { title: string; startDate: string; duration: number } | null
+      peso: number | null
+      fields: Array<{ name: string; value: string }>
+    }>
+  > {
+    const typeField = input.type === 'issue' ? 'issue' : 'pullRequest'
+    const response = await this.request<{
+      repository: {
+        [key: string]: {
+          projectItems: {
+            nodes: Array<{
+              project: { id: string; title: string }
+              fieldValues: {
+                nodes: Array<{
+                  __typename: string
+                  field?: { name: string }
+                  name?: string
+                  number?: number
+                  text?: string
+                  title?: string
+                  startDate?: string
+                  duration?: number
+                }>
+              }
+            }>
+          }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetProjectsV2Fields($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${typeField}(number: $number) {
+                projectItems(first: 10) {
+                  nodes {
+                    project {
+                      id
+                      title
+                    }
+                    fieldValues(first: 20) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          name
+                        }
+                        ... on ProjectV2ItemFieldIterationValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          title
+                          startDate
+                          duration
+                        }
+                        ... on ProjectV2ItemFieldNumberValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          number
+                        }
+                        ... on ProjectV2ItemFieldTextValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          text
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const nodes = unwrap(response).repository?.[typeField]?.projectItems?.nodes ?? []
+
+    return nodes.map((node) => {
+      let status: string | null = null
+      let iteration: { title: string; startDate: string; duration: number } | null = null
+      let peso: number | null = null
+      const fields: Array<{ name: string; value: string }> = []
+
+      for (const fv of node.fieldValues.nodes) {
+        const fieldName = fv.field?.name
+        if (!fieldName) continue
+
+        if (fv.__typename === 'ProjectV2ItemFieldSingleSelectValue' && fv.name) {
+          if (fieldName === 'Status') status = fv.name
+          else fields.push({ name: fieldName, value: fv.name })
+        } else if (fv.__typename === 'ProjectV2ItemFieldIterationValue' && fv.title) {
+          if (fieldName === 'Sprint' || fieldName === 'Iteration') {
+            iteration = {
+              title: fv.title,
+              startDate: fv.startDate || '',
+              duration: fv.duration || 0,
+            }
+          }
+          fields.push({ name: fieldName, value: fv.title })
+        } else if (fv.__typename === 'ProjectV2ItemFieldNumberValue' && fv.number !== undefined) {
+          if (fieldName === 'Peso' || fieldName === 'Weight') peso = fv.number
+          fields.push({ name: fieldName, value: String(fv.number) })
+        } else if (fv.__typename === 'ProjectV2ItemFieldTextValue' && fv.text) {
+          fields.push({ name: fieldName, value: fv.text })
+        }
+      }
+
+      return {
+        project: node.project,
+        status,
+        iteration,
+        peso,
+        fields,
+      }
+    })
+  }
+
+  async getItemLabelsAndAssignees(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<{
+    labels: string[]
+    assignees: string[]
+  }> {
+    const typeField = input.type === 'issue' ? 'issue' : 'pullRequest'
+    const response = await this.request<{
+      repository: {
+        [key: string]: {
+          labels: { nodes: Array<{ name: string }> }
+          assignees: { nodes: Array<{ login: string }> }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetItemLabelsAndAssignees($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${typeField}(number: $number) {
+                labels(first: 20) {
+                  nodes { name }
+                }
+                assignees(first: 10) {
+                  nodes { login }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const item = unwrap(response).repository?.[typeField]
+    if (!item) return { labels: [], assignees: [] }
+
+    return {
+      labels: item.labels.nodes.map((n) => n.name),
+      assignees: item.assignees.nodes.map((n) => n.login),
+    }
+  }
+
+  async getPullRequestCrossReferences(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<{
+    closedByPullRequests: number[]
+    crossReferencedPullRequests: number[]
+  }> {
+    const typeField = input.type === 'issue' ? 'issue' : 'pullRequest'
+    const closedByQuery =
+      input.type === 'issue'
+        ? `
+      closedByPullRequestsReferences(first: 10) {
+        nodes { number }
+      }
+    `
+        : ''
+
+    const response = await this.request<{
+      repository: {
+        [key: string]: {
+          closedByPullRequestsReferences?: { nodes: Array<{ number: number }> }
+          timelineItems: {
+            nodes: Array<{
+              __typename: string
+              source?: {
+                __typename: string
+                number?: number
+              }
+              subject?: {
+                __typename: string
+                number?: number
+              }
+            }>
+          }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetPullRequestCrossReferences($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${typeField}(number: $number) {
+                ${closedByQuery}
+                timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
+                  nodes {
+                    __typename
+                    ... on CrossReferencedEvent {
+                      source {
+                        __typename
+                        ... on PullRequest { number }
+                      }
+                    }
+                    ... on ConnectedEvent {
+                      subject {
+                        __typename
+                        ... on PullRequest { number }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const item = unwrap(response).repository?.[typeField]
+    if (!item) return { closedByPullRequests: [], crossReferencedPullRequests: [] }
+
+    const closedByPullRequests =
+      item.closedByPullRequestsReferences?.nodes.map((n) => n.number) || []
+
+    const crossReferencedPullRequests: number[] = []
+    for (const node of item.timelineItems.nodes) {
+      if (
+        node.__typename === 'CrossReferencedEvent' &&
+        node.source?.__typename === 'PullRequest' &&
+        node.source.number
+      ) {
+        crossReferencedPullRequests.push(node.source.number)
+      } else if (
+        node.__typename === 'ConnectedEvent' &&
+        node.subject?.__typename === 'PullRequest' &&
+        node.subject.number
+      ) {
+        crossReferencedPullRequests.push(node.subject.number)
+      }
+    }
+
+    return {
+      closedByPullRequests: [...new Set(closedByPullRequests)],
+      crossReferencedPullRequests: [...new Set(crossReferencedPullRequests)],
+    }
+  }
+
   // Igual ao findProjectId, mas LANÇA quando o board não existe: os fluxos do PO
   // e do SM operam um board que TEM que existir, então "não encontrado" ali é
   // um erro de verdade (não um sinal para criar). Contrato estrito de sempre —

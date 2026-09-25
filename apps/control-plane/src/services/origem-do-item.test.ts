@@ -27,6 +27,18 @@ describe('classificarOrigem', () => {
     ).toBe('jules_gitorch')
   })
 
+  it('somente sessão do GitOrch (via branch, sem rodapé) → jules_gitorch', () => {
+    expect(
+      classificarOrigem({
+        autor: 'gitorch-bot',
+        labels: [],
+        corpo: null,
+        commits: [],
+        temSessaoGitOrch: true,
+      })
+    ).toBe('jules_gitorch')
+  })
+
   it('rodapé do dev SEM sessão do GitOrch → jules_fora (alguém usou o Jules direto, sem passar pelo produto)', () => {
     expect(
       classificarOrigem({

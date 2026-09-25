@@ -58,6 +58,7 @@ describe('MIGRATION_LEDGER', () => {
       'autonomia-de-seguranca-migration.sql',
       'parecer-trava-migration.sql',
       'guest-limits-mapping-migration.sql',
+      'repo-item-vinculos-migration.sql',
     ])
   })
 })
