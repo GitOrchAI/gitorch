@@ -1,3 +1,5 @@
+import type { WorkspaceSpec } from './manager.js'
+
 /**
  * Runner que executa um comando numa máquina remota (ex.: via SSH). Compatível
  * estruturalmente com o RuntimeCommandRunner do pacote agents, mas definido aqui
@@ -121,6 +123,58 @@ export class RemoteWorkspaceProvider {
       projectId,
       path: workspacePath,
       status: 'active',
+    }
+  }
+
+  async cloneMultiRepos(workspaceId: string, spec: WorkspaceSpec): Promise<void> {
+    const parts = workspaceId.split(':')
+    if (parts.length < 3 || parts[0] !== 'ws') {
+      throw new Error(`Workspace ID inválido: ${workspaceId}`)
+    }
+    const userId = parts[1]!
+    const projectId = parts.slice(2).join(':')
+
+    this.validateInput(userId)
+    this.validateInput(projectId)
+
+    const workspacePath = `${this.projectDir(userId, projectId)}/ws`
+
+    for (const repo of spec.repositories) {
+      this.validateInput(repo.targetDir)
+      const targetPath = `${workspacePath}/repos/${repo.targetDir}`
+
+      // Basic defense against URL injection
+      let repoUrl = repo.url
+      try {
+        repoUrl = new URL(repo.url).toString()
+      } catch {
+        // Fallback to literal if not a standard URL
+      }
+
+      // No token logic added here for simplicity, similar to local provider
+
+      const script = `mkdir -p ${this.shellQuote(targetPath)} && git clone --branch ${this.shellQuote(repo.branch)} -- ${this.shellQuote(repoUrl)} ${this.shellQuote(targetPath)}`
+
+      const result = await this.runner({
+        binary: 'sh',
+        args: ['-c', script],
+        env: {},
+        timeoutMs: 300_000,
+      })
+
+      if (result.exitCode !== 0) {
+        // Rollback just the failed repository directory
+        await this.runner({
+          binary: 'sh',
+          args: ['-c', `rm -rf ${this.shellQuote(targetPath)}`],
+          env: {},
+          timeoutMs: 30000,
+        }).catch(() => undefined)
+
+        throw new Error(
+          `Falha ao clonar repositório ${repo.url} no remoto (exit ${result.exitCode}): ${result.stderr.trim()}`
+        )
+      }
     }
   }
 
