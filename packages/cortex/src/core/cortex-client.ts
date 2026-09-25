@@ -35,7 +35,8 @@ export interface ChromaSemanticStoreLike {
     roomId: string | undefined,
     hallId: string | undefined,
     queryEmbedding: number[],
-    limit: number
+    limit: number,
+    repositoryScope?: string[]
   ): Promise<CortexSearchResult[]>
 }
 
@@ -89,11 +90,23 @@ export class CortexClient {
     return this.getSqliteStore().getDrawerById(id)
   }
 
-  async search(wingId: string, query: string, limit: number): Promise<CortexSearchResult[]> {
+  async search(
+    wingId: string,
+    query: string,
+    limit: number,
+    repositoryScope?: string[]
+  ): Promise<CortexSearchResult[]> {
     this.ensureInitialized()
     const embedding = await this.embeddingFn(query)
 
-    return this.getChromaStore().search(wingId, undefined, undefined, embedding, limit)
+    return this.getChromaStore().search(
+      wingId,
+      undefined,
+      undefined,
+      embedding,
+      limit,
+      repositoryScope
+    )
   }
 
   close(): void {

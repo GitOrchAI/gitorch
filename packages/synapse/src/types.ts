@@ -132,6 +132,11 @@ export interface CortexSearchResultLike {
   metadata: Record<string, unknown>
 }
 export interface CortexClientLike {
-  search(wingId: string, query: string, limit: number): Promise<CortexSearchResultLike[]>
+  search(
+    wingId: string,
+    query: string,
+    limit: number,
+    repositoryScope?: string[]
+  ): Promise<CortexSearchResultLike[]>
   getDrawerById(id: string): Promise<CortexDrawerLike | null> | CortexDrawerLike | null
 }

@@ -1,3 +1,4 @@
+import { exportGraph } from './export-graph.js'
 import {
   analyzeWorkspace,
   summarizeWorkspace,
@@ -57,4 +58,28 @@ export async function diagnoseWorkspaceStructural(
     crossPackageDependencies: analysis.crossPackageDependencies,
     summary,
   }
+}
+
+export async function diagnoseCrossRepoIntegrity(
+  workspacePath: string,
+  options?: SummarizeOptions
+): Promise<string[]> {
+  const alerts: string[] = []
+  const graph = await exportGraph(workspacePath, options)
+
+  if (!graph) return alerts
+
+  const nodeIds = new Set(graph.nodes.map((n) => n.id))
+
+  for (const edge of graph.edges) {
+    if (edge.rel === 'CALLS_CONTRACT' || edge.rel === 'CROSS_REPO_DEPENDS_ON') {
+      if (!nodeIds.has(edge.target)) {
+        alerts.push(
+          `[ORPHAN_CONTRACT] File '${edge.source}' references unresolved target '${edge.target}'`
+        )
+      }
+    }
+  }
+
+  return alerts
 }
