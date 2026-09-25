@@ -115,8 +115,8 @@ describe('processarComandoWishlistAdd', () => {
       userId: 'u1',
       payload: 'teste do bot',
       source: 'telegram',
-        targetRepositoryIds: [],
-        isCrossRepo: false,
+      targetRepositoryIds: [],
+      isCrossRepo: false,
       createdAt: new Date(),
     })
 

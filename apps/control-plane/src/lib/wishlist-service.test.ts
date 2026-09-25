@@ -96,15 +96,28 @@ describe('WishlistService', () => {
 
     const projectConfig = {
       repositories: [
-        { id: 'backend-repo', url: 'repo-url-1', name: 'Backend', defaultBranch: 'main', role: 'backend' },
-        { id: 'frontend-repo', url: 'repo-url-2', name: 'Frontend', defaultBranch: 'main', role: 'frontend' }
-      ]
+        {
+          id: 'backend-repo',
+          url: 'repo-url-1',
+          name: 'Backend',
+          defaultBranch: 'main',
+          role: 'backend',
+        },
+        ,
+        {
+          id: 'frontend-repo',
+          url: 'repo-url-2',
+          name: 'Frontend',
+          defaultBranch: 'main',
+          role: 'frontend',
+        },
+      ],
     }
 
     // cast to any to bypass exact interface match requirement in tests
     const item = await addItemToWishlist('user3', 'Cross repo item', 'telegram', deps, {
       isCrossRepo: true,
-      projectConfig: projectConfig as any,
+      projectConfig: projectConfig as unknown as import('./project-defaults.js').ProjectConfig,
     })
 
     expect(item.id).toBe('item3')
@@ -140,25 +153,40 @@ describe('WishlistService', () => {
       } as unknown as import('@prisma/client').PrismaClient,
       projectConfig: {
         repositories: [
-          { id: 'backend-repo', url: 'repo-url-1', name: 'Backend', defaultBranch: 'main', role: 'backend' },
-          { id: 'frontend-repo', url: 'repo-url-2', name: 'Frontend', defaultBranch: 'main', role: 'frontend' }
-        ]
-      } as any
+          {
+            id: 'backend-repo',
+            url: 'repo-url-1',
+            name: 'Backend',
+            defaultBranch: 'main',
+            role: 'backend',
+          },
+          ,
+          {
+            id: 'frontend-repo',
+            url: 'repo-url-2',
+            name: 'Frontend',
+            defaultBranch: 'main',
+            role: 'frontend',
+          },
+        ],
+      } as unknown as import('./project-defaults.js').ProjectConfig,
     }
 
     // cast to any to bypass exact interface match requirement in tests
-    const items = await import('./wishlist-service.js').then(m => m.getUserWishlist('user4', deps))
+    const items = await import('./wishlist-service.js').then((m) =>
+      m.getUserWishlist('user4', deps)
+    )
 
     expect(items.length).toBe(1)
     expect(items[0]?.id).toBe('item4')
     expect(items[0]?.resolvedRepositories).toEqual([
       { id: 'backend-repo', role: 'backend' },
       { id: 'frontend-repo', role: 'frontend' },
-      { id: 'missing-repo', role: 'unknown' }
+      { id: 'missing-repo', role: 'unknown' },
     ])
     expect(deps.prisma.wishlistItem.findMany).toHaveBeenCalledWith({
       where: { userId: 'user4' },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     })
   })
 })

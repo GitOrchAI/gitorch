@@ -12,7 +12,7 @@ export interface WishlistRetrievalDeps {
 }
 
 export interface WishlistItemWithRoles extends WishlistItem {
-  resolvedRepositories?: { id: string, role: string }[]
+  resolvedRepositories?: { id: string; role: string }[]
 }
 
 export async function addItemToWishlist(
@@ -33,7 +33,7 @@ export async function addItemToWishlist(
   if (isCrossRepo && options?.projectConfig) {
     const config = getDefaultProjectConfig(options.projectConfig)
     if (config.repositories.length > 0) {
-      targetRepoIds = config.repositories.map(repo => repo.id)
+      targetRepoIds = config.repositories.map((repo) => repo.id)
     }
   }
 
@@ -64,14 +64,14 @@ export async function getUserWishlist(
   })
 
   if (!deps.projectConfig) {
-     return items
+    return items
   }
 
   const config = getDefaultProjectConfig(deps.projectConfig)
 
   return items.map((item) => {
     if (!item.targetRepositoryIds || item.targetRepositoryIds.length === 0) {
-       return item
+      return item
     }
 
     const resolvedRepositories = item.targetRepositoryIds.map((id) => {
