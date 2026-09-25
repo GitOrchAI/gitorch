@@ -48,11 +48,17 @@ export class GitHubWebhookNormalizer {
 function normalizeIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
   const payload = asRecord(envelope.payload)
   const repository = repositoryName(payload)
+  const repositoryFullName = optionalRepositoryName(payload)
+  const repositoryId = optionalRepositoryId(payload)
+  const organization = optionalOrganization(payload)
   const issue = requiredRecord(payload, 'issue')
   const workItem: GitHubWorkItem = {
     nodeId: requiredString(issue, 'node_id'),
     number: requiredNumber(issue, 'number'),
     repository,
+    repositoryFullName,
+    repositoryId,
+    organization,
     title: requiredString(issue, 'title'),
     type: issueType(issue),
     state: workState(issue),
@@ -74,6 +80,9 @@ function normalizeIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
     eventName: 'issues',
     action: action(payload, envelope.headers.eventName),
     repository,
+    repositoryFullName,
+    repositoryId,
+    organization,
     occurredAt: envelope.receivedAt,
     workItem,
   }
@@ -82,6 +91,9 @@ function normalizeIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
 function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
   const payload = asRecord(envelope.payload)
   const repository = repositoryName(payload)
+  const repositoryFullName = optionalRepositoryName(payload)
+  const repositoryId = optionalRepositoryId(payload)
+  const organization = optionalOrganization(payload)
   const pullRequest = requiredRecord(payload, 'pull_request')
   const pullRequestNodeId = requiredString(pullRequest, 'node_id')
   const mergedAt = optionalString(pullRequest, 'merged_at')
@@ -92,12 +104,19 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
     eventName: 'pull_request',
     action: action(payload, envelope.headers.eventName),
     repository,
+    repositoryFullName,
+    repositoryId,
+    organization,
     occurredAt: envelope.receivedAt,
     mergedAt,
     workItem: {
       nodeId: pullRequestNodeId,
       number: requiredNumber(pullRequest, 'number'),
       repository,
+      repositoryFullName,
+      repositoryId,
+      organization,
+      branchName: optionalString(optionalRecord(pullRequest['head']), 'ref'),
       title: requiredString(pullRequest, 'title'),
       type: 'Task',
       state: pullRequestState(pullRequest),
@@ -119,6 +138,9 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
 function normalizeSubIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
   const payload = asRecord(envelope.payload)
   const repository = repositoryName(payload)
+  const repositoryFullName = optionalRepositoryName(payload)
+  const repositoryId = optionalRepositoryId(payload)
+  const organization = optionalOrganization(payload)
   const parentIssue = requiredRecord(payload, 'parent_issue')
   const childIssue = optionalRecord(payload['sub_issue']) ?? requiredRecord(payload, 'issue')
   const childNodeId = requiredString(childIssue, 'node_id')
@@ -129,6 +151,9 @@ function normalizeSubIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
     eventName: 'sub_issues',
     action: action(payload, envelope.headers.eventName),
     repository,
+    repositoryFullName,
+    repositoryId,
+    organization,
     occurredAt: envelope.receivedAt,
     hierarchy: {
       parentNodeId: requiredString(parentIssue, 'node_id'),
@@ -141,6 +166,9 @@ function normalizeSubIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
 function normalizeIssueDependency(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
   const payload = asRecord(envelope.payload)
   const repository = repositoryName(payload)
+  const repositoryFullName = optionalRepositoryName(payload)
+  const repositoryId = optionalRepositoryId(payload)
+  const organization = optionalOrganization(payload)
   const blockedIssue = optionalRecord(payload['blocked_issue']) ?? requiredRecord(payload, 'issue')
   const blockingIssue =
     optionalRecord(payload['blocking_issue']) ?? requiredRecord(payload, 'blocking_issue')
@@ -152,6 +180,9 @@ function normalizeIssueDependency(envelope: GitHubDeliveryEnvelope): GitHubSyncE
     eventName: 'issue_dependencies',
     action: action(payload, envelope.headers.eventName),
     repository,
+    repositoryFullName,
+    repositoryId,
+    organization,
     occurredAt: envelope.receivedAt,
     dependency: {
       blockedNodeId,
@@ -163,6 +194,9 @@ function normalizeIssueDependency(envelope: GitHubDeliveryEnvelope): GitHubSyncE
 
 function normalizeProjectItem(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
   const payload = asRecord(envelope.payload)
+  const repositoryFullName = optionalRepositoryName(payload)
+  const repositoryId = optionalRepositoryId(payload)
+  const organization = optionalOrganization(payload)
   const item = requiredRecord(payload, 'projects_v2_item')
   const itemId = optionalString(item, 'node_id') ?? requiredString(item, 'id')
   const status = optionalString(item, 'status')
@@ -172,7 +206,10 @@ function normalizeProjectItem(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
     deliveryId: envelope.headers.deliveryId,
     eventName: 'projects_v2_item',
     action: action(payload, envelope.headers.eventName),
-    repository: optionalRepositoryName(payload),
+    repository: repositoryFullName,
+    repositoryFullName,
+    repositoryId,
+    organization,
     occurredAt: envelope.receivedAt,
     projectItem: {
       projectId: requiredString(item, 'project_node_id'),
@@ -185,13 +222,19 @@ function normalizeProjectItem(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
 
 function normalizeGeneric(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
   const payload = asRecord(envelope.payload)
+  const repositoryFullName = optionalRepositoryName(payload)
+  const repositoryId = optionalRepositoryId(payload)
+  const organization = optionalOrganization(payload)
 
   return {
-    id: eventId(envelope, optionalRepositoryName(payload) ?? 'github'),
+    id: eventId(envelope, repositoryFullName ?? 'github'),
     deliveryId: envelope.headers.deliveryId,
     eventName: envelope.headers.eventName,
     action: action(payload, envelope.headers.eventName),
-    repository: optionalRepositoryName(payload),
+    repository: repositoryFullName,
+    repositoryFullName,
+    repositoryId,
+    organization,
     occurredAt: envelope.receivedAt,
   }
 }
@@ -220,6 +263,22 @@ function repositoryName(payload: Record<string, unknown>): string {
 
 function optionalRepositoryName(payload: Record<string, unknown>): string | undefined {
   return optionalString(optionalRecord(payload['repository']), 'full_name')
+}
+
+function optionalRepositoryId(payload: Record<string, unknown>): string | undefined {
+  const repo = optionalRecord(payload['repository'])
+  return optionalString(repo, 'node_id') ?? (repo?.['id'] ? String(repo['id']) : undefined)
+}
+
+function optionalOrganization(payload: Record<string, unknown>): string | undefined {
+  const org = optionalRecord(payload['organization'])
+  if (org && org['login']) return String(org['login'])
+  const repo = optionalRecord(payload['repository'])
+  const owner = optionalRecord(repo?.['owner'])
+  if (owner && owner['login']) return String(owner['login'])
+  const fullName = optionalString(repo, 'full_name')
+  if (fullName) return fullName.split('/')[0]
+  return undefined
 }
 
 function issueType(issue: Record<string, unknown>): GitHubIssueType {

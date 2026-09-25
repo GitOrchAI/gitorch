@@ -3,6 +3,14 @@ import type { AvailabilityDecision, GitHubIssueType, GitHubWorkItem } from './ty
 export type { GitHubWorkItem }
 
 export class GitHubWorkModel {
+  missionPrefixFor(item: GitHubWorkItem): string | undefined {
+    const match = item.branchName?.match(/(?:^|\/)mission-\d+(?:-|$)/)
+    if (match) {
+      return match[0].replace(/^\//, '').replace(/-$/, '')
+    }
+    return undefined
+  }
+
   issueTypeFor(item: GitHubWorkItem): GitHubIssueType {
     return item.type
   }
