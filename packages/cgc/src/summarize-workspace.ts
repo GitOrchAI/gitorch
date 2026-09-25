@@ -269,7 +269,8 @@ export async function analyzeWorkspace(
         }
       } else if (isTsOrJs) {
         // Backend endpoints
-        const expressRegex = /(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/gi
+        const expressRegex =
+          /(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/gi
         let match
         while ((match = expressRegex.exec(content)) !== null) {
           backendEndpoints.push({
@@ -317,7 +318,12 @@ export async function analyzeWorkspace(
       }
     }
 
-    const sharedRoutes: Array<{ method: string; path: string; backendFile: string; frontendFile: string }> = []
+    const sharedRoutes: Array<{
+      method: string
+      path: string
+      backendFile: string
+      frontendFile: string
+    }> = []
     for (const caller of frontendCalls) {
       for (const endpoint of backendEndpoints) {
         // Simplified path matching, handling potential base path diffs or just exact suffixes
@@ -344,10 +350,7 @@ export async function analyzeWorkspace(
         if (ref.model.toLowerCase() === dbm.model.toLowerCase()) {
           // Avoid duplicate entries per file pair
           const exists = sharedModels.find(
-            (m) =>
-              m.model === dbm.model &&
-              m.dbFile === dbm.file &&
-              m.backendFile === ref.file
+            (m) => m.model === dbm.model && m.dbFile === dbm.file && m.backendFile === ref.file
           )
           if (!exists) {
             sharedModels.push({

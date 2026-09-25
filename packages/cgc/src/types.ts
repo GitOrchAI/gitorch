@@ -47,7 +47,8 @@ export interface CGCEdge {
   id: string
   source: string
   target: string
-  type: 'CALLS' | 'IMPORTS' | 'EXTENDS' | 'IMPLEMENTS' | 'CONTAINS' | 'REFERENCES' | 'CROSS_REPO_CALL'
+  type:
+    'CALLS' | 'IMPORTS' | 'EXTENDS' | 'IMPLEMENTS' | 'CONTAINS' | 'REFERENCES' | 'CROSS_REPO_CALL'
   properties?: Record<string, unknown>
 }
 

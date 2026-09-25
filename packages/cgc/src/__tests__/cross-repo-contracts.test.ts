@@ -42,10 +42,14 @@ describe('cross-repo contracts', () => {
     mockedStatSync.mockImplementation((filePath: string) => {
       return {
         isDirectory: () => {
-          return filePath.endsWith('frontend') || filePath.endsWith('backend') || filePath.endsWith('db')
+          return (
+            filePath.endsWith('frontend') || filePath.endsWith('backend') || filePath.endsWith('db')
+          )
         },
         isFile: () => {
-          return filePath.endsWith('.ts') || filePath.endsWith('.prisma') || filePath.endsWith('.sql')
+          return (
+            filePath.endsWith('.ts') || filePath.endsWith('.prisma') || filePath.endsWith('.sql')
+          )
         },
         size: 100,
       }
@@ -118,7 +122,11 @@ describe('cross-repo contracts', () => {
 
     // fetch is matched with ANY method, so it can match both GET and POST.
     // axios.post matches POST
-    expect(summary).toContain('- Shared routes (cross-repo API calls): GET /api/users (frontend/api.ts -> backend/routes.ts), POST /api/users (frontend/api.ts -> backend/routes.ts), POST /api/users (frontend/api.ts -> backend/routes.ts)')
-    expect(summary).toContain('- Shared models (database entities): User (backend/db-usage.ts -> db/schema.prisma), Post (backend/db-usage.ts -> db/schema.prisma)')
+    expect(summary).toContain(
+      '- Shared routes (cross-repo API calls): GET /api/users (frontend/api.ts -> backend/routes.ts), POST /api/users (frontend/api.ts -> backend/routes.ts), POST /api/users (frontend/api.ts -> backend/routes.ts)'
+    )
+    expect(summary).toContain(
+      '- Shared models (database entities): User (backend/db-usage.ts -> db/schema.prisma), Post (backend/db-usage.ts -> db/schema.prisma)'
+    )
   })
 })
