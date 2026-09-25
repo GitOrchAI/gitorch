@@ -14,7 +14,7 @@ describe('WishlistService', () => {
             createdAt: new Date(),
           }),
         },
-      } as any,
+      } as unknown as import('@prisma/client').PrismaClient,
     }
 
     const item = await addItemToWishlist('user1', 'My Item', 'telegram', deps)
