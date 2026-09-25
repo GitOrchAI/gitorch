@@ -256,3 +256,194 @@ test('uses an injected workspace provider instead of the default Firecracker man
   expect(mockAllocateWorkspace).not.toHaveBeenCalled()
   expect(mockHibernateWorkspace).not.toHaveBeenCalled()
 })
+
+describe('Multi-Repo Mission Plans', () => {
+  test('orders a 4-repository mission plan topologically', () => {
+    const registry = new RuntimeRegistry()
+    const synapse = new SynapseClient()
+    const orchestrator = new AgentOrchestrator({ registry, synapse })
+
+    const plan = {
+      items: [
+        {
+          id: 'automation',
+          repositoryKey: 'owner/automation',
+          subPath: '/',
+          crossRepoPrerequisites: ['owner/frontend'],
+          goal: 'Add automation worker',
+          role: 'dev' as const,
+        },
+        {
+          id: 'backend',
+          repositoryKey: 'owner/backend',
+          subPath: '/',
+          crossRepoPrerequisites: ['owner/database'],
+          goal: 'Add endpoint',
+          role: 'dev' as const,
+        },
+        {
+          id: 'frontend',
+          repositoryKey: 'owner/frontend',
+          subPath: '/',
+          crossRepoPrerequisites: ['owner/backend'],
+          goal: 'Add button',
+          role: 'dev' as const,
+        },
+        {
+          id: 'database',
+          repositoryKey: 'owner/database',
+          subPath: '/',
+          crossRepoPrerequisites: [],
+          goal: 'Add migration',
+          role: 'dev' as const,
+        },
+      ],
+    }
+
+    const ordered = orchestrator.orderMissionPlan(plan)
+    const repoKeys = ordered.map((item) => item.repositoryKey)
+    expect(repoKeys).toEqual([
+      'owner/database',
+      'owner/backend',
+      'owner/frontend',
+      'owner/automation',
+    ])
+  })
+
+  test('aborts execution downstream if an upstream task fails', async () => {
+    mockAllocateWorkspace.mockClear()
+    mockHibernateWorkspace.mockClear()
+
+    const runner: RuntimeCommandRunner = async (request) => {
+      if (request.args && request.args.some((a) => a.includes('owner/backend'))) {
+        return { exitCode: 1, stdout: '', stderr: 'Build failed', durationMs: 10 }
+      }
+      return { exitCode: 0, stdout: 'Success', stderr: '', durationMs: 10 }
+    }
+    const registry = new RuntimeRegistry()
+    registry.register(
+      createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: ['exec'], runner })
+    )
+    const synapse = new SynapseClient()
+    const orchestrator = new AgentOrchestrator({ registry, synapse })
+
+    const plan = {
+      items: [
+        {
+          id: 'backend',
+          repositoryKey: 'owner/backend',
+          subPath: '/',
+          crossRepoPrerequisites: ['owner/database'],
+          goal: 'Add endpoint',
+          role: 'dev' as const,
+        },
+        {
+          id: 'frontend',
+          repositoryKey: 'owner/frontend',
+          subPath: '/',
+          crossRepoPrerequisites: ['owner/backend'],
+          goal: 'Add button',
+          role: 'dev' as const,
+        },
+        {
+          id: 'database',
+          repositoryKey: 'owner/database',
+          subPath: '/',
+          crossRepoPrerequisites: [],
+          goal: 'Add migration',
+          role: 'dev' as const,
+        },
+      ],
+    }
+
+    const inputTpl = {
+      projectId: 'proj-1',
+      context: [],
+      runtime: { runtime: 'codex' as const },
+      credentialRef: {
+        connectionId: 'conn-1',
+        ownerScope: 'project' as const,
+        runtime: 'codex' as const,
+        providedSecrets: [],
+      },
+    }
+
+    const results = await orchestrator.executeMissionPlan(plan, inputTpl)
+    expect(results.length).toBe(2) // database succeeds, backend fails, frontend never runs
+    expect(results[0].exitCode).toBe(0)
+    expect(results[1].exitCode).toBe(1)
+  })
+
+  test('detects cyclic dependencies', () => {
+    const registry = new RuntimeRegistry()
+    const synapse = new SynapseClient()
+    const orchestrator = new AgentOrchestrator({ registry, synapse })
+
+    const plan = {
+      items: [
+        {
+          id: 'a',
+          repositoryKey: 'owner/a',
+          subPath: '/',
+          crossRepoPrerequisites: ['owner/b'],
+          goal: 'A',
+          role: 'dev' as const,
+        },
+        {
+          id: 'b',
+          repositoryKey: 'owner/b',
+          subPath: '/',
+          crossRepoPrerequisites: ['owner/a'],
+          goal: 'B',
+          role: 'dev' as const,
+        },
+      ],
+    }
+
+    expect(() => orchestrator.orderMissionPlan(plan)).toThrow(/Cyclic dependency detected/)
+  })
+
+  test('ignores unaffected repositories not present in the plan', async () => {
+    mockAllocateWorkspace.mockClear()
+    mockHibernateWorkspace.mockClear()
+
+    const runner: RuntimeCommandRunner = async () => {
+      return { exitCode: 0, stdout: 'Success', stderr: '', durationMs: 10 }
+    }
+    const registry = new RuntimeRegistry()
+    registry.register(
+      createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: ['exec'], runner })
+    )
+    const synapse = new SynapseClient()
+    const orchestrator = new AgentOrchestrator({ registry, synapse })
+
+    const plan = {
+      items: [
+        {
+          id: 'repo-a',
+          repositoryKey: 'owner/repo-a',
+          subPath: '/',
+          crossRepoPrerequisites: [],
+          goal: 'Add task',
+          role: 'dev' as const,
+        },
+      ],
+    }
+
+    const inputTpl = {
+      projectId: 'proj-1',
+      context: [],
+      runtime: { runtime: 'codex' as const },
+      credentialRef: {
+        connectionId: 'conn-1',
+        ownerScope: 'project' as const,
+        runtime: 'codex' as const,
+        providedSecrets: [],
+      },
+    }
+
+    const results = await orchestrator.executeMissionPlan(plan, inputTpl)
+    expect(results.length).toBe(1)
+    expect(results[0].missionId).toBe('repo-a')
+  })
+})
