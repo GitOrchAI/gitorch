@@ -161,8 +161,8 @@ describe('WorkspaceManager', () => {
           { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
           { url: 'https://github.com/org/back.git', branch: 'main', targetDir: 'back' },
           { url: 'https://github.com/org/db.git', branch: 'main', targetDir: 'db' },
-          { url: 'https://github.com/org/auto.git', branch: 'main', targetDir: 'automation' }
-        ]
+          { url: 'https://github.com/org/auto.git', branch: 'main', targetDir: 'automation' },
+        ],
       }
 
       await manager.cloneMultiRepos(workspaceId, spec)
@@ -170,17 +170,30 @@ describe('WorkspaceManager', () => {
       expect(execFile).toHaveBeenCalledTimes(4)
 
       const calls = vi.mocked(execFile).mock.calls
-      const frontCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/front'))
+      const frontCall = calls.find(
+        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/front')
+      )
       expect(frontCall).toBeDefined()
-      expect(frontCall![1]).toEqual(['clone', '--branch', 'main', '--', 'https://github.com/org/front.git', path.resolve('/var/lib/gitorch/workspaces/user-123/project-abc/repos/front')])
+      expect(frontCall![1]).toEqual([
+        'clone',
+        '--branch',
+        'main',
+        '--',
+        'https://github.com/org/front.git',
+        path.resolve('/var/lib/gitorch/workspaces/user-123/project-abc/repos/front'),
+      ])
 
-      const backCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/back'))
+      const backCall = calls.find(
+        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/back')
+      )
       expect(backCall).toBeDefined()
 
       const dbCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/db'))
       expect(dbCall).toBeDefined()
 
-      const autoCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/automation'))
+      const autoCall = calls.find(
+        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/automation')
+      )
       expect(autoCall).toBeDefined()
     })
 
@@ -189,11 +202,12 @@ describe('WorkspaceManager', () => {
       const spec = {
         repositories: [
           { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
-          { url: 'https://github.com/org/fail.git', branch: 'main', targetDir: 'fail' }
-        ]
+          { url: 'https://github.com/org/fail.git', branch: 'main', targetDir: 'fail' },
+        ],
       }
 
       const error = new Error('git clone failed')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.mocked(execFile).mockImplementation((file, args: any, options: any, cb: any) => {
         const callback =
           typeof cb === 'function' ? cb : typeof options === 'function' ? options : null
@@ -203,6 +217,7 @@ describe('WorkspaceManager', () => {
         } else {
           if (callback) callback(null, { stdout: '', stderr: '' })
         }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return {} as any
       })
 
@@ -218,10 +233,13 @@ describe('WorkspaceManager', () => {
         { recursive: true, force: true }
       )
 
-      expect(emitSpy).toHaveBeenCalledWith('workspace-error', expect.objectContaining({
-        failedStep: 'cloneMultiRepos',
-        recoveryAction: 'auto-rollback'
-      }))
+      expect(emitSpy).toHaveBeenCalledWith(
+        'workspace-error',
+        expect.objectContaining({
+          failedStep: 'cloneMultiRepos',
+          recoveryAction: 'auto-rollback',
+        })
+      )
     })
   })
 

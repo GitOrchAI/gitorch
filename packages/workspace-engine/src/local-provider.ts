@@ -299,15 +299,7 @@ export class LocalWorkspaceProvider {
       // in real implementation this might resolve a token from credentialsRef
       const auth = [] as string[]
 
-      const cloneArgs = [
-        ...auth,
-        'clone',
-        '--branch',
-        repo.branch,
-        '--',
-        repoUrl,
-        targetPath,
-      ]
+      const cloneArgs = [...auth, 'clone', '--branch', repo.branch, '--', repoUrl, targetPath]
 
       try {
         await run(cloneArgs)

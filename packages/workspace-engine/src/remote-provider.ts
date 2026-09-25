@@ -1,3 +1,5 @@
+import type { WorkspaceSpec } from './manager.js'
+
 /**
  * Runner que executa um comando numa máquina remota (ex.: via SSH). Compatível
  * estruturalmente com o RuntimeCommandRunner do pacote agents, mas definido aqui
@@ -11,8 +13,6 @@ export interface RemoteCommandRunner {
     timeoutMs?: number
   }): Promise<{ exitCode: number; stdout: string; stderr: string }>
 }
-
-import type { WorkspaceSpec } from './manager.js'
 
 export interface RemoteWorkspaceInfo {
   id: string

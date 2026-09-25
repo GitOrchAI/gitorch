@@ -157,14 +157,7 @@ export class WorkspaceManager extends EventEmitter {
       }
 
       try {
-        await execFileAsync('git', [
-          'clone',
-          '--branch',
-          repo.branch,
-          '--',
-          repo.url,
-          targetPath
-        ])
+        await execFileAsync('git', ['clone', '--branch', repo.branch, '--', repo.url, targetPath])
       } catch (err) {
         // Rollback just the failed repository
         await fs.rm(targetPath, { recursive: true, force: true }).catch(() => {})
