@@ -177,13 +177,17 @@ export async function processarComandoWishlistAdd(
   }
 
   try {
-    await addItemToWishlist(dono.userId, payload.trim(), 'telegram', { prisma: app.prisma })
-
     if (app.broadcastEvent) {
-      app.broadcastEvent(`user:${dono.userId}`, 'wishlist_updated', {
-        userId: dono.userId,
-        payload: payload.trim(),
-      })
+      const deps: import('../lib/wishlist-service.js').WishlistServiceDeps = {
+        prisma: app.prisma,
+        broadcastEvent: app.broadcastEvent,
+      }
+      await addItemToWishlist(dono.userId, payload.trim(), 'telegram', deps)
+    } else {
+      const deps: import('../lib/wishlist-service.js').WishlistServiceDeps = {
+        prisma: app.prisma,
+      }
+      await addItemToWishlist(dono.userId, payload.trim(), 'telegram', deps)
     }
   } catch (error) {
     app.log.error(error, '[Telegram] Falha ao adicionar à wishlist')

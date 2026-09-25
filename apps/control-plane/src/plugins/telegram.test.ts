@@ -120,10 +120,9 @@ describe('processarComandoWishlistAdd', () => {
 
     await processarComandoWishlistAdd({ userId: 'u1' }, ' teste do bot ', app, sendMsg)
 
-    expect(spy).toHaveBeenCalledWith('u1', 'teste do bot', 'telegram', { prisma: app.prisma })
-    expect(broadcastEvent).toHaveBeenCalledWith('user:u1', 'wishlist_updated', {
-      userId: 'u1',
-      payload: 'teste do bot',
+    expect(spy).toHaveBeenCalledWith('u1', 'teste do bot', 'telegram', {
+      prisma: app.prisma,
+      broadcastEvent: app.broadcastEvent,
     })
     expect(sendMsg).toHaveBeenCalledWith('Item adicionado à wishlist com sucesso.')
   })
