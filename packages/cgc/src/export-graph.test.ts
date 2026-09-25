@@ -108,4 +108,98 @@ describe('exportGraph', () => {
       rmSync(empty, { recursive: true, force: true })
     }
   })
+
+  it('constrói grafo cross-repo com nós File e arestas CALLS_CONTRACT e CROSS_REPO_DEPENDS_ON', async () => {
+    const multiDir = mkdtempSync(join(tmpdir(), 'cgc-graph-multi-'))
+    mkdirSync(join(multiDir, 'repoA/src'), { recursive: true })
+    mkdirSync(join(multiDir, 'repoB/src'), { recursive: true })
+
+    writeFileSync(join(multiDir, 'repoA/src/backend.ts'), 'export function handle() {}')
+    writeFileSync(join(multiDir, 'repoA/src/schema.prisma'), 'model User {}')
+    writeFileSync(join(multiDir, 'repoB/src/frontend.tsx'), 'function Button() {}')
+
+    try {
+      const summaryA = {
+        sources: [],
+        fileCount: 2,
+        byType: [],
+        topFiles: [],
+        mostCalled: [],
+        orphanModules: [],
+        crossPackageDependencies: [],
+        sharedRoutes: [],
+        sharedModels: [
+          { model: 'User', dbFile: 'src/schema.prisma', backendFile: 'src/backend.ts' },
+        ],
+      }
+
+      const summaryB = {
+        sources: [],
+        fileCount: 1,
+        byType: [],
+        topFiles: [],
+        mostCalled: [],
+        orphanModules: [],
+        crossPackageDependencies: [
+          { source: 'src/frontend.tsx', target: '../repoA/src/backend.ts' },
+        ],
+        sharedRoutes: [
+          {
+            method: 'GET',
+            path: '/api',
+            backendFile: '../repoA/src/backend.ts',
+            frontendFile: 'src/frontend.tsx',
+          },
+        ],
+        sharedModels: [],
+      }
+
+      const repos = [
+        { repositoryId: 'repoA', workspacePath: join(multiDir, 'repoA'), summary: summaryA },
+        { repositoryId: 'repoB', workspacePath: join(multiDir, 'repoB'), summary: summaryB },
+      ]
+
+      const g = await exportGraph(repos)
+
+      expect(g).not.toBeNull()
+      // Deve existir nó para o arquivo backend, schema e frontend criados pelos relacionamentos cross-repo.
+      const nodes = g!.nodes
+      const backendFileNode = nodes.find(
+        (n) => n.type === 'file' && n.file === 'src/backend.ts' && n.repositoryId === 'repoA'
+      )
+      const dbFileNode = nodes.find(
+        (n) => n.type === 'file' && n.file === 'src/schema.prisma' && n.repositoryId === 'repoA'
+      )
+      const frontendFileNode = nodes.find(
+        (n) => n.type === 'file' && n.file === 'src/frontend.tsx' && n.repositoryId === 'repoB'
+      )
+
+      expect(backendFileNode).toBeDefined()
+      expect(dbFileNode).toBeDefined()
+      expect(frontendFileNode).toBeDefined()
+
+      // Validação das arestas cross-repo
+      const edges = g!.edges
+
+      // CALLS_CONTRACT do frontend para o backend
+      const callsContract = edges.find(
+        (e) =>
+          e.rel === 'CALLS_CONTRACT' &&
+          e.source === frontendFileNode!.id &&
+          e.target === backendFileNode!.id
+      )
+      expect(callsContract).toBeDefined()
+
+      // CROSS_REPO_DEPENDS_ON do backend para o banco de dados
+      const dependsOnDb = edges.find(
+        (e) =>
+          e.rel === 'CROSS_REPO_DEPENDS_ON' &&
+          e.source === backendFileNode!.id &&
+          e.target === dbFileNode!.id
+      )
+      expect(dependsOnDb).toBeDefined()
+    } finally {
+      rmSync(multiDir, { recursive: true, force: true })
+    }
+  })
 })

@@ -14,6 +14,7 @@ export type {
   GraphExportEdge,
   NodeHealth,
   ExportGraphOptions,
+  MultiRepoExportInput,
 } from './export-graph'
 export * from './types'
 export * from './scip/scip-exporter'
