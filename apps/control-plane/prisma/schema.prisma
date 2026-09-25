@@ -1019,6 +1019,8 @@ model WishlistItem {
   userId    String   @map("user_id")
   source    String
   payload   String
+  targetRepositoryIds String[] @map("target_repository_ids")
+  isCrossRepo Boolean @default(false) @map("is_cross_repo")
   createdAt DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
