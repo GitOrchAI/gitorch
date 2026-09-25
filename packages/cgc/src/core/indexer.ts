@@ -16,10 +16,32 @@ export class CodeGraphIndexer {
     // KuzuDB doesn't support IF NOT EXISTS natively for tables.
     // We catch the "already exists" error to make it idempotent.
     try {
-      await this.client.createNodeTable('File', { id: 'STRING', filePath: 'STRING' }, 'id')
+      await this.client.createNodeTable(
+        'File',
+        { id: 'STRING', filePath: 'STRING', repositoryId: 'STRING' },
+        'id'
+      )
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (!msg.includes('already exists') && !msg.includes('Table File already exists')) {
+        throw e
+      }
+    }
+
+    try {
+      await this.client.createRelTable('CROSS_REPO_DEPENDS_ON', 'File', 'File')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!msg.includes('already exists')) {
+        throw e
+      }
+    }
+
+    try {
+      await this.client.createRelTable('CALLS_CONTRACT', 'File', 'File')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!msg.includes('already exists')) {
         throw e
       }
     }
@@ -36,6 +58,7 @@ export class CodeGraphIndexer {
           endLine: 'INT64',
           startCol: 'INT64',
           endCol: 'INT64',
+          repositoryId: 'STRING',
         },
         'id'
       )
@@ -137,13 +160,18 @@ export class CodeGraphIndexer {
     return null
   }
 
-  async indexFile(filePath: string, content: string, language: string): Promise<void> {
+  async indexFile(
+    filePath: string,
+    content: string,
+    language: string,
+    repositoryId: string = ''
+  ): Promise<void> {
     const tree = this.manager.parseString(content, language)
     if (!tree) {
       throw new Error(`Failed to parse file: ${filePath}`)
     }
     try {
-      await this.indexParsedFile(filePath, content, language, tree)
+      await this.indexParsedFile(filePath, content, language, tree, repositoryId)
     } finally {
       // Devolve a memória WASM da árvore: sem isto, indexar dezenas de arquivos
       // estoura a memória linear do módulo e derruba o processo.
@@ -155,9 +183,11 @@ export class CodeGraphIndexer {
     filePath: string,
     content: string,
     language: string,
-    tree: NonNullable<ReturnType<TreeSitterManager['parseString']>>
+    tree: NonNullable<ReturnType<TreeSitterManager['parseString']>>,
+    repositoryId: string
   ): Promise<void> {
-    const fileId = `cgc://${filePath}`
+    // Add repositoryId to file ID to ensure cross-repo files with same path don't conflict
+    const fileId = repositoryId ? `cgc://${repositoryId}/${filePath}` : `cgc://${filePath}`
 
     // 1. Cleardown existing nodes and relationships for idempotency
     try {
@@ -174,10 +204,14 @@ export class CodeGraphIndexer {
     }
 
     // 2. Re-create the File node
-    await this.client.execute(`CREATE (f:File {id: $fileId, filePath: $filePath})`, {
-      fileId,
-      filePath,
-    })
+    await this.client.execute(
+      `CREATE (f:File {id: $fileId, filePath: $filePath, repositoryId: $repositoryId})`,
+      {
+        fileId,
+        filePath,
+        repositoryId,
+      }
+    )
 
     const symbolsToInsert: Array<{
       id: string
@@ -188,6 +222,7 @@ export class CodeGraphIndexer {
       startCol: number
       endCol: number
       parentId: string | null
+      repositoryId: string
     }> = []
 
     const importsToInsert: Array<{
@@ -227,7 +262,8 @@ export class CodeGraphIndexer {
       const symbolType = this.getSymbolType(node.type)
       if (symbolType) {
         const name = this.getSymbolName(node, content) || 'anonymous'
-        const id = `cgc://${filePath}#${[...currentScopeNames, name].join('.')}`
+        const prefix = repositoryId ? `cgc://${repositoryId}/` : `cgc://`
+        const id = `${prefix}${filePath}#${[...currentScopeNames, name].join('.')}`
 
         symbolsToInsert.push({
           id,
@@ -238,6 +274,7 @@ export class CodeGraphIndexer {
           startCol: node.startPosition().column,
           endCol: node.endPosition().column,
           parentId: parentSymbolId,
+          repositoryId,
         })
 
         // If it's an import symbol, store the dependency link
@@ -257,7 +294,7 @@ export class CodeGraphIndexer {
           }
           importsToInsert.push({
             localSymbolId: id,
-            sourceSymbolId: `cgc://${sourcePath}#${name}`,
+            sourceSymbolId: `${prefix}${sourcePath}#${name}`,
           })
         }
 
@@ -294,7 +331,7 @@ export class CodeGraphIndexer {
     // 3. Insert Symbols and create CONTAINS relations
     for (const sym of symbolsToInsert) {
       await this.client.execute(
-        `CREATE (s:Symbol {id: $id, name: $name, type: $type, filePath: $filePath, startLine: $startLine, endLine: $endLine, startCol: $startCol, endCol: $endCol})`,
+        `CREATE (s:Symbol {id: $id, name: $name, type: $type, filePath: $filePath, startLine: $startLine, endLine: $endLine, startCol: $startCol, endCol: $endCol, repositoryId: $repositoryId})`,
         {
           id: sym.id,
           name: sym.name,
@@ -304,6 +341,7 @@ export class CodeGraphIndexer {
           endLine: sym.endLine,
           startCol: sym.startCol,
           endCol: sym.endCol,
+          repositoryId: sym.repositoryId,
         }
       )
 
@@ -336,7 +374,8 @@ export class CodeGraphIndexer {
     for (const call of callsToInsert) {
       // To resolve callee:
       // A. Check if the callee name is a local symbol in the same file
-      const localCalleeId = `cgc://${filePath}#${call.calleeName}`
+      const prefix = repositoryId ? `cgc://${repositoryId}/` : `cgc://`
+      const localCalleeId = `${prefix}${filePath}#${call.calleeName}`
       const localMatches = symbolsToInsert.filter((s) => s.id === localCalleeId)
 
       if (localMatches.length > 0) {
@@ -346,7 +385,7 @@ export class CodeGraphIndexer {
         )
       } else {
         // B. Check if it's imported (the calleeName is an import symbol in the same file)
-        const importedId = `cgc://${filePath}#${call.calleeName}`
+        const importedId = `${prefix}${filePath}#${call.calleeName}`
         const importMatches = symbolsToInsert.filter(
           (s) => s.id === importedId && s.type === 'import'
         )
