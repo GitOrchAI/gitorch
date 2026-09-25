@@ -87,6 +87,7 @@ describe('diagnoseCrossRepoIntegrity', () => {
       ],
       truncated: false,
       metrics: { symbolCount: 1, orphanNodes: 0, structuralComplexity: 1 },
+      promptFormatted: '',
     })
 
     try {
@@ -133,6 +134,7 @@ describe('diagnoseCrossRepoIntegrity', () => {
       ],
       truncated: false,
       metrics: { symbolCount: 2, orphanNodes: 0, structuralComplexity: 0.5 },
+      promptFormatted: '',
     })
 
     try {
