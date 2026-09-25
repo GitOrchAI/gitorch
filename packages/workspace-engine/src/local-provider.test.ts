@@ -4,6 +4,14 @@ import * as path from 'node:path'
 import { vi } from 'vitest'
 import { LocalWorkspaceProvider } from './local-provider'
 
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...mod,
+    rm: vi.fn(mod.rm),
+  }
+})
+
 test('allocates a plain directory workspace and hibernates as a no-op', async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
   const provider = new LocalWorkspaceProvider(base)
@@ -17,6 +25,77 @@ test('allocates a plain directory workspace and hibernates as a no-op', async ()
 
   await expect(provider.hibernateWorkspace('scheduler-user', 'project-1')).resolves.toBeUndefined()
   await fs.rm(base, { recursive: true, force: true })
+})
+
+describe('cloneMultiRepos', () => {
+  it('should clone multiple repositories via WorkspaceSpec', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+    const gitRunner = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
+    const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+    // Ensure the base directory structure exists for the test
+    await fs.mkdir(path.join(base, 'scheduler-user', 'project-1'), { recursive: true })
+
+    const spec = {
+      repositories: [
+        { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
+        { url: 'https://github.com/org/back.git', branch: 'main', targetDir: 'back' },
+        { url: 'https://github.com/org/db.git', branch: 'main', targetDir: 'db' },
+        { url: 'https://github.com/org/auto.git', branch: 'main', targetDir: 'automation' }
+      ]
+    }
+
+    await provider.cloneMultiRepos('ws:scheduler-user:project-1', spec)
+
+    expect(gitRunner).toHaveBeenCalledTimes(4)
+
+    const calls = gitRunner.mock.calls
+    const frontArgs = calls.find((call) => (call[0] as string[]).includes('https://github.com/org/front.git'))?.[0] as string[]
+    expect(frontArgs).toBeDefined()
+    expect(frontArgs[frontArgs.length - 1]).toContain('repos/front')
+
+    const autoArgs = calls.find((call) => (call[0] as string[]).includes('https://github.com/org/auto.git'))?.[0] as string[]
+    expect(autoArgs).toBeDefined()
+    expect(autoArgs[autoArgs.length - 1]).toContain('repos/automation')
+
+    await fs.rm(base, { recursive: true, force: true })
+  })
+
+  it('should rollback and throw if a single repository fails to clone', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+    const error = new Error('git clone failed')
+    const gitRunner = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args.includes('https://github.com/org/fail.git')) {
+        throw error
+      }
+      return { stdout: '', stderr: '' }
+    })
+    const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+    // Ensure the base directory structure exists for the test
+    await fs.mkdir(path.join(base, 'scheduler-user', 'project-1'), { recursive: true })
+
+    const spec = {
+      repositories: [
+        { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
+        { url: 'https://github.com/org/fail.git', branch: 'main', targetDir: 'fail' }
+      ]
+    }
+
+    await expect(provider.cloneMultiRepos('ws:scheduler-user:project-1', spec)).rejects.toThrow(/git clone failed/)
+
+    expect(gitRunner).toHaveBeenCalledTimes(2)
+
+    // Verification of rollback
+    const failedPath = path.posix.join(base, 'scheduler-user', 'project-1', 'repos', 'fail')
+    expect(fs.rm).toHaveBeenCalledWith(
+      failedPath,
+      { recursive: true, force: true }
+    )
+
+    vi.mocked(fs.rm).mockRestore()
+    await vi.mocked(fs.rm)(base, { recursive: true, force: true })
+  })
 })
 
 test('rejects path-traversal attempts in user and project ids', async () => {

@@ -153,6 +153,78 @@ describe('WorkspaceManager', () => {
     })
   })
 
+  describe('cloneMultiRepos', () => {
+    it('should clone multiple repositories via WorkspaceSpec', async () => {
+      const workspaceId = 'ws:user-123:project-abc'
+      const spec = {
+        repositories: [
+          { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
+          { url: 'https://github.com/org/back.git', branch: 'main', targetDir: 'back' },
+          { url: 'https://github.com/org/db.git', branch: 'main', targetDir: 'db' },
+          { url: 'https://github.com/org/auto.git', branch: 'main', targetDir: 'automation' }
+        ]
+      }
+
+      await manager.cloneMultiRepos(workspaceId, spec)
+
+      expect(execFile).toHaveBeenCalledTimes(4)
+
+      const calls = vi.mocked(execFile).mock.calls
+      const frontCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/front'))
+      expect(frontCall).toBeDefined()
+      expect(frontCall![1]).toEqual(['clone', '--branch', 'main', '--', 'https://github.com/org/front.git', path.resolve('/var/lib/gitorch/workspaces/user-123/project-abc/repos/front')])
+
+      const backCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/back'))
+      expect(backCall).toBeDefined()
+
+      const dbCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/db'))
+      expect(dbCall).toBeDefined()
+
+      const autoCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/automation'))
+      expect(autoCall).toBeDefined()
+    })
+
+    it('should rollback and throw if a single repository fails to clone', async () => {
+      const workspaceId = 'ws:user-123:project-abc'
+      const spec = {
+        repositories: [
+          { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
+          { url: 'https://github.com/org/fail.git', branch: 'main', targetDir: 'fail' }
+        ]
+      }
+
+      const error = new Error('git clone failed')
+      vi.mocked(execFile).mockImplementation((file, args: any, options: any, cb: any) => {
+        const callback =
+          typeof cb === 'function' ? cb : typeof options === 'function' ? options : null
+
+        if (args && args.includes('https://github.com/org/fail.git')) {
+          if (callback) callback(error, { stdout: '', stderr: '' })
+        } else {
+          if (callback) callback(null, { stdout: '', stderr: '' })
+        }
+        return {} as any
+      })
+
+      const emitSpy = vi.spyOn(manager, 'emit')
+
+      await expect(manager.cloneMultiRepos(workspaceId, spec)).rejects.toThrow(/git clone failed/)
+
+      expect(execFile).toHaveBeenCalledTimes(2)
+
+      // Verification of rollback
+      expect(fs.rm).toHaveBeenCalledWith(
+        path.resolve('/var/lib/gitorch/workspaces/user-123/project-abc/repos/fail'),
+        { recursive: true, force: true }
+      )
+
+      expect(emitSpy).toHaveBeenCalledWith('workspace-error', expect.objectContaining({
+        failedStep: 'cloneMultiRepos',
+        recoveryAction: 'auto-rollback'
+      }))
+    })
+  })
+
   it('should clone repositories into workspace', async () => {
     const workspaceId = 'ws:user-123:project-abc'
     const expectedSrcPath = path.join(

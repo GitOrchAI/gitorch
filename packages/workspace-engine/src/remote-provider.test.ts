@@ -105,6 +105,61 @@ describe('RemoteWorkspaceProvider', () => {
     expect(runner).not.toHaveBeenCalled()
   })
 
+  describe('cloneMultiRepos', () => {
+    test('should clone multiple repositories via WorkspaceSpec', async () => {
+      const runner = vi.fn().mockResolvedValue(ok())
+      const provider = new RemoteWorkspaceProvider(runner, '/base')
+
+      const spec = {
+        repositories: [
+          { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
+          { url: 'https://github.com/org/back.git', branch: 'main', targetDir: 'back' },
+          { url: 'https://github.com/org/db.git', branch: 'main', targetDir: 'db' },
+          { url: 'https://github.com/org/auto.git', branch: 'main', targetDir: 'automation' }
+        ]
+      }
+
+      await provider.cloneMultiRepos('ws:u:p', spec)
+
+      expect(runner).toHaveBeenCalledTimes(4)
+
+      // Ensure proper script is generated for each clone
+      const calls = runner.mock.calls
+      const frontScript: string = calls[0][0].args[1]
+      expect(frontScript).toContain('mkdir -p \'/base/u/p/ws/repos/front\'')
+      expect(frontScript).toContain('git clone --branch \'main\' -- \'https://github.com/org/front.git\' \'/base/u/p/ws/repos/front\'')
+
+      const autoScript: string = calls[3][0].args[1]
+      expect(autoScript).toContain('mkdir -p \'/base/u/p/ws/repos/automation\'')
+      expect(autoScript).toContain('git clone --branch \'main\' -- \'https://github.com/org/auto.git\' \'/base/u/p/ws/repos/automation\'')
+    })
+
+    test('should rollback single repository directory on clone failure', async () => {
+      const runner = vi.fn().mockImplementation(async (cmd) => {
+        if (cmd.args[1].includes('fail.git')) {
+          return { exitCode: 1, stdout: '', stderr: 'git error' }
+        }
+        return ok()
+      })
+      const provider = new RemoteWorkspaceProvider(runner, '/base')
+
+      const spec = {
+        repositories: [
+          { url: 'https://github.com/org/front.git', branch: 'main', targetDir: 'front' },
+          { url: 'https://github.com/org/fail.git', branch: 'main', targetDir: 'fail' }
+        ]
+      }
+
+      await expect(provider.cloneMultiRepos('ws:u:p', spec)).rejects.toThrow(/git error/)
+
+      // 1 successful clone, 1 failed clone, 1 rollback
+      expect(runner).toHaveBeenCalledTimes(3)
+
+      const rollbackScript: string = runner.mock.calls[2][0].args[1]
+      expect(rollbackScript).toEqual('rm -rf \'/base/u/p/ws/repos/fail\'')
+    })
+  })
+
   test('hibernateWorkspace remove o workspace remoto (missão descartável)', async () => {
     const runner = vi.fn().mockResolvedValue(ok())
     const provider = new RemoteWorkspaceProvider(runner, '/base')

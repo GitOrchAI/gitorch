@@ -6,6 +6,15 @@ import { EventEmitter } from 'node:events'
 
 const execFileAsync = promisify(execFile)
 
+export interface WorkspaceSpec {
+  repositories: Array<{
+    url: string
+    branch: string
+    targetDir: string
+    credentialsRef?: string
+  }>
+}
+
 export interface WorkspaceInfo {
   id: string
   userId: string
@@ -125,6 +134,48 @@ export class WorkspaceManager extends EventEmitter {
       })
       await fs.rm(workspacePath, { recursive: true, force: true }).catch(() => {})
       throw err
+    }
+  }
+
+  async cloneMultiRepos(workspaceId: string, spec: WorkspaceSpec): Promise<void> {
+    const parts = workspaceId.split(':')
+    if (parts.length < 3 || parts[0] !== 'ws') {
+      throw new Error(`Workspace ID inválido: ${workspaceId}`)
+    }
+    const userId = parts[1]!
+    const projectId = parts.slice(2).join(':')
+
+    const workspacePath = this.getWorkspacePath(userId, projectId)
+
+    for (const repo of spec.repositories) {
+      this.validateRepo(repo.url)
+      this.validateInput(repo.targetDir)
+      const targetPath = path.posix.join(workspacePath, 'repos', repo.targetDir)
+
+      if (!targetPath.startsWith(path.resolve(workspacePath) + path.posix.sep)) {
+        throw new Error('Caminho do repositório fora da raiz do workspace')
+      }
+
+      try {
+        await execFileAsync('git', [
+          'clone',
+          '--branch',
+          repo.branch,
+          '--',
+          repo.url,
+          targetPath
+        ])
+      } catch (err) {
+        // Rollback just the failed repository
+        await fs.rm(targetPath, { recursive: true, force: true }).catch(() => {})
+
+        this.emit('workspace-error', {
+          failedStep: 'cloneMultiRepos',
+          errorDetails: `Falha ao clonar repositório: ${repo.url}. Detalhes: ${String(err)}`,
+          recoveryAction: 'auto-rollback',
+        })
+        throw new Error(`Falha ao clonar repositório ${repo.url}: ${String(err)}`)
+      }
     }
   }
 

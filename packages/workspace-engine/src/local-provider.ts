@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
+import type { WorkspaceSpec } from './manager.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -257,6 +258,67 @@ export class LocalWorkspaceProvider {
     this.validateInput(userId)
     this.validateInput(projectId)
     // Sem MicroVM não há snapshot a tirar nem processo a matar.
+  }
+
+  async cloneMultiRepos(workspaceId: string, spec: WorkspaceSpec): Promise<void> {
+    const parts = workspaceId.split(':')
+    if (parts.length < 3 || parts[0] !== 'ws') {
+      throw new Error(`Workspace ID inválido: ${workspaceId}`)
+    }
+    const userId = parts[1]!
+    const projectId = parts.slice(2).join(':')
+
+    const sanitizedUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const sanitizedProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_')
+
+    const workspacePath = path.resolve(this.baseDir, sanitizedUserId, sanitizedProjectId)
+
+    if (!workspacePath.startsWith(path.resolve(this.baseDir))) {
+      throw new Error('Caminho fora da raiz permitida')
+    }
+
+    const run = this.gitRunner ?? defaultGitRunner(300_000)
+
+    for (const repo of spec.repositories) {
+      this.validateInput(repo.targetDir)
+      const targetPath = path.posix.join(workspacePath, 'repos', repo.targetDir)
+
+      if (!targetPath.startsWith(path.resolve(workspacePath) + path.posix.sep)) {
+        throw new Error('Caminho do repositório fora da raiz do workspace')
+      }
+
+      // Basic defense against URL injection
+      let repoUrl = repo.url
+      try {
+        repoUrl = new URL(repo.url).toString()
+      } catch {
+        // Fallback to literal if not a standard URL
+      }
+
+      // we assume tokens are resolved elsewhere for this issue, but we still need to provide an auth array
+      // in real implementation this might resolve a token from credentialsRef
+      const auth = [] as string[]
+
+      const cloneArgs = [
+        ...auth,
+        'clone',
+        '--branch',
+        repo.branch,
+        '--',
+        repoUrl,
+        targetPath,
+      ]
+
+      try {
+        await run(cloneArgs)
+      } catch (err) {
+        // Rollback just the failed repository directory
+        await fs.rm(targetPath, { recursive: true, force: true }).catch(() => {})
+
+        const sanitizedErr = this.sanitizeGitError(err)
+        throw new Error(`Falha ao clonar repositório ${repo.url}: ${sanitizedErr.message}`)
+      }
+    }
   }
 
   async teardownWorkspace(userId: string, projectId: string): Promise<void> {
