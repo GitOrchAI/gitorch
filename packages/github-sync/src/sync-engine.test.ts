@@ -29,6 +29,54 @@ const event: GitHubSyncEvent = {
   workItem,
 }
 
+test('aggregates PR events from 4 simultaneous repositories based on branch prefix', () => {
+  const engine = new GitHubSyncEngine()
+  const frontWorkItem: GitHubWorkItem = {
+    ...workItem,
+    nodeId: 'PR_FRONT',
+    repository: 'loureng/gitorch-front',
+    branchName: 'feat/mission-123-front',
+    projectItemIds: ['PVTI_F'],
+  }
+  const backWorkItem: GitHubWorkItem = {
+    ...workItem,
+    nodeId: 'PR_BACK',
+    repository: 'loureng/gitorch-back',
+    branchName: 'feat/mission-123-back',
+    projectItemIds: ['PVTI_B'],
+  }
+  const dbWorkItem: GitHubWorkItem = {
+    ...workItem,
+    nodeId: 'PR_DB',
+    repository: 'loureng/gitorch-db',
+    branchName: 'feat/mission-123-db',
+    projectItemIds: ['PVTI_D'],
+  }
+  const infraWorkItem: GitHubWorkItem = {
+    ...workItem,
+    nodeId: 'PR_INFRA',
+    repository: 'loureng/gitorch-infra',
+    branchName: 'feat/mission-123-infra',
+    projectItemIds: ['PVTI_I'],
+  }
+
+  const result = engine.planOperations({ ...event, workItem: frontWorkItem }, [
+    backWorkItem,
+    dbWorkItem,
+    infraWorkItem,
+  ])
+
+  const statusOperations = result.operations.filter((op) => op.fieldName === 'Status')
+  expect(statusOperations).toHaveLength(4)
+  expect(statusOperations.map((op) => op.projectItemId)).toEqual([
+    'PVTI_F',
+    'PVTI_B',
+    'PVTI_D',
+    'PVTI_I',
+  ])
+  expect(statusOperations.every((op) => op.value === 'Blocked')).toBe(true) // because workItem has blockedByNodeIds: ['I_3']
+})
+
 test('processes each GitHub delivery once', () => {
   const engine = new GitHubSyncEngine()
 

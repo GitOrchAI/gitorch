@@ -60,6 +60,10 @@ export interface GitHubWorkItem {
   nodeId: string
   number: number
   repository: string
+  repositoryFullName?: string
+  repositoryId?: string
+  organization?: string
+  branchName?: string
   body?: string
   title: string
   type: GitHubIssueType
@@ -106,6 +110,9 @@ export interface GitHubSyncEvent {
   eventName: GitHubWebhookEventName
   action: string
   repository?: string
+  repositoryFullName?: string
+  repositoryId?: string
+  organization?: string
   occurredAt: string
   workItem?: GitHubWorkItem
   dependency?: GitHubDependencyEdge

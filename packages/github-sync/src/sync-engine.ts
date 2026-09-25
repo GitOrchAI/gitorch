@@ -39,59 +39,78 @@ export class GitHubSyncEngine {
       return { operations: [] }
     }
 
-    const availability = this.workModel.availabilityFor(event.workItem, dependencyItems)
-    let status = availability.available ? 'Ready' : 'Blocked'
-    if (event.workItem.state === 'closed' || event.workItem.state === 'merged') {
-      status = 'Done'
-    }
+    const missionPrefix = this.workModel.missionPrefixFor(event.workItem)
+    const correlatedItems = missionPrefix
+      ? dependencyItems.filter((item) => this.workModel.missionPrefixFor(item) === missionPrefix)
+      : []
 
-    const weight = this.workModel.weightFor(event.workItem)
-    const iteration = this.workModel.iterationFor(event.workItem)
+    const allGroupItems = [event.workItem, ...correlatedItems]
+
+    const isAllClosedOrMerged = allGroupItems.every(
+      (item) => item.state === 'closed' || item.state === 'merged'
+    )
+    const isAnyBlocked =
+      !isAllClosedOrMerged &&
+      allGroupItems.some((item) => !this.workModel.availabilityFor(item, dependencyItems).available)
+
+    let status = 'Ready'
+    if (isAllClosedOrMerged) {
+      status = 'Done'
+    } else if (isAnyBlocked) {
+      status = 'Blocked'
+    }
 
     const operations: GitHubSyncOperation[] = []
 
-    for (const projectItemId of event.workItem.projectItemIds) {
-      operations.push({
-        operationKey: `project-status:${event.workItem.nodeId}:${status}`,
-        kind: 'update-project-field',
-        nodeId: event.workItem.nodeId,
-        projectItemId,
-        fieldName: 'Status',
-        value: status,
-        wishCreatedAt: event.workItem.wishCreatedAt,
-        mergedAt: event.workItem.mergedAt,
-      })
+    for (const groupItem of allGroupItems) {
+      const weight = this.workModel.weightFor(groupItem)
+      const iteration = this.workModel.iterationFor(groupItem)
+      const assigneesToUpdate =
+        groupItem.assignees && groupItem.assignees.length > 0 ? groupItem.assignees : undefined
 
-      if (event.workItem.assignees && event.workItem.assignees.length > 0) {
+      for (const projectItemId of groupItem.projectItemIds) {
         operations.push({
-          operationKey: `project-assignees:${event.workItem.nodeId}:${event.workItem.assignees.join(',')}`,
-          kind: 'update-assignees',
-          nodeId: event.workItem.nodeId,
-          projectItemId,
-          assignees: event.workItem.assignees,
-        })
-      }
-
-      if (weight !== undefined) {
-        operations.push({
-          operationKey: `project-weight:${event.workItem.nodeId}:${weight}`,
+          operationKey: `project-status:${groupItem.nodeId}:${status}`,
           kind: 'update-project-field',
-          nodeId: event.workItem.nodeId,
+          nodeId: groupItem.nodeId,
           projectItemId,
-          fieldName: 'Weight',
-          value: weight,
+          fieldName: 'Status',
+          value: status,
+          wishCreatedAt: groupItem.wishCreatedAt,
+          mergedAt: groupItem.mergedAt,
         })
-      }
 
-      if (iteration !== undefined) {
-        operations.push({
-          operationKey: `project-iteration:${event.workItem.nodeId}:${iteration}`,
-          kind: 'update-project-field',
-          nodeId: event.workItem.nodeId,
-          projectItemId,
-          fieldName: 'Iteration',
-          value: iteration,
-        })
+        if (assigneesToUpdate) {
+          operations.push({
+            operationKey: `project-assignees:${groupItem.nodeId}:${assigneesToUpdate.join(',')}`,
+            kind: 'update-assignees',
+            nodeId: groupItem.nodeId,
+            projectItemId,
+            assignees: assigneesToUpdate,
+          })
+        }
+
+        if (weight !== undefined) {
+          operations.push({
+            operationKey: `project-weight:${groupItem.nodeId}:${weight}`,
+            kind: 'update-project-field',
+            nodeId: groupItem.nodeId,
+            projectItemId,
+            fieldName: 'Weight',
+            value: weight,
+          })
+        }
+
+        if (iteration !== undefined) {
+          operations.push({
+            operationKey: `project-iteration:${groupItem.nodeId}:${iteration}`,
+            kind: 'update-project-field',
+            nodeId: groupItem.nodeId,
+            projectItemId,
+            fieldName: 'Iteration',
+            value: iteration,
+          })
+        }
       }
     }
 

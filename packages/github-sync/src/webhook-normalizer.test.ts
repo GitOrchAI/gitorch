@@ -15,7 +15,12 @@ test('normalizes issue dependency events as blocking gates', () => {
     },
     payload: {
       action: 'blocked_by_added',
-      repository: { full_name: 'loureng/gitorch' },
+      repository: {
+        id: 12345,
+        node_id: 'R_repo_1',
+        full_name: 'loureng/gitorch',
+        owner: { login: 'loureng' },
+      },
       blocked_issue: { node_id: 'I_6', number: 6, title: 'Task 6' },
       blocking_issue: { node_id: 'I_3', number: 3, title: 'Task 3' },
     },
@@ -27,6 +32,9 @@ test('normalizes issue dependency events as blocking gates', () => {
     eventName: 'issue_dependencies',
     action: 'blocked_by_added',
     repository: 'loureng/gitorch',
+    repositoryFullName: 'loureng/gitorch',
+    repositoryId: 'R_repo_1',
+    organization: 'loureng',
     occurredAt: '2026-06-23T12:00:00.000Z',
     dependency: {
       blockedNodeId: 'I_6',
@@ -48,8 +56,14 @@ test('normalizes pull request with merged_at timestamp', () => {
     },
     payload: {
       action: 'closed',
-      repository: { full_name: 'loureng/gitorch' },
+      repository: {
+        id: 12345,
+        node_id: 'R_repo_1',
+        full_name: 'loureng/gitorch',
+        owner: { login: 'loureng' },
+      },
       pull_request: {
+        head: { ref: 'feat/mission-123-ui' },
         node_id: 'PR_1',
         number: 1,
         title: 'Test PR',
@@ -80,7 +94,12 @@ test('normalizes sub-issue events as hierarchy edges', () => {
     },
     payload: {
       action: 'sub_issue_added',
-      repository: { full_name: 'loureng/gitorch' },
+      repository: {
+        id: 12345,
+        node_id: 'R_repo_1',
+        full_name: 'loureng/gitorch',
+        owner: { login: 'loureng' },
+      },
       parent_issue: { node_id: 'I_FEATURE', number: 10, title: 'Feature Y' },
       sub_issue: { node_id: 'I_3', number: 3, title: 'Task 3' },
     },
@@ -136,7 +155,12 @@ test('normalizes issues with issue type and project item ids', () => {
     },
     payload: {
       action: 'opened',
-      repository: { full_name: 'loureng/gitorch' },
+      repository: {
+        id: 12345,
+        node_id: 'R_repo_1',
+        full_name: 'loureng/gitorch',
+        owner: { login: 'loureng' },
+      },
       issue: {
         node_id: 'I_42',
         number: 42,
@@ -176,7 +200,10 @@ describe('normalize — eventos de segurança e CI (Fase 0.3)', () => {
     const normalizer = new GitHubWebhookNormalizer()
     const envelope = {
       headers: { deliveryId: 'd1', eventName, signature256: 'sig' },
-      payload: { action: 'created', repository: { full_name: 'dono/repo' } },
+      payload: {
+        action: 'created',
+        repository: { id: 999, node_id: 'R_999', full_name: 'dono/repo', owner: { login: 'dono' } },
+      },
       body: '{}',
       receivedAt: '2026-09-15T00:00:00.000Z',
     }
@@ -198,7 +225,12 @@ test('normalizes issue with created_at timestamp', () => {
     },
     payload: {
       action: 'opened',
-      repository: { full_name: 'loureng/gitorch' },
+      repository: {
+        id: 12345,
+        node_id: 'R_repo_1',
+        full_name: 'loureng/gitorch',
+        owner: { login: 'loureng' },
+      },
       issue: {
         node_id: 'I_7',
         number: 7,
