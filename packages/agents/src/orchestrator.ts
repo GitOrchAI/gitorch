@@ -205,6 +205,7 @@ export class AgentOrchestrator {
             credentialRef: mission.credentialRef,
             role: mission.role,
             cwd: workspacePath,
+            subPath: mission.subPath,
             timeoutMs,
           })
 
@@ -428,6 +429,8 @@ export class AgentOrchestrator {
         ...inputTpl,
         id: item.id,
         repository: item.repositoryKey,
+        repositoryKey: item.repositoryKey,
+        subPath: item.subPath,
         role: item.role,
         goal: item.goal,
       }

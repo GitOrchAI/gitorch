@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import * as path from 'node:path'
 import type {
   RuntimeCommandRequest,
   RuntimeCommandResult,
@@ -266,7 +267,7 @@ export function createPodmanCommandRunner(
       '-e',
       'XDG_RUNTIME_DIR=/tmp',
       '-w',
-      CONTAINER_WORKSPACE,
+      request.subPath ? path.posix.join(CONTAINER_WORKSPACE, request.subPath.replace(/^\//, '')) : CONTAINER_WORKSPACE,
     ]
 
     if (request.cwd) {

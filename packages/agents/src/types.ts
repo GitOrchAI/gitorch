@@ -48,6 +48,8 @@ export interface AgentMission {
   id: string
   projectId: string
   repository: string
+  repositoryKey?: string
+  subPath?: string
   role: F6AgentRole
   goal: string
   prompt: string
