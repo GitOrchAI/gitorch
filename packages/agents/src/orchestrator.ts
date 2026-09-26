@@ -14,7 +14,15 @@ import {
 
 import { evaluateNodeTransition } from '@gitorch/cadence'
 
-import type { F6AgentRole, MissionState, NodeTransition, StateNode, AgentMission } from './types'
+import type {
+  F6AgentRole,
+  MissionState,
+  NodeTransition,
+  StateNode,
+  AgentMission,
+  MissionPlan,
+  MissionPlanItem,
+} from './types'
 import { primeWorkspace } from './workspace-priming'
 import { checkMissionLimits } from './execution-limits'
 
@@ -369,6 +377,69 @@ export class AgentOrchestrator {
     })
 
     return result as RuntimeExecutionResult
+  }
+
+  orderMissionPlan(plan: MissionPlan): MissionPlanItem[] {
+    const sorted: MissionPlanItem[] = []
+    const visited = new Set<string>()
+    const visiting = new Set<string>()
+
+    const itemsByKey = new Map<string, MissionPlanItem>()
+    for (const item of plan.items) {
+      itemsByKey.set(item.repositoryKey, item)
+    }
+
+    const visit = (key: string) => {
+      if (visiting.has(key)) {
+        throw new Error(`Cyclic dependency detected: ${key}`)
+      }
+      if (!visited.has(key)) {
+        visiting.add(key)
+        const item = itemsByKey.get(key)
+        if (item) {
+          for (const dep of item.crossRepoPrerequisites) {
+            visit(dep)
+          }
+          visited.add(key)
+          sorted.push(item)
+        }
+        visiting.delete(key)
+      }
+    }
+
+    for (const item of plan.items) {
+      if (!visited.has(item.repositoryKey)) {
+        visit(item.repositoryKey)
+      }
+    }
+
+    return sorted
+  }
+
+  async executeMissionPlan(
+    plan: MissionPlan,
+    inputTpl: Omit<BuildAgentMissionInput, 'id' | 'repository' | 'role' | 'goal'>
+  ): Promise<RuntimeExecutionResult[]> {
+    const sortedItems = this.orderMissionPlan(plan)
+    const results: RuntimeExecutionResult[] = []
+
+    for (const item of sortedItems) {
+      const missionInput: BuildAgentMissionInput = {
+        ...inputTpl,
+        id: item.id,
+        repository: item.repositoryKey,
+        role: item.role,
+        goal: item.goal,
+      }
+      const result = await this.runMission(missionInput)
+      results.push(result)
+
+      if (result.exitCode !== 0) {
+        break // Stop execution downstream if an upstream task fails
+      }
+    }
+
+    return results
   }
 
   events() {

@@ -147,3 +147,16 @@ export interface Span {
   endTime: number
   status: 'success' | 'error'
 }
+
+export interface MissionPlanItem {
+  id: string
+  repositoryKey: string
+  subPath: string
+  crossRepoPrerequisites: string[]
+  goal: string
+  role: F6AgentRole
+}
+
+export interface MissionPlan {
+  items: MissionPlanItem[]
+}
