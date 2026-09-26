@@ -27,10 +27,12 @@ export function parsePipelineError(error: unknown, stepContext: string): Pipelin
     reason = JSON.stringify(error)
   }
 
+  const isCiDoCliente = typeof reason === 'string' && reason.includes('ci-do-cliente')
+
   return {
     step: stepContext || 'unknown',
     reason,
-    mitigationAction: 'Manual operator intervention required',
+    mitigationAction: isCiDoCliente ? 'Verify client CI pipeline configuration' : 'Manual operator intervention required',
     requiresAction: true,
   }
 }
