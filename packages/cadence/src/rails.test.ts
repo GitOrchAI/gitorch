@@ -1053,7 +1053,7 @@ describe('validarRailsMultiRepo (multi-repositório testes + DoD)', () => {
     const { validarRailsMultiRepo } = await import('./rails')
 
     let runnerCalled = 0
-    const runner = async (cmd: string, cwd?: string) => {
+    const runner = async (_cmd: string, _cwd?: string) => {
       runnerCalled++
       return { exitCode: 0, stdout: '', stderr: '' }
     }
@@ -1070,7 +1070,7 @@ describe('validarRailsMultiRepo (multi-repositório testes + DoD)', () => {
   it('rejeita imediatamente e detalha erros se um repositório falha no teste', async () => {
     const { validarRailsMultiRepo } = await import('./rails')
 
-    const runner = async (cmd: string, cwd?: string) => {
+    const runner = async (_cmd: string, cwd?: string) => {
       if (cwd === 'apps/back') {
         return { exitCode: 1, stdout: '', stderr: 'Jest failed' }
       }
@@ -1098,7 +1098,7 @@ describe('validarRailsMultiRepo (multi-repositório testes + DoD)', () => {
       },
     }
 
-    const runner = async (cmd: string, cwd?: string) => {
+    const runner = async (_cmd: string, _cwd?: string) => {
       return { exitCode: 0, stdout: '', stderr: '' }
     }
 
