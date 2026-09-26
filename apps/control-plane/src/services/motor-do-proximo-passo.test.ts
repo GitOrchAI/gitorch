@@ -111,6 +111,9 @@ describe('decidirProximoPasso — o que muda: nunca "alguém precisa olhar" sem 
   })
 })
 
+import { MAX_ACOES_DO_VIGIA } from './vigia-do-pr.js'
+import { MARCA_DE_ENTREGA_GRANDE_DEMAIS } from './reprovacao-que-ensina.js'
+
 describe('motor-do-proximo-passo (escalar)', () => {
   it('motor nunca devolve escalar como acao padrao', () => {
     const d = decidirProximoPasso({
@@ -119,5 +122,53 @@ describe('motor-do-proximo-passo (escalar)', () => {
       cuidaPorOrigem: { ...PADRAO_DE_CUIDADO },
     })
     expect(d.acao).not.toBe('escalar')
+  })
+
+  it('teto de acoes sem parecer do QA nao escala ao dono, so-acompanha', () => {
+    const d = decidirProximoPasso({
+      ...base(),
+      acoesAnteriores: MAX_ACOES_DO_VIGIA + 1,
+      ultimoParecerQa: null,
+      mergeable: true,
+      verificacao: 'verde',
+    })
+    expect(d.acao).toBe('so-acompanhar')
+    if (d.acao === 'so-acompanhar') {
+      expect(d.motivo).not.toContain('já foi ao dono depois do teto')
+      expect(d.motivo).toContain('aguardando julgamento')
+    }
+  })
+
+  it('teto esgotado com pergunta pendente resulta em so-acompanhar', () => {
+    const d = decidirProximoPasso({
+      ...base(),
+      acoesAnteriores: MAX_ACOES_DO_VIGIA + 1,
+      ultimoParecerQa: { body: 'algo', timestamp: new Date('2023-01-01') },
+      ultimoEscalonamentoEm: new Date('2023-01-02'),
+      temDuvidaPendente: true,
+      // @ts-expect-error mock to force logic
+      causa: 'qa-reprovou',
+    })
+    expect(d.acao).toBe('so-acompanhar')
+    if (d.acao === 'so-acompanhar') {
+      expect(d.motivo).toContain('já foi ao dono depois do teto')
+    }
+  })
+})
+
+describe('motor-do-proximo-passo (retomar com parecer)', () => {
+  it('retoma com instrucoes de divisao quando a entrega eh grande demais', () => {
+    const originalBody = `Algum texto do QA\n\n${MARCA_DE_ENTREGA_GRANDE_DEMAIS}`
+    const d = decidirProximoPasso({
+      ...base(),
+      mergeable: true,
+      verificacao: 'verde',
+      ultimoParecerQa: { body: originalBody, timestamp: new Date() },
+    })
+    expect(d.acao).toBe('retomar')
+    if (d.acao === 'retomar') {
+      expect(d.pedido).toContain('Divida esta entrega em partes menores')
+      expect(d.pedido).toContain(originalBody)
+    }
   })
 })

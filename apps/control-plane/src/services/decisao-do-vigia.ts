@@ -178,19 +178,31 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   let ultimoEscalonamentoEm: Date | null = null
 
   if (origem !== 'dependabot') {
+    if (!depsVigia.headSha) {
+      onWarn(
+        `decidirAcaoNoPrOrfaoIntegrado: não foi possível buscar reviews do PR #${depsVigia.numero} porque headSha é nulo ou ausente`
+      )
+    }
     if (depsVigia.headSha) {
       try {
-        const reviews = (await ghGet(
+        const res = await ghGet(
           `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/reviews?per_page=100`,
           token
-        )) as ReviewDoGithub[]
+        )
 
-        const review = acharParecerNesteHead(reviews, depsVigia.headSha)
-        if (review && review.body && !ehAprovacao(review)) {
-          ultimoParecerQa = {
-            body: review.body,
-            timestamp: review.submitted_at ? new Date(review.submitted_at) : new Date(0),
+        if (Array.isArray(res)) {
+          const reviews = res as ReviewDoGithub[]
+          const review = acharParecerNesteHead(reviews, depsVigia.headSha)
+          if (review && review.body && !ehAprovacao(review)) {
+            ultimoParecerQa = {
+              body: review.body,
+              timestamp: review.submitted_at ? new Date(review.submitted_at) : new Date(0),
+            }
           }
+        } else {
+          onWarn(
+            `decidirAcaoNoPrOrfaoIntegrado: a resposta de reviews do PR #${depsVigia.numero} não é um array`
+          )
         }
       } catch (err) {
         onWarn(
