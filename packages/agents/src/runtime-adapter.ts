@@ -617,7 +617,11 @@ export function createPythonSdkRuntimeAdapter(
         }
       }
       const start = Date.now()
-      const cwd = request.subPath ? (request.cwd ? path.join(request.cwd, request.subPath) : request.subPath) : request.cwd
+      const cwd = request.subPath
+        ? request.cwd
+          ? path.join(request.cwd, request.subPath)
+          : request.subPath
+        : request.cwd
       try {
         const pending = execFileAsync(pythonBinary, args, {
           env: buildChildProcessEnv(geminiEnv),
