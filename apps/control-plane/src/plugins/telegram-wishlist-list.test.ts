@@ -39,7 +39,12 @@ describe('processarComandoWishlistList', () => {
       where: { userId: 'u1' },
       orderBy: { createdAt: 'asc' },
     })
-    expect(sendMsg).toHaveBeenCalledWith('1. Item A\n2. Item B')
+    expect(sendMsg).toHaveBeenCalledWith('1. Item A\n2. Item B', {
+      inline_keyboard: [
+        [{ text: '❌ Delete', callback_data: 'del_wishlist_undefined' }],
+        [{ text: '❌ Delete', callback_data: 'del_wishlist_undefined' }],
+      ],
+    })
   })
 
   it('should handle errors gracefully', async () => {

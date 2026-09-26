@@ -164,7 +164,7 @@ export function acordarSmComSeguranca(
 export async function processarComandoWishlistList(
   dono: { userId: string },
   app: { prisma: FastifyInstance['prisma']; log: { error: (err: unknown, msg: string) => void } },
-  sendMsg: (text: string) => Promise<void>
+  sendMsg: (text: string, teclado?: unknown) => Promise<void>
 ) {
   try {
     const items = await app.prisma.wishlistItem.findMany({
@@ -178,7 +178,15 @@ export async function processarComandoWishlistList(
     }
 
     const lines = items.map((item, index) => `${index + 1}. ${item.payload}`)
-    await sendMsg(lines.join('\n'))
+    const teclado = {
+      inline_keyboard: items.map((item) => [
+        {
+          text: `❌ Delete`,
+          callback_data: `del_wishlist_${item.id}`,
+        },
+      ]),
+    }
+    await sendMsg(lines.join('\n'), teclado)
   } catch (err) {
     app.log.error(err, '[Telegram] Falha ao listar wishlist')
     await sendMsg('Erro interno ao listar a wishlist.')
@@ -1222,6 +1230,58 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           if (update.callback_query) {
             const data = update.callback_query.data
 
+            if (data?.startsWith('del_wishlist_')) {
+              await answerTelegramCallback({ botToken, callbackQueryId: update.callback_query.id })
+
+              if (update.callback_query.message?.chat) {
+                const chatId = String(update.callback_query.message.chat.id)
+                const dono = await resolveDonoDoChat(app.prisma, chatId)
+
+                if (dono.tipo === 'unico') {
+                  const itemId = data.substring(13)
+
+                  const item = await app.prisma.wishlistItem.findUnique({ where: { id: itemId } })
+                  if (item && item.userId === dono.userId) {
+                    await app.prisma.wishlistItem.delete({ where: { id: itemId } })
+                  }
+
+                  const updatedItems = await app.prisma.wishlistItem.findMany({
+                    where: { userId: dono.userId },
+                    orderBy: { createdAt: 'asc' },
+                  })
+
+                  const messageId = update.callback_query.message.message_id
+                  if (updatedItems.length === 0) {
+                    await editTelegramMessageText({
+                      botToken,
+                      chatId,
+                      messageId,
+                      text: 'Your wishlist is empty.',
+                      teclado: { inline_keyboard: [] },
+                    })
+                  } else {
+                    const lines = updatedItems.map((it, index) => `${index + 1}. ${it.payload}`)
+                    const teclado = {
+                      inline_keyboard: updatedItems.map((it) => [
+                        {
+                          text: `❌ Delete`,
+                          callback_data: `del_wishlist_${it.id}`,
+                        },
+                      ]),
+                    }
+                    await editTelegramMessageText({
+                      botToken,
+                      chatId,
+                      messageId,
+                      text: lines.join('\n'),
+                      teclado,
+                    })
+                  }
+                }
+              }
+              continue
+            }
+
             if (data?.startsWith('wadd:')) {
               await answerTelegramCallback({ botToken, callbackQueryId: update.callback_query.id })
 
@@ -1482,11 +1542,12 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                 await processarComandoWishlistList(
                   dono,
                   app as unknown as Parameters<typeof processarComandoWishlistList>[1],
-                  async (text) => {
+                  async (text, teclado) => {
                     await sendTelegramMessage({
                       botToken,
                       chatId: strChatId,
                       text,
+                      ...(teclado ? { teclado } : {}),
                     })
                   }
                 )
