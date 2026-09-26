@@ -504,6 +504,24 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // AWAITING_USER_FEEDBACK para sempre. MESMO wiring de `aoResponderDuvidaDoDev`
   // acima: só a decisão de QUE FAZER (`aoResponderLogicaAlternativa`,
   // retomar-sessao-com-resposta.ts) é pura/testável sem rede; aqui é injeção.
+
+  const aoResponderPrParado = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+  }): Promise<void> => {
+    const projeto = await app.prisma.project.findUnique({
+      where: { id: args.projectId },
+      select: { id: true },
+    })
+    if (!projeto) {
+      app.log.error(
+        `[Telegram] pr-parado: projeto ${args.projectId} não encontrado (dedupKey ${args.dedupKey})`
+      )
+      throw new Error(`aoResponderPrParado: projeto ${args.projectId} não encontrado`)
+    }
+  }
+
   const aoResponderLogicaAlternativaHandler = async (args: {
     dedupKey: string
     resposta: string
@@ -883,6 +901,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       // DJ-T9, rodada 3 (achado do QA): sem esta entrada, a resposta do dono
       // a uma pergunta de lógica alternativa nunca retomava a sessão do Jules.
       { prefixo: 'logica-alternativa:', executar: aoResponderLogicaAlternativaHandler },
+      { prefixo: 'cuida-deste-pedido:', executar: aoResponderPrParado },
     ],
     // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
     // resposta — nunca `console.warn`, que some do monitoramento.
