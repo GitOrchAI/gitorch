@@ -261,7 +261,12 @@ describe('Multi-Repo Mission Plans', () => {
   test('orders a 4-repository mission plan topologically', () => {
     const registry = new RuntimeRegistry()
     const synapse = new SynapseClient()
-    const orchestrator = new AgentOrchestrator({ registry, synapse })
+    const workspace = {
+      allocateWorkspace: vi.fn().mockResolvedValue({ path: '/mock/workspace' }),
+      hibernateWorkspace: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const orchestrator = new AgentOrchestrator({ registry, synapse, workspace })
 
     const plan = {
       items: [
@@ -325,7 +330,11 @@ describe('Multi-Repo Mission Plans', () => {
       createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: ['exec'], runner })
     )
     const synapse = new SynapseClient()
-    const orchestrator = new AgentOrchestrator({ registry, synapse })
+    const workspace = {
+      allocateWorkspace: vi.fn().mockResolvedValue({ path: '/mock/workspace' }),
+      hibernateWorkspace: vi.fn().mockResolvedValue(undefined),
+    }
+    const orchestrator = new AgentOrchestrator({ registry, synapse, workspace })
 
     const plan = {
       items: [
@@ -401,6 +410,73 @@ describe('Multi-Repo Mission Plans', () => {
     }
 
     expect(() => orchestrator.orderMissionPlan(plan)).toThrow(/Cyclic dependency detected/)
+  })
+
+  test('executes sequential steps simulating modifications in frontend and backend repos with correct subPaths', async () => {
+    mockAllocateWorkspace.mockClear()
+    mockHibernateWorkspace.mockClear()
+
+    const mockRun = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: 'Success',
+      stderr: '',
+      durationMs: 10,
+    })
+
+    const registry = new RuntimeRegistry()
+    registry.register({ runtime: 'codex', run: mockRun })
+
+    const synapse = new SynapseClient()
+    const workspace = {
+      allocateWorkspace: vi.fn().mockResolvedValue({ path: '/mock/workspace' }),
+      hibernateWorkspace: vi.fn().mockResolvedValue(undefined),
+    }
+    const orchestrator = new AgentOrchestrator({ registry, synapse, workspace })
+
+    const plan = {
+      items: [
+        {
+          id: 'frontend-step',
+          repositoryKey: 'owner/frontend',
+          subPath: 'repos/frontend',
+          crossRepoPrerequisites: [],
+          goal: 'Update UI',
+          role: 'qa' as const,
+        },
+        {
+          id: 'backend-step',
+          repositoryKey: 'owner/backend',
+          subPath: 'repos/backend',
+          crossRepoPrerequisites: ['owner/frontend'],
+          goal: 'Add API endpoint',
+          role: 'qa' as const,
+        },
+      ],
+    }
+
+    const inputTpl = {
+      projectId: 'project-1',
+      context: [],
+      credentialRef: {
+        connectionId: 'c1',
+        ownerScope: 'project' as const,
+        runtime: 'codex' as const,
+        providedSecrets: [],
+      },
+    }
+
+    const results = await orchestrator.executeMissionPlan(plan, inputTpl)
+
+    expect(results).toHaveLength(2)
+
+    expect(mockRun).toHaveBeenCalledTimes(2)
+    const firstRunArgs = mockRun.mock.calls[0][0]
+    expect(firstRunArgs.subPath).toBe('repos/frontend')
+    expect(firstRunArgs.cwd).toBe('/mock/workspace')
+
+    const secondRunArgs = mockRun.mock.calls[1][0]
+    expect(secondRunArgs.subPath).toBe('repos/backend')
+    expect(secondRunArgs.cwd).toBe('/mock/workspace')
   })
 
   test('ignores unaffected repositories not present in the plan', async () => {

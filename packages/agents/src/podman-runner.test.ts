@@ -18,6 +18,18 @@ function ok() {
 }
 
 describe('createPodmanCommandRunner', () => {
+  test('ajusta o diretorio de trabalho dentro do container quando subPath e fornecido', async () => {
+    const hostRunner = vi.fn().mockResolvedValue(ok())
+    const runner = createPodmanCommandRunner({ image: 'localhost/img:1', hostRunner })
+
+    await runner(buildRequest({ subPath: 'repos/backend' }))
+
+    const call = hostRunner.mock.calls[0][0]
+    expect(call.args).toContain('/var/lib/ws/u/p:/workspace:rw')
+    const wIndex = call.args.indexOf('-w')
+    expect(call.args[wIndex + 1]).toBe('/workspace/repos/backend')
+  })
+
   test('monta o workspace e executa o binário dentro do container', async () => {
     const hostRunner = vi.fn().mockResolvedValue(ok())
     const runner = createPodmanCommandRunner({ image: 'localhost/img:1', hostRunner })

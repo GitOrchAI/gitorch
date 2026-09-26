@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout } from 'node:timers/promises'
+import * as path from 'node:path'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 import type {
   AgentRuntimeSelection,
@@ -43,6 +44,8 @@ export interface RuntimeExecutionRequest {
   role?: F6AgentRole
   /** Diretório de trabalho da missão (workspace alocado). */
   cwd?: string
+  /** Subdiretório do repositório membro no workspace. */
+  subPath?: string
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
 }
@@ -85,6 +88,7 @@ export interface RuntimeCommandRequest {
   args: string[]
   env: Record<string, string>
   cwd?: string
+  subPath?: string
   /** Mata o processo após N ms (evita missão pendurada segurando RAM). */
   timeoutMs?: number
   /**
@@ -464,6 +468,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           args: [...baseArgs, ...modelArgs, ...effortArgs, ...workspaceArgs, ...promptArgs],
           env,
           cwd: request.cwd,
+          subPath: request.subPath,
           timeoutMs: request.timeoutMs,
           ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
         })
@@ -612,10 +617,15 @@ export function createPythonSdkRuntimeAdapter(
         }
       }
       const start = Date.now()
+      const cwd = request.subPath
+        ? request.cwd
+          ? path.join(request.cwd, request.subPath)
+          : request.subPath
+        : request.cwd
       try {
         const pending = execFileAsync(pythonBinary, args, {
           env: buildChildProcessEnv(geminiEnv),
-          cwd: request.cwd,
+          cwd,
           maxBuffer: 16 * 1024 * 1024,
           timeout: request.timeoutMs,
           killSignal: 'SIGKILL',

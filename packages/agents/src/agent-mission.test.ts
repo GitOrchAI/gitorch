@@ -73,6 +73,31 @@ test('defaults evidence refs and supports matching explicit runtime override', (
   expect(mission.evidenceRefs).toEqual([])
 })
 
+test('includes subPath context instructions in prompt when subPath is provided', () => {
+  const mission = buildAgentMission({
+    id: 'mission-subpath-1',
+    projectId: 'project-1',
+    repository: 'owner/multi-repo',
+    repositoryKey: 'owner/backend',
+    subPath: 'repos/backend',
+    role: 'qa',
+    goal: 'Add an API endpoint',
+    context: [],
+    credentialRef: {
+      connectionId: 'conn-codex',
+      ownerScope: 'project',
+      runtime: 'codex',
+      providedSecrets: [],
+    },
+  })
+
+  expect(mission.repositoryKey).toBe('owner/backend')
+  expect(mission.subPath).toBe('repos/backend')
+  expect(mission.prompt).toContain(
+    'Working Directory: You are working in a multi-repo workspace. Your target repository is located at /workspace/repos/backend'
+  )
+})
+
 test('keeps credential reference immutable from caller mutations after mission creation', () => {
   const credentialRef: RuntimeCredentialRef = {
     connectionId: 'conn-codex',
