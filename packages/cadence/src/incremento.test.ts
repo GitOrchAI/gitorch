@@ -137,3 +137,36 @@ describe('normalizarRegua — o que não se reconhece nunca vira permissão', ()
     }
   })
 })
+
+describe('avaliarProntoMultiRepo — validação de incremento agregando múltiplos repositórios', () => {
+  it('aprova incremento quando todos os repositórios atendem à régua', async () => {
+    const { avaliarProntoMultiRepo } = await import('./incremento')
+    const fatosMulti = {
+      'owner/front': { ...TUDO },
+      'owner/back': { ...TUDO },
+    }
+    const veredicto = avaliarProntoMultiRepo(fatosMulti)
+    expect(veredicto.pronto).toBe(true)
+    expect(veredicto.porRepositorio['owner/front']?.pronto).toBe(true)
+    expect(veredicto.porRepositorio['owner/back']?.pronto).toBe(true)
+  })
+
+  it('rejeita incremento quando 1 repositório reprova na régua', async () => {
+    const { avaliarProntoMultiRepo } = await import('./incremento')
+    const fatosMulti = {
+      'owner/front': { ...TUDO },
+      'owner/back': { ...TUDO, deployState: 'sem-publicacao' },
+    }
+    const veredicto = avaliarProntoMultiRepo(fatosMulti)
+    expect(veredicto.pronto).toBe(false)
+    expect(veredicto.porRepositorio['owner/front']?.pronto).toBe(true)
+    expect(veredicto.porRepositorio['owner/back']?.pronto).toBe(false)
+    expect(veredicto.porRepositorio['owner/back']?.faltando).toContain('no_ar')
+  })
+
+  it('rejeita incremento se não houver fatos (mission sem repo)', async () => {
+    const { avaliarProntoMultiRepo } = await import('./incremento')
+    const veredicto = avaliarProntoMultiRepo({})
+    expect(veredicto.pronto).toBe(false)
+  })
+})

@@ -1526,3 +1526,70 @@ export function evaluateNodeTransition(
 
   return { nextNode: context.nextNode }
 }
+
+export interface MultiRepoRailTarget {
+  repositoryKey: string
+  subPath?: string
+  testCommand?: string
+  fields?: DoDFields
+}
+
+export interface MultiRepoDoDResult {
+  valid: boolean
+  reports: Record<string, { passed: boolean; details?: string; errors?: string[] }>
+  errors: string[]
+}
+
+export async function validarRailsMultiRepo(
+  targets: MultiRepoRailTarget[],
+  options?: {
+    runner?: (
+      cmd: string,
+      cwd?: string
+    ) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+  }
+): Promise<MultiRepoDoDResult> {
+  const reports: Record<string, { passed: boolean; details?: string; errors?: string[] }> = {}
+  let valid = true
+  const globalErrors: string[] = []
+
+  for (const target of targets) {
+    const targetErrors: string[] = []
+
+    if (target.fields) {
+      const dodResult = validateDoD(target.fields)
+      if (!dodResult.ok) {
+        targetErrors.push(...dodResult.errors)
+      }
+    }
+
+    if (target.testCommand && options?.runner) {
+      try {
+        const result = await options.runner(target.testCommand, target.subPath)
+        if (result.exitCode !== 0) {
+          targetErrors.push(`Test command failed: ${target.testCommand}`)
+          targetErrors.push(`stderr: ${result.stderr}`)
+        }
+      } catch (err) {
+        targetErrors.push(`Execution error running test command: ${(err as Error).message}`)
+      }
+    }
+
+    const passed = targetErrors.length === 0
+    if (!passed) {
+      valid = false
+      globalErrors.push(`Repository ${target.repositoryKey} failed DoD or tests.`)
+    }
+
+    reports[target.repositoryKey] = {
+      passed,
+      errors: targetErrors.length > 0 ? targetErrors : undefined,
+    }
+  }
+
+  return {
+    valid,
+    reports,
+    errors: globalErrors,
+  }
+}
