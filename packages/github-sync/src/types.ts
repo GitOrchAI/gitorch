@@ -129,6 +129,21 @@ export interface AvailabilityDecision {
   blockedByNodeIds: string[]
 }
 
+export interface CoordinatedPrRepo {
+  repositoryId: string
+  repositoryName: string
+  headBranch: string
+  baseBranch: string
+  title: string
+  body: string
+}
+
+export interface CoordinatedPrMissionResult {
+  projectId?: string
+  projectItemId?: string
+  repos: CoordinatedPrRepo[]
+}
+
 export interface GitHubSyncOperation {
   operationKey: string
   kind:
