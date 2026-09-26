@@ -252,3 +252,156 @@ test('executes operations sequentially with logical lock per item id', async () 
   // I_6 operations execute sequentially: 1 finishes after 50ms, then 2 executes
   expect(executionOrder).toEqual([3, 1, 2])
 })
+
+test('abrirPrsCoordenados handles multiple repos, appends cross-links, and updates Project V2', async () => {
+  const engine = new GitHubSyncEngine()
+  const calls: { kind: string; args: unknown }[] = []
+
+  const client = {
+    createPullRequest: async (args: {
+      repositoryId: string
+      baseRefName: string
+      headRefName: string
+      title: string
+      body: string
+    }) => {
+      calls.push({ kind: 'createPullRequest', args })
+      return {
+        id: `PR_${args.repositoryId}`,
+        number: 100 + calls.length,
+        url: `https://github.com/pr/${args.repositoryId}`,
+      }
+    },
+    updatePullRequest: async (args: { pullRequestId: string; body: string }) => {
+      calls.push({ kind: 'updatePullRequest', args })
+      return args.pullRequestId
+    },
+    getTextField: async (args: { projectId: string; fieldName: string }) => {
+      calls.push({ kind: 'getTextField', args })
+      return { fieldId: 'F_TEXT_LINK' }
+    },
+    setTextField: async (args: {
+      projectId: string
+      itemId: string
+      fieldId: string
+      text: string
+    }) => {
+      calls.push({ kind: 'setTextField', args })
+      return args.itemId
+    },
+  } as unknown as ProjectV2Client
+
+  const missionResult = {
+    projectId: 'PROJ_1',
+    projectItemId: 'ITEM_1',
+    repos: [
+      {
+        repositoryId: 'R_1',
+        repositoryName: 'Frontend',
+        headBranch: 'feat/1',
+        baseBranch: 'main',
+        title: 'T1',
+        body: 'B1',
+      },
+      {
+        repositoryId: 'R_2',
+        repositoryName: 'Backend',
+        headBranch: 'feat/1',
+        baseBranch: 'main',
+        title: 'T2',
+        body: 'B2',
+      },
+      {
+        repositoryId: 'R_3',
+        repositoryName: 'DB',
+        headBranch: 'feat/1',
+        baseBranch: 'main',
+        title: 'T3',
+        body: 'B3',
+      },
+      {
+        repositoryId: 'R_4',
+        repositoryName: 'Infra',
+        headBranch: 'feat/1',
+        baseBranch: 'main',
+        title: 'T4',
+        body: 'B4',
+      },
+    ],
+  }
+
+  await engine.abrirPrsCoordenados(missionResult, client)
+
+  const creates = calls.filter((c) => c.kind === 'createPullRequest')
+  expect(creates).toHaveLength(4)
+
+  const updates = calls.filter((c) => c.kind === 'updatePullRequest')
+  expect(updates).toHaveLength(4)
+
+  // Verify cross-link formatting in body
+  // R_1 (Frontend) should have PRs from Backend (R_2), DB (R_3), Infra (R_4)
+  const frontUpdate = updates.find(
+    (u) => (u.args as { pullRequestId: string }).pullRequestId === 'PR_R_1'
+  )
+  expect((frontUpdate?.args as { body: string }).body).toContain(
+    'PR de Frontend associado ao PR de Backend #102, PR de DB #103 e PR de Infra #104'
+  )
+
+  const setText = calls.find((c) => c.kind === 'setTextField')
+  expect((setText?.args as { text: string }).text).toBe(
+    'https://github.com/pr/R_1\nhttps://github.com/pr/R_2\nhttps://github.com/pr/R_3\nhttps://github.com/pr/R_4'
+  )
+})
+
+test('abrirPrsCoordenados throws PartialSyncError on partial failure', async () => {
+  const engine = new GitHubSyncEngine()
+  const client = {
+    createPullRequest: async (args: {
+      repositoryId: string
+      baseRefName: string
+      headRefName: string
+      title: string
+      body: string
+    }) => {
+      if (args.repositoryId === 'FAIL') throw new Error('API Rate Limit')
+      return {
+        id: `PR_${args.repositoryId}`,
+        number: 100,
+        url: `https://github.com/pr/${args.repositoryId}`,
+      }
+    },
+  } as unknown as ProjectV2Client
+
+  const missionResult = {
+    projectId: 'PROJ_1',
+    projectItemId: 'ITEM_1',
+    repos: [
+      {
+        repositoryId: 'OK_1',
+        repositoryName: 'Front',
+        headBranch: 'feat/1',
+        baseBranch: 'main',
+        title: 'T1',
+        body: 'B1',
+      },
+      {
+        repositoryId: 'FAIL',
+        repositoryName: 'Back',
+        headBranch: 'feat/1',
+        baseBranch: 'main',
+        title: 'T2',
+        body: 'B2',
+      },
+    ],
+  }
+
+  try {
+    await engine.abrirPrsCoordenados(missionResult, client)
+    expect.fail('Should have thrown PartialSyncError')
+  } catch (err) {
+    const syncErr = err as PartialSyncError
+    expect(syncErr.name).toBe('PartialSyncError')
+    expect(syncErr.message).toContain('Falha ao abrir PR para o repositório Back')
+    expect(syncErr.openedPrUrls).toEqual(['https://github.com/pr/OK_1'])
+  }
+})
