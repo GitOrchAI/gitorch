@@ -148,3 +148,36 @@ export function normalizarRegua(bruto: unknown): Record<CriterioDePronto, boolea
   }
   return saida
 }
+
+export type FatosDaEntregaMultiRepo = Record<string, FatosDaEntrega>
+
+export interface VeredictoDeProntoMultiRepo {
+  pronto: boolean
+  porRepositorio: Record<string, VeredictoDePronto>
+}
+
+export function avaliarProntoMultiRepo(
+  fatos: FatosDaEntregaMultiRepo,
+  regua: ReguaDePronto = REGUA_PADRAO
+): VeredictoDeProntoMultiRepo {
+  const porRepositorio: Record<string, VeredictoDePronto> = {}
+  let pronto = true
+
+  for (const [repoKey, repoFatos] of Object.entries(fatos)) {
+    const veredicto = avaliarPronto(repoFatos, regua)
+    porRepositorio[repoKey] = veredicto
+    if (!veredicto.pronto) {
+      pronto = false
+    }
+  }
+
+  // Se não há fatos (mission sem repositórios?), não está pronto
+  if (Object.keys(fatos).length === 0) {
+    pronto = false
+  }
+
+  return {
+    pronto,
+    porRepositorio,
+  }
+}
