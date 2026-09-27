@@ -1028,3 +1028,13 @@ model WishlistItem {
   @@index([userId])
   @@map("wishlist_items")
 }
+
+model GuestProfile {
+  id                   String   @id @default(cuid())
+  invitationToken      String   @unique @map("invitation_token")
+  encryptedCredentials String?  @map("encrypted_credentials")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("guest_profiles")
+}

@@ -162,3 +162,11 @@ export function isGuestCredentialRevoked(guestId: string): boolean {
 export function clearRevokedGuestCredentials(): void {
   revokedGuestCredentials.clear()
 }
+
+/**
+ * Serializa chaves BYO (texto puro) no mesmo payload esperado para uso
+ * ou para preparar para criptografia via encryptGuestProfileSecrets.
+ */
+export function archiveGuestCredentials(keys: Record<string, string>): string {
+  return JSON.stringify(keys)
+}

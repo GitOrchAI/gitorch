@@ -270,3 +270,18 @@ export function verifyHmacToken(token: string): string {
 
   return Buffer.from(payloadB64, 'base64url').toString('utf8')
 }
+
+/**
+ * Cifra um dicionário de credenciais de Guest (ex.: BYO keys) para armazenar no banco.
+ * Reutiliza a infraestrutura do encryptCredential envelopando num JSON.
+ */
+export function encryptGuestProfileSecrets(payload: Record<string, string>): string {
+  return encryptCredential(JSON.stringify(payload))
+}
+
+/**
+ * Decifra um envelope de credenciais de Guest retornado por encryptGuestProfileSecrets.
+ */
+export function decryptGuestProfileSecrets(envelope: string): Record<string, string> {
+  return JSON.parse(decryptCredential(envelope)) as Record<string, string>
+}

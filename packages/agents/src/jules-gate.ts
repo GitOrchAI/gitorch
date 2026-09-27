@@ -92,3 +92,17 @@ export function wrapWithJulesApiGate(
     return runner(request)
   }
 }
+
+export async function pingJulesGate(
+  apiKey: string,
+  baseUrl = 'https://api.jules.ai'
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/ping`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}

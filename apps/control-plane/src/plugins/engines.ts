@@ -1,4 +1,8 @@
 import fp from 'fastify-plugin'
+
+import { encryptGuestProfileSecrets } from '../lib/credential-crypto.js'
+import { pingJulesGate } from '@gitorch/agents'
+
 import { FastifyPluginAsync } from 'fastify'
 import { isDeviceRuntime } from '@gitorch/agents'
 import { EngineConnectionService, resolveEngineId } from '../services/engine-connection.js'
@@ -228,6 +232,33 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
 
     request.raw.on('close', unsubscribe)
     await new Promise(() => {})
+  })
+  app.post('/api/v1/invitations/:token/credentials', async (request, reply) => {
+    const { token } = request.params as { token: string }
+    const payload = request.body as Record<string, string>
+
+    const julesKey = payload['jules']
+    if (!julesKey) {
+      return reply.status(400).send({ error: 'Jules API key is required' })
+    }
+
+    const isValid = await pingJulesGate(julesKey)
+    if (!isValid) {
+      return reply.status(401).send({ error: 'Invalid Jules API key (handshake failed)' })
+    }
+
+    const encryptedCredentials = encryptGuestProfileSecrets(payload)
+
+    await app.prisma.guestProfile.upsert({
+      where: { invitationToken: token },
+      update: { encryptedCredentials },
+      create: {
+        invitationToken: token,
+        encryptedCredentials,
+      },
+    })
+
+    return reply.status(200).send({ success: true })
   })
 }
 

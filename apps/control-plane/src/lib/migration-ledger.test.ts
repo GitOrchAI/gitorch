@@ -59,6 +59,7 @@ describe('MIGRATION_LEDGER', () => {
       'parecer-trava-migration.sql',
       'guest-limits-mapping-migration.sql',
       'multi-repo-wishlist-migration.sql',
+      '20260927000000_add_guest_profile-migration.sql',
     ])
   })
 })
