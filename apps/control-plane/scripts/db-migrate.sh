@@ -91,7 +91,7 @@ done
 
 # Ordem canônica: extraída do MESMO módulo que o vitest valida (fonte única —
 # ver src/lib/migration-ledger.ts). Nunca duplicar a lista aqui à mão.
-mapfile -t LEDGER < <(grep -oE "'[a-zA-Z0-9_-]+-migration\.sql'" src/lib/migration-ledger.ts | tr -d "'")
+mapfile -t LEDGER < <(grep -oE "'[a-z0-9A-Z_-]+-migration\.sql'" src/lib/migration-ledger.ts | tr -d "'")
 # Guard de drift do PRÓPRIO extrator (achado I4, comparação exata desde o
 # achado FW-6): a regex acima não casa dígito nem maiúscula. Um arquivo
 # futuro tipo `2026-08-x-migration.sql` ficaria em disco E em
