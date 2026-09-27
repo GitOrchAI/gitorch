@@ -25,7 +25,6 @@ jobs:
     # github-pages. Em PRs de fork, apontar para um ambiente restrito causa
     # bloqueio/falha de autorização. Condicionamos o environment apenas para
     # push/dispatch na main.
-    environment: ${{ github.event_name != 'pull_request' && 'github-pages' || '' }}
     env:
       NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
       NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH || format('/{0}', github.event.repository.name) }}
@@ -118,7 +117,5 @@ jobs:
           done
           if [ "$fail" != "0" ]; then exit 1; fi
           echo "OK: home, setup e painel publicados e com assets carregando"
-
-
 
 # Verified by Jules
