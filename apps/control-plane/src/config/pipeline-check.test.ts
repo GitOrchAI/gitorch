@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import Fastify from 'fastify'
-import { pipelineCheckEnabled } from './pipeline-check.js'
+import { pipelineCheckEnabled, parsePipelineError } from './pipeline-check.js'
 import { schedulerPlugin } from '../plugins/scheduler.js'
 import { telegramPlugin } from '../plugins/telegram.js'
 import { AgentQuestionService } from '../services/agent-question.js'
@@ -89,4 +89,35 @@ describe('telegram plugin em modo pipeline-check', () => {
       else process.env['NODE_ENV'] = originalNodeEnv
     }
   }, 2000)
+})
+
+describe('parsePipelineError', () => {
+  it('parseia Error object', () => {
+    const res = parsePipelineError(new Error('banco caiu'), 'db-sync')
+    expect(res.step).toBe('db-sync')
+    expect(res.reason).toBe('banco caiu')
+    expect(res.mitigationAction).toBe('Manual operator intervention required')
+    expect(res.requiresAction).toBe(true)
+  })
+
+  it('parseia string', () => {
+    const res = parsePipelineError('timeout', 'api-call')
+    expect(res.reason).toBe('timeout')
+  })
+
+  it('parseia objeto arbitrario', () => {
+    const res = parsePipelineError({ code: 500 }, 'render')
+    expect(res.reason).toBe('{"code":500}')
+  })
+
+  it('faz fallback de step e unknown error', () => {
+    const res = parsePipelineError(null, '')
+    expect(res.step).toBe('unknown')
+    expect(res.reason).toBe('Unknown pipeline error')
+    expect(res.mitigationAction).toBe('Manual operator intervention required')
+    expect(res.requiresAction).toBe(true)
+
+    const resUndef = parsePipelineError(undefined, '')
+    expect(resUndef.reason).toBe('Unknown pipeline error')
+  })
 })
