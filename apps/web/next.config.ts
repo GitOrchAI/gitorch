@@ -1,16 +1,14 @@
 import type { NextConfig } from 'next'
 
-const rawBasePath = process.env.NEXT_PUBLIC_BASE_PATH?.trim()
 const basePath =
-  rawBasePath && rawBasePath !== '' && rawBasePath !== '/'
-    ? (rawBasePath.startsWith('/') ? rawBasePath : `/${rawBasePath}`).replace(/\/+$/, '')
-    : undefined
+  process.env.NEXT_PUBLIC_BASE_PATH ?? (process.env.NODE_ENV === 'production' ? '/gitorch' : '')
 
 const nextConfig: NextConfig = {
   output: 'export',
   // GitHub Pages de projeto vive em /<repo>; domínio custom (js.org) vive na
   // raiz. Dinâmico por build — nunca fixo no código.
   basePath,
+  assetPrefix: basePath,
   trailingSlash: true,
   images: {
     unoptimized: true,
