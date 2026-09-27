@@ -2548,6 +2548,180 @@ export async function renovarTokensGithubDoRelogio(
   return resumo
 }
 
+export const varrerRespostasPrParado = async (app: FastifyInstance) => {
+  try {
+    const db = app.prisma as import('@prisma/client').PrismaClient
+    const { DEDUP_PREFIXO_CUIDA_DESTE_PEDIDO } = await import('../services/perguntar-se-cuida.js')
+    const perguntas = await db.agentQuestion.findMany({
+      where: {
+        status: 'answered',
+        dedupKey: { startsWith: DEDUP_PREFIXO_CUIDA_DESTE_PEDIDO },
+      },
+      include: {
+        project: {
+          select: {
+            id: true,
+            wingId: true,
+            userId: true,
+            encryptedClientToken: true,
+            autonomia: true,
+          },
+        },
+      },
+    })
+
+    for (const p of perguntas) {
+      if (!p.answer || !p.dedupKey) continue
+
+      const projeto = p.project
+      try {
+        const token = await lerCredencialQueAlcancaOProjeto({
+          prisma: app.prisma,
+          projectId: projeto.id,
+          userId: projeto.userId,
+          engineConnections: app.engineConnections,
+          encryptedClientTokenJaLido: projeto.encryptedClientToken,
+        })
+        if (!token) continue
+
+        const fetchImpl = fetchDoRepositorio({ nivel: () => projeto.autonomia })
+
+        const { processarRespostaPrParado } =
+          await import('../services/processar-resposta-pr-parado.js')
+
+        await processarRespostaPrParado(
+          { dedupKey: p.dedupKey, resposta: p.answer },
+          {
+            mesclar: async (repo, numero) => {
+              const { ghJson } = await import('../services/github-json.js')
+              await ghJson(
+                fetchImpl,
+                token,
+                'PUT',
+                `https://api.github.com/repos/${repo}/pulls/${numero}/merge`
+              )
+            },
+            pedirAjuste: async (repo, numero) => {
+              const { ghJson } = await import('../services/github-json.js')
+              const prResponse = await ghJson<{ head?: { ref?: string } }>(
+                fetchImpl,
+                token,
+                'GET',
+                `https://api.github.com/repos/${repo}/pulls/${numero}`
+              )
+              const headRef = prResponse.head?.ref
+
+              const sessaoAnterior = await db.devSession.findFirst({
+                where: { projectId: projeto.id, pullRequestNumber: numero },
+                orderBy: { id: 'desc' },
+              })
+
+              if (!sessaoAnterior || !headRef) return
+
+              const { retomarPrReprovado } = await import('../services/retomar-pr-reprovado.js')
+
+              const { criarSessaoJules } = await import('../services/jules-client.js')
+              const { registrarPr } = await import('../services/dev-session-store.js')
+
+              await retomarPrReprovado(
+                {
+                  projectId: projeto.id,
+                  repository: repo,
+                  issueNumber: sessaoAnterior.issueNumber,
+                  pr: { number: numero, headRef },
+                  parecerDoQa: 'O dono pediu ajustes no pull request parado.',
+                  sessaoAnterior: { sessionName: sessaoAnterior.sessionName },
+                },
+                {
+                  contarRetomadasAnteriores: async () => 0,
+                  criarSessaoDev: async (args) => {
+                    const prismaForChave = {
+                      project: (app.prisma as import('@prisma/client').PrismaClient).project,
+                    } as unknown as import('../services/chave-do-dev-assincrono.js').PrismaParaChaveDoDev
+                    const { decryptCredential } = await import('../lib/credential-crypto.js')
+                    const apiKey =
+                      (await resolverChaveDoDevDoProjeto(
+                        {
+                          prisma: prismaForChave,
+                          decifrar: decryptCredential,
+                          chaveDaInstancia: process.env['JULES_API_KEY'],
+                          onWarn: () => {},
+                        },
+                        projeto.id
+                      )) ?? undefined
+                    return criarSessaoJules({
+                      apiKey,
+                      repository: args.repository,
+                      startingBranch: args.startingBranch,
+                      workingBranch: args.workingBranch,
+                      titulo: args.titulo,
+                      prompt: args.prompt,
+                    })
+                  },
+                  registrarSessaoRetomada: async (args) => {
+                    await registrarPr({
+                      prisma:
+                        app.prisma as unknown as import('../services/dev-session-store.js').PrismaDevSession,
+                      sessionName: (
+                        args as { novaSessao?: { sessionName: string }; sessionName: string }
+                      ).novaSessao
+                        ? (args as { novaSessao?: { sessionName: string }; sessionName: string })
+                            .novaSessao!.sessionName
+                        : args.sessionName,
+                      numeroDoPr: numero,
+                      agora: new Date(),
+                    })
+                  },
+                  registrarEscaladaNoPainel: async () => {},
+                  onWarn: () => {},
+                  onInfo: () => {},
+                }
+              )
+            },
+            fecharPr: async (repo, numero) => {
+              const { fecharPrDoVigia } = await import('../services/vigia-do-pr.js')
+              const { ghJson } = await import('../services/github-json.js')
+              await fecharPrDoVigia({
+                repo: repo,
+                numero: numero,
+                motivo: 'O dono decidiu fechar o pull request e recomeçar.',
+                ghSend: (metodo, caminho, corpo) =>
+                  ghJson(fetchImpl, token, metodo, `https://api.github.com${caminho}`, corpo),
+              })
+            },
+            registrarNoPainel: async (repo, numero, texto) => {
+              await db.event.create({
+                data: {
+                  projectId: projeto.id,
+                  type: 'audit',
+                  payload: {
+                    action: 'pr-parado-decisao',
+                    repository: repo,
+                    issueNumber: numero,
+                    message: texto,
+                  },
+                },
+              })
+            },
+          }
+        )
+
+        await db.agentQuestion.update({
+          where: { id: p.id },
+          data: { status: 'processed' },
+        })
+      } catch (err) {
+        app.log.error(
+          err,
+          `[Scheduler] erro ao processar resposta pr-parado para ${projeto.wingId}`
+        )
+      }
+    }
+  } catch (e) {
+    app.log.error(e, '[Scheduler] erro na varredura de respostas pr-parado')
+  }
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   /**
    * O `fetch` de TODA escrita REST no repositório de um cliente.
@@ -11748,6 +11922,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             tickEmAndamento = true
             void tick()
               .then(() => {
+                void varrerRespostasPrParado(app)
+
                 estadoDoTickQuebrado = decidirAvisoDeTickQuebrado(
                   estadoDoTickQuebrado,
                   false,

@@ -246,7 +246,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
         depsDoContexto
       )
 
-      const fallbackCiState = 'unknown'
+      const fallbackCiState = depsVigia.verificacao || 'unknown'
       await perguntarSeCuida(
         {
           userId,
