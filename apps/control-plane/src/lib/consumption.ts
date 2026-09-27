@@ -14,7 +14,7 @@ export interface Consumption {
  * negativa (ex.: reset diário da quota no meio) → tokensUsed null (honesto,
  * não inventa número).
  */
-import { precificarSpan } from '@gitorch/cadence'
+import { precificarSpan, calcularProporcaoConsumidaConvidado } from '@gitorch/cadence'
 import type { PrismaClient } from '@prisma/client'
 import { incrementGuestUsedQuota } from '../plugins/prisma.js'
 
@@ -56,10 +56,11 @@ export async function recordGuestConsumption(
   const updated = await incrementGuestUsedQuota(guestId, tokens)
 
   const limits = updated.executionLimits as { maxQuota?: number } | null
-  if (limits?.maxQuota && limits.maxQuota > 0) {
-    return updated.usedQuota / limits.maxQuota
+  const limitObj: { usedQuota: number; maxQuota?: number } = { usedQuota: updated.usedQuota }
+  if (limits?.maxQuota !== undefined) {
+    limitObj.maxQuota = limits.maxQuota
   }
-  return 0
+  return calcularProporcaoConsumidaConvidado(limitObj)
 }
 
 export function computeConsumption(

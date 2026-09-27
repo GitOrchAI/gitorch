@@ -26,14 +26,10 @@ describe('recordGuestConsumption', () => {
       }
     )
 
-    const proportion = await recordGuestConsumption(
-      'guest_1',
-      'proj_1',
-      {
-        usage: { promptTokens: 300, completionTokens: 200 },
-        runtime: 'claude',
-      }
-    )
+    const proportion = await recordGuestConsumption('guest_1', 'proj_1', {
+      usage: { promptTokens: 300, completionTokens: 200 },
+      runtime: 'claude',
+    })
 
     expect(capturedId).toBe('guest_1')
     expect(capturedTokens).toBe(500)
@@ -44,14 +40,10 @@ describe('recordGuestConsumption', () => {
   it('returns 0 if usage is zero or missing', async () => {
     const spy = vi.spyOn(prismaPlugins, 'incrementGuestUsedQuota')
 
-    const proportion = await recordGuestConsumption(
-      'guest_1',
-      'proj_1',
-      {
-        usage: { promptTokens: 0, completionTokens: 0 },
-        runtime: 'claude',
-      }
-    )
+    const proportion = await recordGuestConsumption('guest_1', 'proj_1', {
+      usage: { promptTokens: 0, completionTokens: 0 },
+      runtime: 'claude',
+    })
 
     expect(spy).not.toHaveBeenCalled()
     expect(proportion).toBe(0)
@@ -76,14 +68,10 @@ describe('recordGuestConsumption', () => {
       }
     )
 
-    const proportion = await recordGuestConsumption(
-      'guest_1',
-      'proj_1',
-      {
-        usage: { promptTokens: 300, completionTokens: 200 },
-        runtime: 'claude',
-      }
-    )
+    const proportion = await recordGuestConsumption('guest_1', 'proj_1', {
+      usage: { promptTokens: 300, completionTokens: 200 },
+      runtime: 'claude',
+    })
 
     expect(proportion).toBe(0)
     vi.restoreAllMocks()
