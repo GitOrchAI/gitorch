@@ -983,6 +983,15 @@ export async function runQaMissionViaRails(
     if (options.mode === 'recon') {
       const prompt = buildStepPrompt('qa', 'qa-recon', RAILS_SCHEMAS.qaRecon, [
         ...(options.contextBlocks ?? []),
+
+        'STRICT DEFINITION OF DONE (DoD) ENFORCEMENT:',
+        '1. Read the Verification Criteria/issue to extract the DEFINITION OF DONE (expected files/pieces, required tests, evidence required in the PR body).',
+        '2. If the issue lacks a clear DoD, you MUST judge based on what the issue asks and explicitly state in the notes that DoD was absent.',
+        '3. Compare the DoD STRICTLY with the REAL PR diff (file list and content).',
+        '4. If ANY required piece is missing, ANY required test is missing, or the PR body claims something not in the diff (e.g. "added test X" but the file is absent), you MUST output REQUEST_CHANGES with an objective list of what is missing. NEVER approve.',
+        '5. If the PR ONLY modifies folders NOT covered by CI (like apps/control-plane/scripts) WITHOUT including tests for the corresponding services, you MUST output REQUEST_CHANGES.',
+        '6. Your comment notes MUST contain a readable checklist of the DoD (item, found or not, where).',
+
         'No delegated PR is open yet — this project was just onboarded to GitOrch.',
         'Your job now is RECONNAISSANCE, not judgment: learn this repository before ' +
           'the first PR arrives. Use the codegraph/context above to identify the CI ' +
@@ -1358,6 +1367,13 @@ export async function runQaMissionViaRails(
   // 3) Roteiro do QA: um formulário de veredito.
   const prompt = buildStepPrompt('qa', 'qa-verdict', RAILS_SCHEMAS.qaVerdict, [
     ...(options.contextBlocks ?? []),
+    'STRICT DEFINITION OF DONE (DoD) ENFORCEMENT:',
+    '1. Read the Verification Criteria/issue to extract the DEFINITION OF DONE (expected files/pieces, required tests, evidence required in the PR body).',
+    '2. If the issue lacks a clear DoD, you MUST judge based on what the issue asks and explicitly state in the notes that DoD was absent.',
+    '3. Compare the DoD STRICTLY with the REAL PR diff (file list and content).',
+    '4. If ANY required piece is missing, ANY required test is missing, or the PR body claims something not in the diff (e.g. "added test X" but the file is absent), you MUST output request_changes with an objective list of what is missing. NEVER approve.',
+    '5. If the PR ONLY modifies folders NOT covered by CI (like apps/control-plane/scripts) WITHOUT including tests for the corresponding services, you MUST output request_changes.',
+    '6. Your comment notes MUST contain a readable checklist of the DoD (item, found or not, where).',
     `PR #${target.number} by ${target.user?.login}.`,
     `Verification Criteria (from linked issue #${linkedIssue ?? '?'}):\n${criteria}`,
     `CI status: ${ciState}${
