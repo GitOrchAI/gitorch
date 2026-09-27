@@ -8,6 +8,8 @@ import {
   LIMIAR_PONTOS_MINIMOS,
   LIMIAR_RAZAO,
   type PedidoNaFila,
+  calcularProporcaoConsumidaConvidado,
+  possuiQuotaDisponivelConvidado,
 } from './custo-da-ordem'
 
 // A CAIXA DO FLUXOGRAMA (leva 2, "A logica da leva 2", aprovado 30/08):
@@ -37,6 +39,40 @@ describe('calcularCustoDeCI — precificação de testes e pipeline', () => {
   it('calcula corretamente valores exatos em minutos', () => {
     // 120 segundos = 2 minutos. 2 * (4 CPUs + 8 GB) = 24.
     expect(calcularCustoDeCI({ duracaoSegundos: 120, cpus: 4, ramGb: 8 })).toBe(24)
+  })
+})
+
+describe('calcularProporcaoConsumidaConvidado', () => {
+  it('retorna 0 quando maxQuota nao esta definido ou e <= 0', () => {
+    expect(calcularProporcaoConsumidaConvidado({ usedQuota: 100 })).toBe(0)
+    expect(calcularProporcaoConsumidaConvidado({ usedQuota: 100, maxQuota: 0 })).toBe(0)
+    expect(calcularProporcaoConsumidaConvidado({ usedQuota: 100, maxQuota: -5 })).toBe(0)
+  })
+
+  it('calcula corretamente a proporcao', () => {
+    expect(calcularProporcaoConsumidaConvidado({ usedQuota: 50, maxQuota: 100 })).toBe(0.5)
+    expect(calcularProporcaoConsumidaConvidado({ usedQuota: 200, maxQuota: 100 })).toBe(2.0)
+    expect(calcularProporcaoConsumidaConvidado({ usedQuota: 0, maxQuota: 100 })).toBe(0)
+  })
+})
+
+describe('possuiQuotaDisponivelConvidado', () => {
+  it('retorna true quando maxQuota nao esta definido ou e <= 0 (sem limites restritivos de token)', () => {
+    expect(possuiQuotaDisponivelConvidado({ usedQuota: 100 })).toBe(true)
+    expect(possuiQuotaDisponivelConvidado({ usedQuota: 100, maxQuota: 0 })).toBe(true)
+  })
+
+  it('valida consumo contra a quota e possiveis estimativas futuras', () => {
+    // 50 < 100 -> ok
+    expect(possuiQuotaDisponivelConvidado({ usedQuota: 50, maxQuota: 100 })).toBe(true)
+    // 100 <= 100 -> ok
+    expect(possuiQuotaDisponivelConvidado({ usedQuota: 100, maxQuota: 100 })).toBe(true)
+    // 101 <= 100 -> nao ok
+    expect(possuiQuotaDisponivelConvidado({ usedQuota: 101, maxQuota: 100 })).toBe(false)
+    // com estimativa que estoura a quota
+    expect(possuiQuotaDisponivelConvidado({ usedQuota: 90, maxQuota: 100 }, 20)).toBe(false)
+    // com estimativa que atinge o limite
+    expect(possuiQuotaDisponivelConvidado({ usedQuota: 90, maxQuota: 100 }, 10)).toBe(true)
   })
 })
 

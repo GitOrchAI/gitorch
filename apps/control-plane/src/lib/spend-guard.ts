@@ -4,6 +4,11 @@
 // arriscar a quota do motor nem o orçamento de tokens do plano.
 // Ver docs/business/pricing-strategy.md ("proteção de gasto de token").
 
+import {
+  calcularProporcaoConsumidaConvidado,
+  possuiQuotaDisponivelConvidado,
+} from '@gitorch/cadence'
+
 export type QuotaHealth = 'ok' | 'low' | 'critical' | 'unknown'
 
 // Frações de saúde da quota quando o total é conhecido.
@@ -181,25 +186,17 @@ export async function checkGuestQuotaAvailable(guestId: string, projectId: strin
   const limits = invitation.executionLimits as { maxQuota?: number; maxStepsPerMission?: number }
   if (limits.maxQuota == null || limits.maxQuota <= 0) return
 
-  const usedQuota = await prisma.mission.count({
-    where: {
-      projectId: projectId,
-      payload: {
-        path: ['guestId'],
-        equals: guestId,
-      },
-    },
-  })
+  const limitObj = { usedQuota: invitation.usedQuota, maxQuota: limits.maxQuota }
 
   const appEmit = (globalThis as unknown as { appEmitter?: { emit: Function } }).appEmitter
   if (appEmit && limits.maxQuota > 0) {
-    const fraction = usedQuota / limits.maxQuota
+    const fraction = calcularProporcaoConsumidaConvidado(limitObj)
     if (fraction >= 1) {
       appEmit.emit('telemetry:guest_quota_alert', {
         guestId,
         projectId,
         fraction,
-        used: usedQuota,
+        used: invitation.usedQuota,
         limit: limits.maxQuota,
       })
     } else if (fraction >= 0.8) {
@@ -207,13 +204,13 @@ export async function checkGuestQuotaAvailable(guestId: string, projectId: strin
         guestId,
         projectId,
         fraction,
-        used: usedQuota,
+        used: invitation.usedQuota,
         limit: limits.maxQuota,
       })
     }
   }
 
-  if (usedQuota >= limits.maxQuota) {
+  if (!possuiQuotaDisponivelConvidado(limitObj)) {
     throw new GuestQuotaExceededError(`Quota excedida para o convidado ${guestId}`)
   }
 }
@@ -228,25 +225,17 @@ export async function assertGuestQuotaAvailable(guestId: string, projectId: stri
   const limits = invitation.executionLimits as { maxQuota?: number; maxStepsPerMission?: number }
   if (limits.maxQuota == null || limits.maxQuota <= 0) return
 
-  const usedQuota = await prisma.mission.count({
-    where: {
-      projectId: projectId,
-      payload: {
-        path: ['guestId'],
-        equals: guestId,
-      },
-    },
-  })
+  const limitObj = { usedQuota: invitation.usedQuota, maxQuota: limits.maxQuota }
 
   const appEmit = (globalThis as unknown as { appEmitter?: { emit: Function } }).appEmitter
   if (appEmit && limits.maxQuota > 0) {
-    const fraction = usedQuota / limits.maxQuota
+    const fraction = calcularProporcaoConsumidaConvidado(limitObj)
     if (fraction >= 1) {
       appEmit.emit('telemetry:guest_quota_alert', {
         guestId,
         projectId,
         fraction,
-        used: usedQuota,
+        used: invitation.usedQuota,
         limit: limits.maxQuota,
       })
     } else if (fraction >= 0.8) {
@@ -254,13 +243,13 @@ export async function assertGuestQuotaAvailable(guestId: string, projectId: stri
         guestId,
         projectId,
         fraction,
-        used: usedQuota,
+        used: invitation.usedQuota,
         limit: limits.maxQuota,
       })
     }
   }
 
-  if (usedQuota >= limits.maxQuota) {
+  if (!possuiQuotaDisponivelConvidado(limitObj)) {
     throw new QuotaExcedidaError(`Quota excedida para o convidado ${guestId}`)
   }
 }

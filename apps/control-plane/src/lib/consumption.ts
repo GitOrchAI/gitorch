@@ -16,6 +16,7 @@ export interface Consumption {
  */
 import { precificarSpan } from '@gitorch/cadence'
 import type { PrismaClient } from '@prisma/client'
+import { incrementGuestUsedQuota } from '../plugins/prisma.js'
 
 export async function atualizarSaldoDaOrdem(
   span: { usage: { promptTokens: number; completionTokens: number } },
@@ -37,6 +38,28 @@ export async function atualizarSaldoDaOrdem(
       },
     })
   }
+}
+
+export async function recordGuestConsumption(
+  guestId: string,
+  projectId: string,
+  stepMetrics: { usage: { promptTokens: number; completionTokens: number }; runtime: string }
+): Promise<number> {
+  const tokens = stepMetrics.usage.promptTokens + stepMetrics.usage.completionTokens
+  if (tokens <= 0) return 0
+
+  const cost = precificarSpan(stepMetrics.usage, stepMetrics.runtime)
+  console.debug(
+    `[consumption] Guest ${guestId} on project ${projectId} consumed ${tokens} tokens (Cost: $${cost.toFixed(4)})`
+  )
+
+  const updated = await incrementGuestUsedQuota(guestId, tokens)
+
+  const limits = updated.executionLimits as { maxQuota?: number } | null
+  if (limits?.maxQuota && limits.maxQuota > 0) {
+    return updated.usedQuota / limits.maxQuota
+  }
+  return 0
 }
 
 export function computeConsumption(

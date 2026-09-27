@@ -177,6 +177,24 @@ function esperasNaOrdem(fila: readonly PedidoNaFila[]): Map<number, number> {
  * NUNCA reordena nada. Só calcula. A ordem do dono prevalece sempre; quem
  * decide o que fazer com o resultado é quem chama esta função.
  */
+export interface GuestQuotaLimits {
+  maxQuota?: number
+  usedQuota: number
+}
+
+export function calcularProporcaoConsumidaConvidado(limits: GuestQuotaLimits): number {
+  if (limits.maxQuota == null || limits.maxQuota <= 0) return 0
+  return limits.usedQuota / limits.maxQuota
+}
+
+export function possuiQuotaDisponivelConvidado(
+  limits: GuestQuotaLimits,
+  estimateTokens: number = 0
+): boolean {
+  if (limits.maxQuota == null || limits.maxQuota <= 0) return true
+  return limits.usedQuota + estimateTokens <= limits.maxQuota
+}
+
 export function analisarCustoDaOrdem(
   filaNaOrdemEscolhida: readonly PedidoNaFila[]
 ): AnaliseDeCustoDaOrdem {
