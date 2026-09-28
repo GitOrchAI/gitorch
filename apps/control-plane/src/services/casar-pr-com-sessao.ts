@@ -122,3 +122,17 @@ export function casarPrComSessao(args: ArgumentosDoCasamento): { sessionName: st
 
   return { sessionName: sessao.sessionName }
 }
+
+/**
+ * Responde só SIM/NÃO: existe alguma sessão do dev assíncrono (viva ou já
+ * fechada) casando com este branch/corpo? Usado por `origem-do-item.ts`
+ * (issue #877) para decidir `temSessaoGitOrch` na classificação de origem —
+ * diferente de `casarPrComSessao`, que também decide SE VALE A PENA REGRAVAR
+ * (por isso devolve null quando a sessão já aponta pro mesmo PR). Aqui a
+ * pergunta é só classificatória, então esse corte não se aplica.
+ */
+export function existeSessaoLigada(args: Omit<ArgumentosDoCasamento, 'numeroDoPr'>): boolean {
+  const identificador = identificadorDaSessao(args)
+  if (!identificador) return false
+  return args.sessoes.some((s) => ehAMesmaSessao(s.sessionName, identificador))
+}

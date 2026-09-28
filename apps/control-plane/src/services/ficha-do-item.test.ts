@@ -77,6 +77,43 @@ describe('atualizarFichaDoItem', () => {
     // mudou, então a origem gravada na 1ª chamada continua na linha.
     expect(ficha.origem).toBe('jules_gitorch')
   })
+
+  it('grava issueNumber junto da origem (issue #877: PR 583 vira jules_gitorch com issue 580)', async () => {
+    const prisma = prismaFake()
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      projectId: 'proj-1',
+      tipo: 'pr',
+      numero: 583,
+      estado: { status: 'open' },
+      origem: 'jules_gitorch',
+      issueNumber: 580,
+    })
+    expect(ficha.origem).toBe('jules_gitorch')
+    expect(ficha.issueNumber).toBe(580)
+  })
+
+  it('atualiza o estado sem apagar issueNumber já gravado quando issueNumber é omitido', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      projectId: 'proj-1',
+      tipo: 'pr',
+      numero: 583,
+      estado: { status: 'open' },
+      origem: 'jules_gitorch',
+      issueNumber: 580,
+    })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      projectId: 'proj-1',
+      tipo: 'pr',
+      numero: 583,
+      estado: { status: 'merged' },
+    })
+    expect(ficha.estado).toEqual({ status: 'merged' })
+    expect(ficha.issueNumber).toBe(580)
+  })
 })
 
 describe('lerFichaDoItem', () => {

@@ -634,6 +634,462 @@ export class ProjectV2Client {
     return nodes.map((n) => n.number)
   }
 
+  /**
+   * A cadeia de pais de uma issue, SUBINDO até a raiz (feature → épico → fase
+   * → pedido), e os filhos diretos (sub-issues). Issue #877: a ficha de um
+   * item precisa do GRAFO COMPLETO de hierarquia, não só o parent imediato.
+   *
+   * O limite de 4 níveis de `parent` aninhado no GraphQL é o teto real da
+   * hierarquia do produto (task → feature → épico → fase → pedido); uma
+   * hierarquia mais funda é sinal de planejamento quebrado, não caso a cobrir
+   * aqui. Forma validada AO VIVO contra a API de produção em 28/09/2026
+   * (issue #580 do GitOrchAI/gitorch: parent 578 → 576).
+   */
+  async getIssueHierarchy(input: { owner: string; repo: string; number: number }): Promise<{
+    parents: Array<{ number: number; title: string; state: string }>
+    subIssues: Array<{ number: number; title: string; state: string }>
+  }> {
+    interface NoDoPai {
+      number: number
+      title: string
+      state: string
+      parent: NoDoPai | null
+    }
+    const response = await this.request<{
+      repository: {
+        issue: {
+          parent: NoDoPai | null
+          subIssues: { nodes: Array<{ number: number; title: string; state: string }> }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetIssueHierarchy($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $number) {
+                parent {
+                  number
+                  title
+                  state
+                  parent {
+                    number
+                    title
+                    state
+                    parent {
+                      number
+                      title
+                      state
+                      parent {
+                        number
+                        title
+                        state
+                      }
+                    }
+                  }
+                }
+                subIssues(first: 100) {
+                  nodes { number title state }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const issue = unwrap(response).repository?.issue
+    if (!issue) return { parents: [], subIssues: [] }
+
+    const parents: Array<{ number: number; title: string; state: string }> = []
+    let atual: NoDoPai | null = issue.parent
+    while (atual) {
+      parents.push({ number: atual.number, title: atual.title, state: atual.state })
+      atual = atual.parent
+    }
+
+    const subIssues = issue.subIssues.nodes.map((n) => ({
+      number: n.number,
+      title: n.title,
+      state: n.state,
+    }))
+
+    return { parents, subIssues }
+  }
+
+  /** O milestone (sprint/entrega do GitHub nativo) de uma issue ou PR: título,
+   *  número, prazo (`dueOn`) e estado. `null` quando o item não tem milestone.
+   *  Forma validada AO VIVO contra a API de produção (issue #580: "Sprint 1",
+   *  dueOn 2026-08-13). */
+  async getItemMilestone(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<{ title: string; number: number; dueOn: string | null; state: string } | null> {
+    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
+    const response = await this.request<{
+      repository: Record<
+        string,
+        {
+          milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+        } | null
+      > | null
+    }>(
+      {
+        query: `
+          query GetItemMilestone($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${campo}(number: $number) {
+                milestone { title number dueOn state }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    return unwrap(response).repository?.[campo]?.milestone ?? null
+  }
+
+  /**
+   * Os campos do Project v2 de cada quadro onde este item aparece: Status
+   * (single-select), iteração/sprint (com início e duração), Peso (número) e
+   * qualquer outro campo single-select/número/texto que o quadro tenha.
+   * Forma validada AO VIVO (issue #580: Status "Done", Peso 2, Sprint 1 com
+   * startDate 2026-09-26 duration 3).
+   */
+  async getProjectsV2Fields(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<
+    Array<{
+      project: { id: string; title: string }
+      status: string | null
+      iteration: { title: string; startDate: string; duration: number } | null
+      peso: number | null
+      fields: Array<{ name: string; value: string }>
+    }>
+  > {
+    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
+    interface ValorDeCampo {
+      __typename: string
+      field?: { name: string } | null
+      name?: string
+      number?: number
+      text?: string
+      title?: string
+      startDate?: string
+      duration?: number
+    }
+    const response = await this.request<{
+      repository: Record<
+        string,
+        {
+          projectItems: {
+            nodes: Array<{
+              project: { id: string; title: string }
+              fieldValues: { nodes: ValorDeCampo[] }
+            }>
+          }
+        } | null
+      > | null
+    }>(
+      {
+        query: `
+          query GetProjectsV2Fields($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${campo}(number: $number) {
+                projectItems(first: 10) {
+                  nodes {
+                    project { id title }
+                    fieldValues(first: 20) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          name
+                        }
+                        ... on ProjectV2ItemFieldIterationValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          title
+                          startDate
+                          duration
+                        }
+                        ... on ProjectV2ItemFieldNumberValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          number
+                        }
+                        ... on ProjectV2ItemFieldTextValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          text
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const nodes = unwrap(response).repository?.[campo]?.projectItems?.nodes ?? []
+
+    return nodes.map((node) => {
+      let status: string | null = null
+      let iteration: { title: string; startDate: string; duration: number } | null = null
+      let peso: number | null = null
+      const fields: Array<{ name: string; value: string }> = []
+
+      for (const fv of node.fieldValues.nodes) {
+        const nomeDoCampo = fv.field?.name
+        if (!nomeDoCampo) continue
+
+        if (fv.__typename === 'ProjectV2ItemFieldSingleSelectValue' && fv.name) {
+          if (nomeDoCampo === 'Status') status = fv.name
+          else fields.push({ name: nomeDoCampo, value: fv.name })
+        } else if (fv.__typename === 'ProjectV2ItemFieldIterationValue' && fv.title) {
+          if (nomeDoCampo === 'Sprint' || nomeDoCampo === 'Iteration') {
+            iteration = {
+              title: fv.title,
+              startDate: fv.startDate ?? '',
+              duration: fv.duration ?? 0,
+            }
+          }
+          fields.push({ name: nomeDoCampo, value: fv.title })
+        } else if (fv.__typename === 'ProjectV2ItemFieldNumberValue' && fv.number !== undefined) {
+          if (nomeDoCampo === 'Peso' || nomeDoCampo === 'Weight') peso = fv.number
+          fields.push({ name: nomeDoCampo, value: String(fv.number) })
+        } else if (fv.__typename === 'ProjectV2ItemFieldTextValue' && fv.text) {
+          fields.push({ name: nomeDoCampo, value: fv.text })
+        }
+      }
+
+      return { project: node.project, status, iteration, peso, fields }
+    })
+  }
+
+  /** Labels e assignees de uma issue ou PR — parte fixa do grafo de vínculos. */
+  async getItemLabelsAndAssignees(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<{ labels: string[]; assignees: string[] }> {
+    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
+    const response = await this.request<{
+      repository: Record<
+        string,
+        {
+          labels: { nodes: Array<{ name: string }> }
+          assignees: { nodes: Array<{ login: string }> }
+        } | null
+      > | null
+    }>(
+      {
+        query: `
+          query GetItemLabelsAndAssignees($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${campo}(number: $number) {
+                labels(first: 20) { nodes { name } }
+                assignees(first: 10) { nodes { login } }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const item = unwrap(response).repository?.[campo]
+    if (!item) return { labels: [], assignees: [] }
+    return {
+      labels: item.labels.nodes.map((n) => n.name),
+      assignees: item.assignees.nodes.map((n) => n.login),
+    }
+  }
+
+  /**
+   * Os PRs ligados a um item: para uma ISSUE, os que a fecham formalmente
+   * (`closedByPullRequestsReferences`); para QUALQUER item, as referências
+   * cruzadas da timeline (`CROSS_REFERENCED_EVENT`/`CONNECTED_EVENT`) — cobre
+   * menção "fixes/closes #N" no corpo e vínculo feito pela UI. Forma validada
+   * AO VIVO (PR #583: timelineItems trouxe o cross-reference para #884).
+   */
+  async getPullRequestCrossReferences(input: {
+    owner: string
+    repo: string
+    number: number
+    type: 'issue' | 'pr'
+  }): Promise<{ closedByPullRequests: number[]; crossReferencedPullRequests: number[] }> {
+    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
+    const closedByTrecho =
+      input.type === 'issue' ? `closedByPullRequestsReferences(first: 10) { nodes { number } }` : ''
+
+    const response = await this.request<{
+      repository: Record<
+        string,
+        {
+          closedByPullRequestsReferences?: { nodes: Array<{ number: number }> }
+          timelineItems: {
+            nodes: Array<{
+              __typename: string
+              source?: { __typename: string; number?: number }
+              subject?: { __typename: string; number?: number }
+            }>
+          }
+        } | null
+      > | null
+    }>(
+      {
+        query: `
+          query GetPullRequestCrossReferences($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              ${campo}(number: $number) {
+                ${closedByTrecho}
+                timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
+                  nodes {
+                    __typename
+                    ... on CrossReferencedEvent {
+                      source { __typename ... on PullRequest { number } }
+                    }
+                    ... on ConnectedEvent {
+                      subject { __typename ... on PullRequest { number } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const item = unwrap(response).repository?.[campo]
+    if (!item) return { closedByPullRequests: [], crossReferencedPullRequests: [] }
+
+    const closedByPullRequests =
+      item.closedByPullRequestsReferences?.nodes.map((n) => n.number) ?? []
+    const crossReferencedPullRequests: number[] = []
+    for (const node of item.timelineItems.nodes) {
+      if (
+        node.__typename === 'CrossReferencedEvent' &&
+        node.source?.__typename === 'PullRequest' &&
+        node.source.number
+      ) {
+        crossReferencedPullRequests.push(node.source.number)
+      } else if (
+        node.__typename === 'ConnectedEvent' &&
+        node.subject?.__typename === 'PullRequest' &&
+        node.subject.number
+      ) {
+        crossReferencedPullRequests.push(node.subject.number)
+      }
+    }
+
+    return {
+      closedByPullRequests: [...new Set(closedByPullRequests)],
+      crossReferencedPullRequests: [...new Set(crossReferencedPullRequests)],
+    }
+  }
+
+  /**
+   * Estado do CI (statusCheckRollup do head) e o ÚLTIMO parecer do QA do
+   * GitOrch (review cujo corpo carrega a marca `<!-- gitorch:qa -->`) num
+   * pull request — issue #877, item "para PR: estado do CI... e último
+   * parecer do QA (review do gitorch-ai: estado, sha julgado, resumo)".
+   *
+   * A marca é o mesmo texto que `parecer-do-qa.ts` (MARCA_DO_PARECER) usa
+   * para reconhecer o parecer do produto — não duplicado aqui como string
+   * solta porque quem chama (grafo-de-vinculos.ts) importa a constante de lá.
+   * Forma validada AO VIVO contra a API de produção (PR #583: statusCheckRollup
+   * SUCCESS, headRefName com o id de sessão do Jules no sufixo).
+   */
+  async getPullRequestChecksAndReview(input: {
+    owner: string
+    repo: string
+    number: number
+    marcaDoParecer: string
+  }): Promise<{
+    statusCheckRollup: string | null
+    qaReview: {
+      state: string
+      headSha: string | null
+      resumo: string
+      submittedAt: string | null
+    } | null
+  }> {
+    const response = await this.request<{
+      repository: {
+        pullRequest: {
+          commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> }
+          reviews: {
+            nodes: Array<{
+              state: string
+              body: string | null
+              submittedAt: string | null
+              commit: { oid: string } | null
+            }>
+          }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetPullRequestChecksAndReview($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                commits(last: 1) {
+                  nodes { commit { statusCheckRollup { state } } }
+                }
+                reviews(last: 30) {
+                  nodes { state body submittedAt commit { oid } }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const pr = unwrap(response).repository?.pullRequest
+    if (!pr) return { statusCheckRollup: null, qaReview: null }
+
+    const statusCheckRollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? null
+
+    const nossasReviews = pr.reviews.nodes.filter(
+      (r) => typeof r.body === 'string' && r.body.includes(input.marcaDoParecer)
+    )
+    const ultima = nossasReviews.at(-1) ?? null
+
+    return {
+      statusCheckRollup,
+      qaReview: ultima
+        ? {
+            state: ultima.state,
+            headSha: ultima.commit?.oid ?? null,
+            resumo: (ultima.body ?? '').slice(0, 2000),
+            submittedAt: ultima.submittedAt,
+          }
+        : null,
+    }
+  }
+
   // Igual ao findProjectId, mas LANÇA quando o board não existe: os fluxos do PO
   // e do SM operam um board que TEM que existir, então "não encontrado" ali é
   // um erro de verdade (não um sinal para criar). Contrato estrito de sempre —

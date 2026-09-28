@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { describe, expect, it, test, vi } from 'vitest'
 
 import {
   ProjectV2Client,
@@ -1465,5 +1465,453 @@ describe('closingIssuesDoPr', () => {
     )
     const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
     expect(await client.closingIssuesDoPr({ owner: 'dono', repo: 'repo', prNumber: 7 })).toEqual([])
+  })
+})
+
+describe('getIssueHierarchy', () => {
+  it('monta a cadeia de pais subindo até a raiz e os sub-issues diretos', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                issue: {
+                  parent: {
+                    number: 578,
+                    title: 'Feature 578',
+                    state: 'OPEN',
+                    parent: {
+                      number: 576,
+                      title: 'Épico 576',
+                      state: 'OPEN',
+                      parent: null,
+                    },
+                  },
+                  subIssues: { nodes: [{ number: 581, title: 'Sub 581', state: 'CLOSED' }] },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getIssueHierarchy({ owner: 'dono', repo: 'repo', number: 580 })
+    expect(resultado.parents).toEqual([
+      { number: 578, title: 'Feature 578', state: 'OPEN' },
+      { number: 576, title: 'Épico 576', state: 'OPEN' },
+    ])
+    expect(resultado.subIssues).toEqual([{ number: 581, title: 'Sub 581', state: 'CLOSED' }])
+  })
+
+  it('issue sem parent e sem sub-issues devolve arrays vazios', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: { repository: { issue: { parent: null, subIssues: { nodes: [] } } } },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getIssueHierarchy({ owner: 'dono', repo: 'repo', number: 1 })
+    expect(resultado).toEqual({ parents: [], subIssues: [] })
+  })
+
+  it('issue inexistente devolve arrays vazios', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ data: { repository: { issue: null } } }), { status: 200 })
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getIssueHierarchy({ owner: 'dono', repo: 'repo', number: 999 })
+    expect(resultado).toEqual({ parents: [], subIssues: [] })
+  })
+})
+
+describe('getItemMilestone', () => {
+  it('devolve título, número, prazo e estado do milestone da issue', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                issue: {
+                  milestone: {
+                    title: 'Sprint 1',
+                    number: 3,
+                    dueOn: '2026-08-13T00:00:00Z',
+                    state: 'OPEN',
+                  },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getItemMilestone({
+      owner: 'dono',
+      repo: 'repo',
+      number: 580,
+      type: 'issue',
+    })
+    expect(resultado).toEqual({
+      title: 'Sprint 1',
+      number: 3,
+      dueOn: '2026-08-13T00:00:00Z',
+      state: 'OPEN',
+    })
+  })
+
+  it('item sem milestone devolve null', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ data: { repository: { pullRequest: { milestone: null } } } }),
+          {
+            status: 200,
+          }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getItemMilestone({
+      owner: 'dono',
+      repo: 'repo',
+      number: 583,
+      type: 'pr',
+    })
+    expect(resultado).toBeNull()
+  })
+})
+
+describe('getProjectsV2Fields', () => {
+  it('extrai status, iteração, peso e demais campos de cada quadro', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                issue: {
+                  projectItems: {
+                    nodes: [
+                      {
+                        project: { id: 'PVT_1', title: 'Board' },
+                        fieldValues: {
+                          nodes: [
+                            {
+                              __typename: 'ProjectV2ItemFieldSingleSelectValue',
+                              field: { name: 'Status' },
+                              name: 'Done',
+                            },
+                            {
+                              __typename: 'ProjectV2ItemFieldIterationValue',
+                              field: { name: 'Sprint' },
+                              title: 'Sprint 1',
+                              startDate: '2026-09-26',
+                              duration: 3,
+                            },
+                            {
+                              __typename: 'ProjectV2ItemFieldNumberValue',
+                              field: { name: 'Peso' },
+                              number: 2,
+                            },
+                            {
+                              __typename: 'ProjectV2ItemFieldTextValue',
+                              field: { name: 'Notas' },
+                              text: 'algo',
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getProjectsV2Fields({
+      owner: 'dono',
+      repo: 'repo',
+      number: 580,
+      type: 'issue',
+    })
+    expect(resultado).toEqual([
+      {
+        project: { id: 'PVT_1', title: 'Board' },
+        status: 'Done',
+        iteration: { title: 'Sprint 1', startDate: '2026-09-26', duration: 3 },
+        peso: 2,
+        fields: [
+          { name: 'Sprint', value: 'Sprint 1' },
+          { name: 'Peso', value: '2' },
+          { name: 'Notas', value: 'algo' },
+        ],
+      },
+    ])
+  })
+
+  it('item sem nenhum projeto devolve lista vazia', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: { repository: { pullRequest: { projectItems: { nodes: [] } } } },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getProjectsV2Fields({
+      owner: 'dono',
+      repo: 'repo',
+      number: 583,
+      type: 'pr',
+    })
+    expect(resultado).toEqual([])
+  })
+})
+
+describe('getItemLabelsAndAssignees', () => {
+  it('devolve os nomes das labels e os logins dos assignees', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                issue: {
+                  labels: { nodes: [{ name: 'bug' }, { name: 'p0' }] },
+                  assignees: { nodes: [{ login: 'loureng' }] },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getItemLabelsAndAssignees({
+      owner: 'dono',
+      repo: 'repo',
+      number: 580,
+      type: 'issue',
+    })
+    expect(resultado).toEqual({ labels: ['bug', 'p0'], assignees: ['loureng'] })
+  })
+
+  it('item inexistente devolve listas vazias', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ data: { repository: { pullRequest: null } } }), {
+          status: 200,
+        })
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getItemLabelsAndAssignees({
+      owner: 'dono',
+      repo: 'repo',
+      number: 583,
+      type: 'pr',
+    })
+    expect(resultado).toEqual({ labels: [], assignees: [] })
+  })
+})
+
+describe('getPullRequestCrossReferences', () => {
+  it('issue: junta closedByPullRequestsReferences e cross-references da timeline, sem duplicar', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                issue: {
+                  closedByPullRequestsReferences: { nodes: [{ number: 583 }] },
+                  timelineItems: {
+                    nodes: [
+                      {
+                        __typename: 'CrossReferencedEvent',
+                        source: { __typename: 'PullRequest', number: 583 },
+                      },
+                      {
+                        __typename: 'CrossReferencedEvent',
+                        source: { __typename: 'PullRequest', number: 884 },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getPullRequestCrossReferences({
+      owner: 'dono',
+      repo: 'repo',
+      number: 580,
+      type: 'issue',
+    })
+    expect(resultado.closedByPullRequests).toEqual([583])
+    expect(resultado.crossReferencedPullRequests).toEqual([583, 884])
+  })
+
+  it('pr: usa ConnectedEvent da timeline e não tem closedByPullRequestsReferences', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  timelineItems: {
+                    nodes: [
+                      {
+                        __typename: 'ConnectedEvent',
+                        subject: { __typename: 'PullRequest', number: 884 },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getPullRequestCrossReferences({
+      owner: 'dono',
+      repo: 'repo',
+      number: 583,
+      type: 'pr',
+    })
+    expect(resultado).toEqual({ closedByPullRequests: [], crossReferencedPullRequests: [884] })
+  })
+
+  it('item inexistente devolve listas vazias', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ data: { repository: { issue: null } } }), { status: 200 })
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getPullRequestCrossReferences({
+      owner: 'dono',
+      repo: 'repo',
+      number: 999,
+      type: 'issue',
+    })
+    expect(resultado).toEqual({ closedByPullRequests: [], crossReferencedPullRequests: [] })
+  })
+})
+
+describe('getPullRequestChecksAndReview', () => {
+  it('devolve statusCheckRollup do head e o ÚLTIMO parecer do QA marcado', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+                  reviews: {
+                    nodes: [
+                      {
+                        state: 'COMMENTED',
+                        body: 'review qualquer sem marca',
+                        submittedAt: '2026-09-01T00:00:00Z',
+                        commit: { oid: 'sha0' },
+                      },
+                      {
+                        state: 'APPROVED',
+                        body: '<!-- gitorch:qa -->\nAprovado, tudo verde.',
+                        submittedAt: '2026-09-02T00:00:00Z',
+                        commit: { oid: 'sha1' },
+                      },
+                      {
+                        state: 'CHANGES_REQUESTED',
+                        body: '<!-- gitorch:qa -->\nFalha X.',
+                        submittedAt: '2026-09-03T00:00:00Z',
+                        commit: { oid: 'sha2' },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getPullRequestChecksAndReview({
+      owner: 'dono',
+      repo: 'repo',
+      number: 583,
+      marcaDoParecer: '<!-- gitorch:qa -->',
+    })
+    expect(resultado.statusCheckRollup).toBe('SUCCESS')
+    expect(resultado.qaReview).toEqual({
+      state: 'CHANGES_REQUESTED',
+      headSha: 'sha2',
+      resumo: '<!-- gitorch:qa -->\nFalha X.',
+      submittedAt: '2026-09-03T00:00:00Z',
+    })
+  })
+
+  it('pr sem nenhum parecer do QA e sem CI devolve null/null', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+                  reviews: { nodes: [] },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getPullRequestChecksAndReview({
+      owner: 'dono',
+      repo: 'repo',
+      number: 583,
+      marcaDoParecer: '<!-- gitorch:qa -->',
+    })
+    expect(resultado).toEqual({ statusCheckRollup: null, qaReview: null })
+  })
+
+  it('pr inexistente devolve null/null', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ data: { repository: { pullRequest: null } } }), {
+          status: 200,
+        })
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const resultado = await client.getPullRequestChecksAndReview({
+      owner: 'dono',
+      repo: 'repo',
+      number: 999,
+      marcaDoParecer: '<!-- gitorch:qa -->',
+    })
+    expect(resultado).toEqual({ statusCheckRollup: null, qaReview: null })
   })
 })
