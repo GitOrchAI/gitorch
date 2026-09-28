@@ -7173,6 +7173,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 }),
               },
             }),
+          pedirJulgamento: async (numeroDoPr) => {
+            filaDeJulgamento.enfileirar(projeto.id, 1)
+            app.log.info(
+              `[Scheduler] Vigia enfileirou julgamento para PR #${numeroDoPr} em ${projeto.wingId}`
+            )
+          },
           abrirSessaoDeConserto: ({ numeroDoPr, issueNumber, pedido, branchDoPr }) =>
             abrirSessaoDeConsertoDoPr({ projeto, numeroDoPr, issueNumber, pedido, branchDoPr }),
           // FECHA e só então comenta — a ordem é a correção do ACHADO 4 e vive
