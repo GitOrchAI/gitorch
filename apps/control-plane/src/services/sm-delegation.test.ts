@@ -945,7 +945,7 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
     expect(console.warn).not.toHaveBeenCalled()
   })
 
-  it('issuesComPrAbertoDoDev falha (GitHub fora do ar) → avisa por onWarn, segue sem o filtro', async () => {
+  it('issuesComPrAbertoDoDev falha (GitHub fora do ar) → FAIL-CLOSED: nenhuma delegação neste ciclo, avisa por onWarn (nunca console.warn) e o dono recebe motivo em linguagem de negócio', async () => {
     ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
     const task = { number: 1, labels: ['gitorch:task'], body: 'sem bloqueio' }
     const semRedeParaPulls: typeof fetch = (async (
@@ -953,10 +953,20 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
       init?: Parameters<typeof fetch>[1]
     ) => {
       const u = String(url)
-      if (u.includes('/pulls?state=open')) throw new Error('GitHub fora do ar')
+      if (u.includes('/pulls?state=open')) {
+        return new Response(
+          JSON.stringify({
+            message:
+              'API rate limit exceeded for installation ID 151710755. If you reach out to ' +
+              'GitHub Support for help, please include the request ID ABCD:1234',
+          }),
+          { status: 403, headers: { 'x-ratelimit-remaining': '0' } }
+        )
+      }
       return fakeFetch([task])(url, init)
     }) as typeof fetch
     const avisos: string[] = []
+    const avisosAoDono: string[] = []
     const r = await runSmDelegationReal({
       repository: 'o/r',
       githubToken: 't',
@@ -990,11 +1000,89 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
         } as LinhaDeSessao,
       ],
       onWarn: (m) => avisos.push(m),
+      avisarDono: async (m) => {
+        avisosAoDono.push(m)
+      },
     })
     expect(avisos.some((m) => m.includes('não deu para checar PRs abertos'))).toBe(true)
     expect(console.warn).not.toHaveBeenCalled()
-    // Sem o filtro (falhou), a issue segue elegível — best-effort de verdade.
-    expect(r.delegated).toEqual([1])
+    // FAIL-CLOSED: a checagem que protege contra sessão duplicada falhou —
+    // nenhuma issue é delegada neste ciclo, mesmo a que estaria livre.
+    expect(r.delegated).toEqual([])
+    // O dono é avisado em linguagem de negócio — nunca o corpo cru do GitHub
+    // (que carrega o ID da instalação e o request-id do fornecedor).
+    expect(avisosAoDono.length).toBe(1)
+    expect(avisosAoDono[0]).not.toContain('151710755')
+    expect(avisosAoDono[0]).not.toContain('ABCD:1234')
+    expect(avisosAoDono[0]).toContain('o/r')
+    // Marcado explicitamente no resultado — e o ciclo NÃO é tratado como
+    // "vazio" (não pode cair no descanso pós-acordada-vazia: precisa tentar
+    // de novo em breve).
+    expect(r.falhaAoProtegerContraDuplicata).toBe(true)
+    expect(r.noOp).toBe(false)
+  })
+
+  it('rate limit detectado (x-ratelimit-remaining: 0) → circuito do ciclo abre: a fila de julgamento (segunda chamada a /pulls) não vai à rede', async () => {
+    const task = { number: 1, labels: ['gitorch:task'], body: 'sem bloqueio' }
+    let chamadasDePulls = 0
+    const semRede: typeof fetch = (async (
+      url: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ) => {
+      const u = String(url)
+      if (u.includes('/pulls?state=open')) {
+        chamadasDePulls += 1
+        return new Response(JSON.stringify({ message: 'API rate limit exceeded' }), {
+          status: 403,
+          headers: { 'x-ratelimit-remaining': '0' },
+        })
+      }
+      return fakeFetch([task])(url, init)
+    }) as typeof fetch
+    const avisos: string[] = []
+    const r = await runSmDelegationReal({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: semRede,
+      criarSessaoDev: async () => ({ situacao: 'criada' as const, sessionName: 's/1' }),
+      aoCriarSessao: async () => undefined,
+      // Aciona a SEGUNDA rota que bate em /pulls?state=open no mesmo ciclo
+      // (`listarPrsSemParecer`, fila de julgamento) — sem a trava, ela bateria
+      // de novo num serviço já sabidamente sem cota.
+      pedirJulgamento: async () => undefined,
+      sessoesParaReconhecerPr: [
+        {
+          id: 'x',
+          projectId: 'p1',
+          issueNumber: 1,
+          sessionName: 's-antiga',
+          state: 'COMPLETED',
+          answeredHash: null,
+          pullRequestNumber: 999,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+          reworkNoticePending: null,
+          reworkNoticeAttempts: 0,
+          pendingSince: null,
+          mergeCommitSha: null,
+          deployState: null,
+          deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
+          deployFixKey: null,
+          envLastVerdict: null,
+          closedAt: new Date(),
+        } as LinhaDeSessao,
+      ],
+      onWarn: (m) => avisos.push(m),
+    })
+    // UMA chamada de rede a /pulls (a que descobriu o limite esgotado); a
+    // segunda (fila de julgamento) foi cortada pela trava, sem ir à rede.
+    expect(chamadasDePulls).toBe(1)
+    expect(r.paraJulgar).toEqual([])
+    expect(avisos.some((m) => m.includes('limite de chamadas ao GitHub'))).toBe(true)
   })
 
   it('issue(s) com PR aberto do dev aguardando retomada → avisa por onWarn, nunca console.warn', async () => {

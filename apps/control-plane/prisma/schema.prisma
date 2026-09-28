@@ -55,6 +55,7 @@ model User {
 // Convites criados pelo dono do projeto para adicionar membros via email ou GitHub login.
 model ProjectInvitation {
   id             String   @id @default(cuid())
+  guestProfile    GuestProfile?
   userId         String   @map("user_id")
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1028,4 +1029,18 @@ model WishlistItem {
 
   @@index([userId])
   @@map("wishlist_items")
+}
+
+// Perfil do convidado (BYO credentials)
+model GuestProfile {
+  id              String   @id @default(cuid())
+  invitationId    String   @unique @map("invitation_id")
+  invitation      ProjectInvitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+
+  encryptedTokens Json     @map("encrypted_tokens")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("guest_profiles")
 }

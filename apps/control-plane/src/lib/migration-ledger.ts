@@ -59,7 +59,9 @@ export const MIGRATION_LEDGER = [
   'autonomia-de-seguranca-migration.sql',
   'parecer-trava-migration.sql',
   'guest-limits-mapping-migration.sql',
+  'wishlist-migration.sql',
   'multi-repo-wishlist-migration.sql',
+  'guest-profile-migration.sql',
   'project-invitation-used-quota-migration.sql',
 ] as const
 
