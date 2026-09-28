@@ -14,7 +14,7 @@ describe('pr-parado-mission', () => {
           { label: 'Fechar', action: 'fechar' },
         ],
       })
-    ) as unknown as StepExecutor
+    ) as StepExecutor
 
     const resultado = await gerarPerguntaSobrePrParado({
       contextoPr: {

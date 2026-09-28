@@ -2635,9 +2635,12 @@ export const varrerRespostasPrParado = async (app: FastifyInstance) => {
                 {
                   contarRetomadasAnteriores: async () => 0,
                   criarSessaoDev: async (args) => {
-                    const prismaForChave = {
-                      project: (app.prisma as import('@prisma/client').PrismaClient).project,
-                    } as unknown as import('../services/chave-do-dev-assincrono.js').PrismaParaChaveDoDev
+                    const prismaForChave: import('../services/chave-do-dev-assincrono.js').PrismaParaChaveDoDev =
+                      {
+                        project: (app.prisma as import('@prisma/client').PrismaClient).project,
+                        devSession: (app.prisma as import('@prisma/client').PrismaClient)
+                          .devSession,
+                      }
                     const { decryptCredential } = await import('../lib/credential-crypto.js')
                     const apiKey =
                       (await resolverChaveDoDevDoProjeto(
