@@ -21,6 +21,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment: github-pages
     # O build precisa ler vars.GITORCH_PAGES_BASE_PATH, que vive no ambiente
     # github-pages. Em PRs de fork, apontar para um ambiente restrito causa
     # bloqueio/falha de autorização. Condicionamos o environment apenas para
