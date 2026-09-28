@@ -76,6 +76,18 @@ import type {
   RuntimeCommandRunner,
 } from './runtime-adapter.js'
 
+export async function pingJulesGate(token: string): Promise<boolean> {
+  if (!token) return false
+  try {
+    const res = await fetch('https://api.jules.ai/ping', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 export interface GuestSessionContext {
   validarTokenJulesApi?: () => Promise<void>
   autonomyLevel?: string
