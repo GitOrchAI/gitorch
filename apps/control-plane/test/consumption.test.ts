@@ -30,8 +30,8 @@ describe('verificarQuotaDoConvidado', () => {
           id: 'guest-123',
           usedQuota: 15,
           executionLimits: {}, // No maxQuota
-        })
-      }
+        }),
+      },
     } as unknown as PrismaClient
 
     const result = await verificarQuotaDoConvidado('guest-123', mockPrisma)
@@ -45,8 +45,8 @@ describe('verificarQuotaDoConvidado', () => {
           id: 'guest-123',
           usedQuota: 15,
           executionLimits: { maxQuota: 100 },
-        })
-      }
+        }),
+      },
     } as unknown as PrismaClient
 
     const result = await verificarQuotaDoConvidado('guest-123', mockPrisma)
@@ -60,8 +60,8 @@ describe('verificarQuotaDoConvidado', () => {
           id: 'guest-123',
           usedQuota: 100,
           executionLimits: { maxQuota: 100 },
-        })
-      }
+        }),
+      },
     } as unknown as PrismaClient
 
     const result = await verificarQuotaDoConvidado('guest-123', mockPrisma)

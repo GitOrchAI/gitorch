@@ -293,7 +293,7 @@ describe('AgentOrchestrator core functionality', () => {
         providedSecrets: [],
       },
       evidenceRefs: [],
-    } as any
+    } as unknown as AgentMission
 
     await orch.runMissionCore(mission)
 
