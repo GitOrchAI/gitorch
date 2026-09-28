@@ -62,6 +62,7 @@ export interface AgentOrchestratorOptions {
   workspace?: WorkspaceProvider
   enrichContext?: MissionContextEnricher
   preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
+  onStepDispatched?: (mission: AgentMission) => Promise<void> | void
 }
 
 export abstract class BaseAgentNode implements StateNode {
@@ -165,6 +166,7 @@ export class AgentOrchestrator {
   private readonly enrichContext?: MissionContextEnricher
   private readonly nodeRegistry: Map<string, StateNode>
   private readonly preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
+  private readonly onStepDispatched?: (mission: AgentMission) => Promise<void> | void
 
   constructor(options: AgentOrchestratorOptions) {
     this.registry = options.registry
@@ -172,6 +174,7 @@ export class AgentOrchestrator {
     this.workspace = options.workspace ?? workspaceManager
     this.enrichContext = options.enrichContext
     this.preExecutionInterceptor = options.preExecutionInterceptor
+    this.onStepDispatched = options.onStepDispatched
 
     this.nodeRegistry = new Map<string, StateNode>([
       ['po', new ProductOwnerNode(this)],
@@ -198,6 +201,10 @@ export class AgentOrchestrator {
 
       result = await withBackoffRetry(
         async () => {
+          if (this.onStepDispatched) {
+            await this.onStepDispatched(mission)
+          }
+
           const res = await adapter.run({
             missionId: mission.id,
             prompt: mission.prompt,

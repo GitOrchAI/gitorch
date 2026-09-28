@@ -1732,6 +1732,18 @@ function buildRuntimeStack(
     workspace: workspaceProvider,
     // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
     enrichContext: buildMissionEnricher({ cortex: app.cortex }),
+    onStepDispatched: async (mission) => {
+      if (mission.userId && mission.userId !== mission.projectId) {
+        const { verificarQuotaDoConvidado, recordGuestConsumption } =
+          await import('../lib/consumption.js')
+        const temQuota = await verificarQuotaDoConvidado(mission.userId, app.prisma)
+        if (!temQuota) {
+          const { GuestQuotaExceededError } = await import('../lib/spend-guard.js')
+          throw new GuestQuotaExceededError(`Quota excedida para o convidado ${mission.userId}`)
+        }
+        await recordGuestConsumption(mission.userId, 1, app.prisma)
+      }
+    },
     preExecutionInterceptor: async (mission) => {
       // 1) Guest quota (se a missão pertence a um convidado)
       if (mission.userId && mission.userId !== mission.projectId) {
