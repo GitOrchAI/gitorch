@@ -1,7 +1,9 @@
 import type { NextConfig } from 'next'
 
-const rawBasePath =
-  process.env.NEXT_PUBLIC_BASE_PATH ?? (process.env.NODE_ENV === 'production' ? '/gitorch' : '')
+const envBasePath = process.env.NEXT_PUBLIC_BASE_PATH
+const fallbackBasePath = process.env.NODE_ENV === 'production' ? '/gitorch' : undefined
+const rawBasePath = (envBasePath !== undefined ? envBasePath : fallbackBasePath)?.trim()
+
 const basePath =
   rawBasePath && rawBasePath !== '' && rawBasePath !== '/'
     ? (rawBasePath.startsWith('/') ? rawBasePath : `/${rawBasePath}`).replace(/\/+$/, '')
