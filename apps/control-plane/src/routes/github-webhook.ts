@@ -10,7 +10,13 @@ import {
 
 import type { F6AgentRole } from '@gitorch/agents'
 import { atualizarFichaDoItem, type EstadoDoItem } from '../services/ficha-do-item.js'
-import { casarPrComSessao } from '../services/casar-pr-com-sessao.js'
+import { casarPrComSessao, existeSessaoLigada } from '../services/casar-pr-com-sessao.js'
+import {
+  classificarOrigem,
+  type OrigemDoItem,
+  type SinaisDeOrigem,
+} from '../services/origem-do-item.js'
+import { atualizarGrafoDeVinculos } from '../services/grafo-de-vinculos.js'
 import { decidirSobreEntrega } from './entrega-repetida.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
@@ -178,6 +184,71 @@ export async function ligarPrDaEntrega(deps: {
     agora: deps.agora ?? new Date(),
   })
   return { sessionName: casamento.sessionName, numeroDoPr }
+}
+
+/** Uma sessao do dev assincrono, na forma minima que a classificacao de
+ *  origem precisa (casamento por sufixo de branch + achar a issue de
+ *  origem). */
+export interface SessaoParaOrigem {
+  sessionName: string
+  issueNumber: number
+  pullRequestNumber: number | null
+}
+
+/**
+ * Classifica a origem de um PR (issue #877, item 3) e, quando a origem e do
+ * dev assincrono, acha a issue que encomendou o trabalho — o mesmo vinculo
+ * que faltava no PR #583 (origem jules_fora, issue_number vazio, quando
+ * deveria ser jules_gitorch/580).
+ *
+ * `commits` precisa vir do CHAMADOR: o aviso de webhook `pull_request` nao
+ * traz a lista de commits (só o payload do PR em si), entao buscar exige uma
+ * chamada REST extra (`GET .../pulls/{n}/commits`) que o handler faz ANTES
+ * de chamar esta funcao — mantida pura/sem rede para ficar testavel sem
+ * mock de fetch.
+ */
+export function classificarOrigemEIssueDoPr(deps: {
+  payload: {
+    pull_request?: {
+      body?: string
+      user?: { login?: string }
+      labels?: Array<{ name?: string }>
+      head?: { ref?: string }
+    }
+  }
+  commits: Array<{ mensagem: string; autorLogin: string | null }>
+  sessoesDoProjeto: SessaoParaOrigem[]
+}): { origem: OrigemDoItem; issueNumber: number | null } {
+  const pr = deps.payload.pull_request ?? {}
+  const headRefName = pr.head?.ref
+  const corpo = pr.body
+
+  const temSessaoGitOrch = existeSessaoLigada({
+    headRefName,
+    corpo,
+    sessoes: deps.sessoesDoProjeto,
+  })
+
+  const sinais: SinaisDeOrigem = {
+    autor: pr.user?.login ?? null,
+    labels: (pr.labels ?? []).map((l) => l.name ?? ''),
+    corpo: corpo ?? null,
+    commits: deps.commits,
+    temSessaoGitOrch,
+  }
+  const origem = classificarOrigem(sinais)
+
+  let issueNumber: number | null = null
+  if (origem === 'jules_gitorch' || origem === 'jules_fora') {
+    const casamento = casarPrComSessao({ headRefName, corpo, sessoes: deps.sessoesDoProjeto })
+    if (casamento) {
+      issueNumber =
+        deps.sessoesDoProjeto.find((s) => s.sessionName === casamento.sessionName)?.issueNumber ??
+        null
+    }
+  }
+
+  return { origem, issueNumber }
 }
 
 /**
@@ -884,14 +955,77 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           // independente de ele acordar uma missão ou não — é o que faz o
           // "retrato" existir mesmo quando ninguém está julgando agora.
           if (eventName === 'pull_request' && parsedPayload.pull_request?.number) {
+            const numeroDoPr = parsedPayload.pull_request.number
+            let origem: string | null = null
+            let issueDeOrigem: number | null = null
+            let repoItemIdDoPr: string | null = null
             try {
-              await atualizarFichaDoItem({
+              // Issue #877 item 3: classifica a origem AGORA (não deixa
+              // `jules_fora`/`issue_number` vazio quando o PR é do produto —
+              // caso real do PR #583). O aviso `pull_request` não traz a
+              // lista de commits (só o PR em si); buscar exige UMA chamada
+              // REST extra (`GET .../pulls/{n}/commits`) — decisão: aceitar
+              // essa chamada aqui porque `commitAssinadoPorAssistente` (a
+              // única classificação que usa commits) só entra em jogo quando
+              // os sinais mais fortes (dependabot, rodapé do dev) já
+              // falharam, então não dá para pular a leitura sem arriscar
+              // classificar assistente de código como "pessoa".
+              const sessoesDoProjeto = await app.prisma.devSession.findMany({
+                where: { projectId: project.id },
+                select: { sessionName: true, issueNumber: true, pullRequestNumber: true },
+              })
+              const token = await mintInstallationToken({ repository: project.wingId }).catch(
+                () => null
+              )
+              let commits: Array<{ mensagem: string; autorLogin: string | null }> = []
+              if (token) {
+                try {
+                  const resp = await ghComGuarda(
+                    new URL(
+                      `repos/${project.wingId}/pulls/${numeroDoPr}/commits`,
+                      'https://api.github.com/'
+                    ).toString(),
+                    {
+                      headers: {
+                        authorization: `token ${token}`,
+                        accept: 'application/vnd.github+json',
+                        'user-agent': 'gitorch',
+                      },
+                    }
+                  )
+                  if (resp.ok) {
+                    const crus = (await resp.json()) as Array<{
+                      commit?: { message?: string }
+                      author?: { login?: string }
+                    }>
+                    commits = crus.map((c) => ({
+                      mensagem: c.commit?.message ?? '',
+                      autorLogin: c.author?.login ?? null,
+                    }))
+                  }
+                } catch (err) {
+                  app.log.warn({ err, projectId: project.id }, 'Falha ao buscar commits do PR')
+                }
+              }
+
+              const classificacao = classificarOrigemEIssueDoPr({
+                payload: parsedPayload,
+                commits,
+                sessoesDoProjeto,
+              })
+              origem = classificacao.origem
+              issueDeOrigem = classificacao.issueNumber
+
+              const linha = await atualizarFichaDoItem({
                 prisma: app.prisma as never,
                 projectId: project.id,
                 tipo: 'pr',
-                numero: parsedPayload.pull_request.number,
+                numero: numeroDoPr,
                 estado: estadoDoPrAPartirDoPayload(parsedPayload),
+                origem,
+                issueNumber: issueDeOrigem,
               })
+              repoItemIdDoPr = linha.id
             } catch (err) {
               // Best-effort, mesmo padrão do resto do handler: a ficha nunca
               // pode derrubar o 200 do webhook.
@@ -900,19 +1034,78 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
                 'Falha ao atualizar a ficha do pull request'
               )
             }
+
+            // Issue #877 item d/a: o grafo completo de vínculos, best-effort
+            // — mesmo padrão try/catch dos demais `atualizarFichaDoItem`
+            // deste handler, nunca derruba o 200 do webhook.
+            if (repoItemIdDoPr) {
+              try {
+                const [dono = '', repo = ''] = project.wingId.split('/')
+                const tokenDoGrafo = await mintInstallationToken({
+                  repository: project.wingId,
+                }).catch(() => null)
+                if (tokenDoGrafo) {
+                  await atualizarGrafoDeVinculos({
+                    prisma: app.prisma as never,
+                    githubToken: tokenDoGrafo,
+                    owner: dono,
+                    repo,
+                    numero: numeroDoPr,
+                    tipo: 'pr',
+                    repoItemId: repoItemIdDoPr,
+                    projectId: project.id,
+                    headRefName: parsedPayload.pull_request?.head?.ref,
+                    corpo: parsedPayload.pull_request?.body,
+                  })
+                }
+              } catch (err) {
+                app.log.warn(
+                  { err, projectId: project.id },
+                  'Falha ao atualizar o grafo de vínculos do pull request'
+                )
+              }
+            }
           }
 
           if (eventName === 'issues' && parsedPayload.issue?.number) {
+            let repoItemIdDaIssue: string | null = null
             try {
-              await atualizarFichaDoItem({
+              const linha = await atualizarFichaDoItem({
                 prisma: app.prisma as never,
                 projectId: project.id,
                 tipo: 'issue',
                 numero: parsedPayload.issue.number,
                 estado: estadoDaIssueAPartirDoPayload(parsedPayload),
               })
+              repoItemIdDaIssue = linha.id
             } catch (err) {
               app.log.warn({ err, projectId: project.id }, 'Falha ao atualizar a ficha da tarefa')
+            }
+
+            if (repoItemIdDaIssue) {
+              try {
+                const [dono = '', repo = ''] = project.wingId.split('/')
+                const tokenDoGrafo = await mintInstallationToken({
+                  repository: project.wingId,
+                }).catch(() => null)
+                if (tokenDoGrafo) {
+                  await atualizarGrafoDeVinculos({
+                    prisma: app.prisma as never,
+                    githubToken: tokenDoGrafo,
+                    owner: dono,
+                    repo,
+                    numero: parsedPayload.issue.number,
+                    tipo: 'issue',
+                    repoItemId: repoItemIdDaIssue,
+                    projectId: project.id,
+                  })
+                }
+              } catch (err) {
+                app.log.warn(
+                  { err, projectId: project.id },
+                  'Falha ao atualizar o grafo de vínculos da issue'
+                )
+              }
             }
           }
 
