@@ -21,6 +21,8 @@ export interface BuildAgentMissionInput {
   id: string
   projectId: string
   repository: string
+  repositoryKey?: string
+  subPath?: string
   role: F6AgentRole
   goal: string
   context: string[]
@@ -46,9 +48,18 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     id: input.id,
     projectId: input.projectId,
     repository: input.repository,
+    repositoryKey: input.repositoryKey,
+    subPath: input.subPath,
     role: input.role,
     goal: input.goal,
-    prompt: buildPrompt(input.role, input.repository, input.goal, input.context, runtime.runtime),
+    prompt: buildPrompt(
+      input.role,
+      input.repository,
+      input.goal,
+      input.context,
+      runtime.runtime,
+      input.subPath
+    ),
     runtime: { ...runtime },
     credentialRef: {
       ...input.credentialRef,
@@ -74,6 +85,8 @@ export function missionStateReducer(
       id: missionUpdate.id || state.mission.id,
       projectId: missionUpdate.projectId || state.mission.projectId,
       repository: missionUpdate.repository || state.mission.repository,
+      repositoryKey: missionUpdate.repositoryKey || state.mission.repositoryKey,
+      subPath: missionUpdate.subPath || state.mission.subPath,
       role: missionUpdate.role || state.mission.role,
       goal: missionUpdate.goal || state.mission.goal,
       prompt: missionUpdate.prompt || state.mission.prompt,
@@ -145,17 +158,24 @@ function buildPrompt(
   repository: string,
   goal: string,
   context: string[],
-  runtime?: F6AgentRuntime
+  runtime?: F6AgentRuntime,
+  subPath?: string
 ): string {
   const contextBlock = context.length > 0 ? context.map((line) => `- ${line}`).join('\n') : '- none'
   const systemPrompt = AGENT_SYSTEM_PROMPTS[role] || ''
+
+  const subPathInstructions = subPath
+    ? `\nWorking Directory: You are working in a multi-repo workspace. Your target repository is located at /workspace${
+        subPath.startsWith('/') ? subPath : `/${subPath}`
+      }. You must change directory (cd) to this path before executing any linting, testing, or git commands.\n`
+    : ''
 
   return [
     buildPrimingPreamble(role, runtime),
     `Role: ${role}`,
     `Repository: ${repository}`,
     `Goal: ${goal}`,
-    '',
+    subPathInstructions,
     'System Instructions:',
     systemPrompt,
     '',

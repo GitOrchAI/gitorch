@@ -2,7 +2,7 @@ export const F6_AGENT_ROLES = ['po', 'ra', 'sm', 'qa'] as const
 export type F6AgentRole = (typeof F6_AGENT_ROLES)[number]
 
 export const F6_AGENT_RUNTIMES = ['codex', 'claude', 'antigravity'] as const
-import type { ExecutionLimits } from './execution-limits'
+import type { ExecutionLimits, GuestExecutionLimits } from './execution-limits'
 
 export type F6AgentRuntime = (typeof F6_AGENT_RUNTIMES)[number]
 
@@ -48,6 +48,8 @@ export interface AgentMission {
   id: string
   projectId: string
   repository: string
+  repositoryKey?: string
+  subPath?: string
   role: F6AgentRole
   goal: string
   prompt: string
@@ -55,7 +57,7 @@ export interface AgentMission {
   credentialRef: RuntimeCredentialRef
   evidenceRefs: string[]
   userId?: string
-  executionLimits?: ExecutionLimits
+  executionLimits?: GuestExecutionLimits & ExecutionLimits
 }
 
 export type OnboardingStepKind =
@@ -146,4 +148,17 @@ export interface Span {
   startTime: number
   endTime: number
   status: 'success' | 'error'
+}
+
+export interface MissionPlanItem {
+  id: string
+  repositoryKey: string
+  subPath: string
+  crossRepoPrerequisites: string[]
+  goal: string
+  role: F6AgentRole
+}
+
+export interface MissionPlan {
+  items: MissionPlanItem[]
 }

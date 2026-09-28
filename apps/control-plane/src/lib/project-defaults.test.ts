@@ -149,3 +149,108 @@ describe('DEFAULT_SCHEDULES', () => {
     }
   })
 })
+
+import {
+  getDefaultProjectConfig,
+  getPrimaryRepositoryUrl,
+  type ProjectConfig,
+} from './project-defaults.js'
+import { PROJECT_REPO_ROLES, MAX_REPOSITORIES_PER_PROJECT } from '../config/constants.js'
+
+describe('Project Defaults Multi-Repo', () => {
+  test('should return empty config for null/undefined input', () => {
+    expect(getDefaultProjectConfig(null)).toEqual({ repositories: [] })
+    expect(getDefaultProjectConfig(undefined)).toEqual({ repositories: [] })
+  })
+
+  test('should migrate legacy string URL to a 1-item array', () => {
+    const legacyUrl = 'https://github.com/owner/legacy-repo'
+    const expected = {
+      repositories: [
+        {
+          id: 'primary',
+          name: 'Primary Repository',
+          url: legacyUrl,
+          defaultBranch: 'main',
+          role: 'other',
+        },
+      ],
+    }
+    expect(getDefaultProjectConfig(legacyUrl)).toEqual(expected)
+  })
+
+  test('should return primary repository URL from config', () => {
+    expect(getPrimaryRepositoryUrl(null)).toBeUndefined()
+    expect(getPrimaryRepositoryUrl({ repositories: [] })).toBeUndefined()
+
+    const config: ProjectConfig = {
+      repositories: [
+        {
+          id: 'front',
+          name: 'Frontend',
+          url: 'https://github.com/owner/frontend',
+          defaultBranch: 'main',
+          role: 'frontend',
+        },
+        {
+          id: 'back',
+          name: 'Backend',
+          url: 'https://github.com/owner/backend',
+          defaultBranch: 'main',
+          role: 'backend',
+        },
+      ],
+    }
+    expect(getPrimaryRepositoryUrl(config)).toBe('https://github.com/owner/frontend')
+  })
+
+  test('constants should have roles and max repositories', () => {
+    expect(PROJECT_REPO_ROLES).toContain('frontend')
+    expect(PROJECT_REPO_ROLES).toContain('backend')
+    expect(MAX_REPOSITORIES_PER_PROJECT).toBeGreaterThan(0)
+  })
+
+  test('should pass through valid multi-repo config and reject invalid configs', () => {
+    const validConfig: ProjectConfig = {
+      repositories: [
+        {
+          id: 'front',
+          name: 'Frontend',
+          url: 'https://github.com/owner/frontend',
+          defaultBranch: 'main',
+          role: 'frontend',
+        },
+        {
+          id: 'invalid-role',
+          name: 'Invalid',
+          url: 'https://github.com/owner/invalid',
+          defaultBranch: 'main',
+          // @ts-expect-error invalid role
+          role: 'nonexistent',
+        },
+        {
+          id: 'back',
+          name: 'Backend',
+          url: 'https://github.com/owner/backend',
+          defaultBranch: 'main',
+          role: 'backend',
+        },
+      ],
+    }
+    const result = getDefaultProjectConfig(validConfig)
+    expect(result.repositories.length).toBe(2)
+    expect(result.repositories.map((r) => r.id)).toEqual(['front', 'back'])
+  })
+
+  test('should slice repositories exceeding max length', () => {
+    const repos = Array.from({ length: MAX_REPOSITORIES_PER_PROJECT + 2 }).map((_x, i) => ({
+      id: `repo-${i}`,
+      name: `Repo ${i}`,
+      url: `https://github.com/owner/repo-${i}`,
+      defaultBranch: 'main',
+      role: 'other' as const,
+    }))
+    const result = getDefaultProjectConfig({ repositories: repos })
+    expect(result.repositories.length).toBe(MAX_REPOSITORIES_PER_PROJECT)
+  })
+})

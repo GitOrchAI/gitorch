@@ -65,7 +65,8 @@ export class ChromaSemanticStore {
     roomId: string | undefined,
     hallId: string | undefined,
     queryEmbedding: number[],
-    limit: number
+    limit: number,
+    repositoryScope?: string[]
   ): Promise<
     Array<{
       drawerId: string
@@ -79,7 +80,7 @@ export class ChromaSemanticStore {
     const response = await collection.query({
       queryEmbeddings: [queryEmbedding],
       nResults: limit,
-      where: this.buildWhere(wingId, roomId, hallId),
+      where: this.buildWhere(wingId, roomId, hallId, repositoryScope),
       include: ['documents', 'metadatas', 'distances'],
     })
 
@@ -125,7 +126,8 @@ export class ChromaSemanticStore {
   private buildWhere(
     wingId: string,
     roomId: string | undefined,
-    hallId: string | undefined
+    hallId: string | undefined,
+    repositoryScope?: string[]
   ): Record<string, unknown> {
     const filters: Record<string, unknown>[] = [{ wingId: { $eq: wingId } }]
 
@@ -135,6 +137,10 @@ export class ChromaSemanticStore {
 
     if (hallId) {
       filters.push({ hallId: { $eq: hallId } })
+    }
+
+    if (repositoryScope && repositoryScope.length > 0) {
+      filters.push({ repositoryId: { $in: repositoryScope } })
     }
 
     return filters.length === 1 ? (filters[0] as Record<string, unknown>) : { $and: filters }

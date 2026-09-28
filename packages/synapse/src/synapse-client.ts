@@ -191,12 +191,13 @@ export class SynapseClient {
   async queryContextualSimilarity(
     wingId: string,
     query: string,
-    limit: number
+    limit: number,
+    repositoryScope?: string[]
   ): Promise<CortexSearchResultLike[]> {
     if (!this.cortexClient) {
       throw new Error('CortexClient is not provided to SynapseClientOptions')
     }
-    return this.cortexClient.search(wingId, query, limit)
+    return this.cortexClient.search(wingId, query, limit, repositoryScope)
   }
 
   private publishEvent<TPayload extends Record<string, unknown>>(

@@ -13,6 +13,7 @@ import {
 } from './parecer-do-qa.js'
 import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
+import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from './vigia-do-pr.js'
 import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
@@ -190,13 +191,24 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     onWarn,
   })
 
-  if (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules') {
+  let ultimoParecerQa: { body: string; timestamp: Date } | null = null
+  let temDuvidaPendente = false
+  let ultimoEscalonamentoEm: Date | null = null
+
+  currentHeadSha = depsVigia.headSha ?? undefined
+
+  if (origem !== 'dependabot') {
     try {
-      const prDetails = (await ghGet(
-        `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
-        token
-      )) as { head?: { sha?: string } }
-      currentHeadSha = prDetails?.head?.sha ?? undefined
+      if (
+        !currentHeadSha &&
+        (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules')
+      ) {
+        const prDetails = (await ghGet(
+          `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
+          token
+        )) as { head?: { sha?: string } }
+        currentHeadSha = prDetails?.head?.sha
+      }
 
       if (currentHeadSha) {
         const reviews = (await ghGet(
@@ -204,19 +216,73 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           token
         )) as ReviewDoGithub[]
 
-        const reviewNoHead = acharParecerNesteHead(reviews, currentHeadSha)
-        if (reviewNoHead) {
-          if (ehAprovacao(reviewNoHead)) {
+        const review = acharParecerNesteHead(reviews, currentHeadSha)
+        if (review) {
+          if (ehAprovacao(review)) {
             vereditoDoQa = 'approve'
-          } else if (ehReprovacaoCondicional(reviewNoHead)) {
+          } else if (ehReprovacaoCondicional(review)) {
             vereditoDoQa = 'request_changes'
+          }
+
+          if (review.body && !ehAprovacao(review)) {
+            ultimoParecerQa = {
+              body: review.body,
+              timestamp: review.submitted_at ? new Date(review.submitted_at) : new Date(0),
+            }
           }
         }
       }
     } catch (err) {
       onWarn(
-        `[decisao-do-vigia] falha ao buscar PR/reviews de ${projeto.wingId} #${depsVigia.numero}: ${(err as Error).message}`
+        `decidirAcaoNoPrOrfaoIntegrado: falha ao buscar reviews do PR #${depsVigia.numero}: ${(err as Error).message}`
       )
+    }
+
+    if (depsVigia.issueNumber !== null) {
+      try {
+        const openQuestion = await prisma.agentQuestion.findFirst({
+          where: {
+            projectId: projeto.id,
+            status: 'open',
+            dedupKey: { contains: String(depsVigia.issueNumber) },
+          },
+        })
+        temDuvidaPendente = !!openQuestion
+      } catch (err) {}
+    }
+
+    try {
+      const events = await prisma.event.findMany({
+        where: {
+          projectId: projeto.id,
+          type: 'audit',
+          payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+      const lastEscalation = events.find(
+        (e) =>
+          e.payload &&
+          typeof e.payload === 'object' &&
+          'vigiaDoPr' in e.payload &&
+          (e.payload as { vigiaDoPr?: { acao?: string } })['vigiaDoPr']?.acao === 'escalar'
+      )
+      if (lastEscalation) {
+        ultimoEscalonamentoEm = lastEscalation.createdAt
+      }
+    } catch (err) {}
+
+    if (ultimoParecerQa) {
+      try {
+        depsVigia.acoesAnteriores = await prisma.event.count({
+          where: {
+            projectId: projeto.id,
+            type: 'audit',
+            payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
+            createdAt: { gt: ultimoParecerQa.timestamp },
+          },
+        })
+      } catch (err) {}
     }
   }
 
@@ -227,9 +293,12 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     cuidaPorOrigem,
     emConstrucaoHa,
     janelaEmConstrucaoHoras,
-    ...(entendimentoCompleto !== undefined ? { entendimentoCompleto } : {}),
-    ...(vereditoDoQa !== undefined ? { vereditoDoQa } : {}),
-    ...(diffTruncado !== undefined ? { diffTruncado } : {}),
+    entendimentoCompleto,
+    vereditoDoQa,
+    ultimoParecerQa,
+    temDuvidaPendente,
+    ultimoEscalonamentoEm,
+    diffTruncado,
   })
 
   // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally
@@ -258,9 +327,11 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     } catch (err) {
       // Se a API falhar ou não trouxer changed_files, não age destrutivamente
     }
+    // Tarefa fechada, mas PR tem arquivos alterados.
+    // Em vez de deixar aberto, tratamos como PR substituído.
     return {
-      acao: 'ignorar',
-      motivo: `#${depsVigia.numero}: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto`,
+      acao: 'fechar',
+      motivo: `A tarefa #${depsVigia.issueNumber} já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.`,
     }
   }
   if (acaoMotor.acao === 'perguntar-se-cuida') {
@@ -385,13 +456,52 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
       `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
     )
+
+    let finalAcao: ReturnType<typeof decidirProximoPasso> = { ...acaoMotor }
+
+    if (acaoMotor.causa === 'conflito') {
+      try {
+        const dossie = await montarDossieDoConflito({
+          repo: projeto.wingId,
+          numeroDoPr: depsVigia.numero,
+          issueNumber: depsVigia.issueNumber,
+          ghGet: (path: string) => ghGet(path, token),
+        })
+
+        if (dossie.conclusao === 'duplicado') {
+          return {
+            acao: 'fechar',
+            motivo: `#${depsVigia.numero}: fechado porque duplica outro PR já mesclado.\n\n${dossie.texto}`,
+          }
+        } else if (dossie.conclusao === 'escopo_misturado') {
+          finalAcao = {
+            ...acaoMotor,
+            pedido: `A sua entrega tem conflitos de merge e mistura arquivos fora do escopo da tarefa.\n\nPor favor, crie uma nova branch a partir da main e traga apenas o que falta da issue original.\n\n${dossie.texto}`,
+          }
+        } else {
+          finalAcao = {
+            ...acaoMotor,
+            pedido: `${acaoMotor.pedido}\n\n${dossie.texto}`,
+          }
+        }
+      } catch (err) {
+        await registrarNoPainel(
+          projeto.id,
+          chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, 'erro-dossie'),
+          `Falha ao montar dossiê de conflito: ${(err as Error).message}`
+        )
+      }
+    }
+
+    const retomarAcao = finalAcao as typeof acaoMotor
+
     return {
       acao: 'retomar',
-      issueNumber: acaoMotor.issueNumber,
-      causa: acaoMotor.causa,
-      pedido: acaoMotor.pedido,
-      branchDoPr: acaoMotor.branchDoPr,
-      motivo: acaoMotor.motivo,
+      issueNumber: retomarAcao.issueNumber,
+      causa: retomarAcao.causa,
+      pedido: retomarAcao.pedido,
+      branchDoPr: retomarAcao.branchDoPr,
+      motivo: retomarAcao.motivo,
     }
   }
   if (acaoMotor.acao === 'escalar') {

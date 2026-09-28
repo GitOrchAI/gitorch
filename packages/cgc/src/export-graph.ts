@@ -5,6 +5,7 @@ import {
   collectSourceFiles,
   PoisonedFileError,
   type SummarizeOptions,
+  type WorkspaceIndexAnalysis,
 } from './summarize-workspace.js'
 import { computeUntestedModules } from './untested-modules.js'
 
@@ -23,12 +24,14 @@ export interface GraphExportNode {
   file: string
   type: string
   health: NodeHealth
+  repositoryId?: string
 }
 
 export interface GraphExportEdge {
   source: string
   target: string
-  rel: 'CALLS' | 'IMPORTS' | 'CONTAINS'
+  rel: 'CALLS' | 'IMPORTS' | 'CONTAINS' | 'CROSS_REPO_DEPENDS_ON' | 'CALLS_CONTRACT'
+  repositoryId?: string
 }
 
 export interface GraphExportResult {
@@ -100,6 +103,12 @@ export interface ExportGraphOptions extends SummarizeOptions {
   maxNodes?: number
 }
 
+export interface MultiRepoExportInput {
+  repositoryId: string
+  workspacePath: string
+  summary?: WorkspaceIndexAnalysis
+}
+
 const dirOf = (filePath: string): string => {
   const slash = filePath.lastIndexOf('/')
   return slash === -1 ? '.' : filePath.slice(0, slash)
@@ -163,7 +172,7 @@ function aggregateByDirectory(
  * contrato de diagnoseWorkspaceStructural).
  */
 export async function exportGraph(
-  workspacePath: string,
+  input: string | MultiRepoExportInput[],
   options: ExportGraphOptions = {}
 ): Promise<GraphExportResult | null> {
   const maxNodes = options.maxNodes ?? 1500
@@ -171,29 +180,99 @@ export async function exportGraph(
   const maxFileBytes = options.maxFileBytes ?? 400_000
   const excluded = new Set(options.excludeFiles ?? [])
 
+  const repos: MultiRepoExportInput[] =
+    typeof input === 'string'
+      ? [{ repositoryId: '', workspacePath: input, summary: undefined }]
+      : input
+
+  if (repos.length === 0) return null
+
   let client: KuzuClient | undefined
   let manager: TreeSitterManager | undefined
   try {
-    const sources = collectSourceFiles(workspacePath, maxFiles, maxFileBytes).filter(
-      (f) => !excluded.has(f.relPath)
-    )
-    if (sources.length === 0) return null
-
     client = new KuzuClient(':memory:')
     manager = new TreeSitterManager()
     const indexer = new CodeGraphIndexer(client, manager)
     await indexer.initializeSchema()
 
-    for (const file of sources) {
-      try {
-        await indexer.indexFile(file.relPath, file.content, file.language)
-      } catch (err) {
-        if (err instanceof WasmPoisonError) throw new PoisonedFileError(file.relPath)
-        /* arquivo problemático (não-veneno) não derruba o export inteiro */
+    const allSources = []
+    let hasSources = false
+
+    for (const repo of repos) {
+      const sources = collectSourceFiles(repo.workspacePath, maxFiles, maxFileBytes).filter(
+        (f) => !excluded.has(f.relPath)
+      )
+
+      for (const file of sources) {
+        hasSources = true
+        try {
+          await indexer.indexFile(file.relPath, file.content, file.language, repo.repositoryId)
+        } catch (err) {
+          if (err instanceof WasmPoisonError) throw new PoisonedFileError(file.relPath)
+          /* arquivo problemático (não-veneno) não derruba o export inteiro */
+        }
       }
+
+      allSources.push(...sources)
     }
 
-    const untested = new Set(computeUntestedModules(sources))
+    if (!hasSources) return null
+
+    const untested = new Set(computeUntestedModules(allSources))
+
+    // Insere arestas cross-repo baseadas nos sumários extraídos (heurísticas)
+    // Para simplificar, processamos essas informações no nível da memória do KuzuDB agora.
+    for (const repo of repos) {
+      if (!repo.summary) continue
+
+      // We must handle `../repoA/src/backend.ts` correctly by resolving it
+      const resolvePath = (p: string) => {
+        if (p.startsWith('../')) {
+          const parts = p.substring(3).split('/')
+          const repoId = parts[0]
+          const filePath = parts.slice(1).join('/')
+          return `cgc://${repoId}/${filePath}`
+        }
+        return repo.repositoryId ? `cgc://${repo.repositoryId}/${p}` : `cgc://${p}`
+      }
+
+      // Shared Routes (Backend/Frontend APIs) -> CALLS_CONTRACT
+      for (const route of repo.summary.sharedRoutes || []) {
+        const beId = resolvePath(route.backendFile)
+        const feId = resolvePath(route.frontendFile)
+        // A aresta "CALLS_CONTRACT" representa o fluxo frontend chamando backend
+        await client.execute(
+          `MERGE (fe:File {id: $feId})
+           MERGE (be:File {id: $beId})
+           MERGE (fe)-[:CALLS_CONTRACT]->(be)`,
+          { feId, beId }
+        )
+      }
+
+      // Shared Models (DB Schema/Backend APIs) -> CROSS_REPO_DEPENDS_ON
+      for (const model of repo.summary.sharedModels || []) {
+        const dbId = resolvePath(model.dbFile)
+        const beId = resolvePath(model.backendFile)
+        await client.execute(
+          `MERGE (be:File {id: $beId})
+           MERGE (db:File {id: $dbId})
+           MERGE (be)-[:CROSS_REPO_DEPENDS_ON]->(db)`,
+          { beId, dbId }
+        )
+      }
+
+      // Cross Package Dependencies -> CROSS_REPO_DEPENDS_ON
+      for (const edge of repo.summary.crossPackageDependencies || []) {
+        const sourceId = resolvePath(edge.source)
+        const targetId = resolvePath(edge.target)
+        await client.execute(
+          `MERGE (s:File {id: $sourceId})
+           MERGE (t:File {id: $targetId})
+           MERGE (s)-[:CROSS_REPO_DEPENDS_ON]->(t)`,
+          { sourceId, targetId }
+        )
+      }
+    }
 
     // Símbolos "import" são ruído visual (placeholders internos do indexer,
     // não código real do repo) — nunca viram NÓ. Mas uma chamada cross-file
@@ -203,8 +282,8 @@ export async function exportGraph(
     // CALLS aponta para um nó que não existe no export — o grafo perderia
     // toda chamada entre arquivos, que é justamente o caso mais comum.
     const symbolRows = (await client.query(
-      'MATCH (s:Symbol) RETURN s.id AS id, s.name AS name, s.type AS type, s.filePath AS filePath'
-    )) as Array<{ id: string; name: string; type: string; filePath: string }>
+      'MATCH (s:Symbol) RETURN s.id AS id, s.name AS name, s.type AS type, s.filePath AS filePath, s.repositoryId AS repositoryId'
+    )) as Array<{ id: string; name: string; type: string; filePath: string; repositoryId?: string }>
     const symbolById = new Map(symbolRows.map((s) => [s.id, s]))
 
     const importResolveRows = (await client.query(
@@ -252,6 +331,7 @@ export async function exportGraph(
         file: s.filePath,
         type: s.type,
         health: health(s.filePath, s.id),
+        repositoryId: s.repositoryId,
       }))
 
     const edges: GraphExportEdge[] = resolvedCalls.map((e) => ({ ...e, rel: 'CALLS' as const }))
@@ -265,12 +345,61 @@ export async function exportGraph(
       }
     }
 
+    // Arestas de nível de arquivo
+    const crossRepoDependsOnRows = (await client.query(
+      'MATCH (a:File)-[:CROSS_REPO_DEPENDS_ON]->(b:File) RETURN a.id AS source, b.id AS target'
+    )) as Array<{ source: string; target: string }>
+    for (const r of crossRepoDependsOnRows) {
+      edges.push({ source: r.source, target: r.target, rel: 'CROSS_REPO_DEPENDS_ON' })
+    }
+
+    const callsContractRows = (await client.query(
+      'MATCH (a:File)-[:CALLS_CONTRACT]->(b:File) RETURN a.id AS source, b.id AS target'
+    )) as Array<{ source: string; target: string }>
+    for (const r of callsContractRows) {
+      edges.push({ source: r.source, target: r.target, rel: 'CALLS_CONTRACT' })
+    }
+
+    // Injetamos um nó temporário para `File` na lista de nodes se não estiver presente
+    // mas for referenciado, para o Graph desenhar corretamente.
+    const fileNodeSet = new Set(nodes.map((n) => n.id))
+    const extractFileNodes = async (edgesArr: GraphExportEdge[]) => {
+      for (const edge of edgesArr) {
+        if (edge.rel === 'CROSS_REPO_DEPENDS_ON' || edge.rel === 'CALLS_CONTRACT') {
+          for (const id of [edge.source, edge.target]) {
+            if (!fileNodeSet.has(id)) {
+              // Extract repository ID and file path
+              const idStr = id.startsWith('cgc://') ? id.slice(6) : id
+              let repoId = ''
+              let filePath = idStr
+              const splitIndex = idStr.indexOf('/')
+              if (splitIndex !== -1 && splitIndex < idStr.length - 1 && idStr.includes('/')) {
+                repoId = idStr.substring(0, splitIndex)
+                filePath = idStr.substring(splitIndex + 1)
+              }
+
+              nodes.push({
+                id,
+                label: filePath.split('/').pop() || filePath,
+                file: filePath,
+                type: 'file',
+                health: 'good',
+                repositoryId: repoId || undefined,
+              })
+              fileNodeSet.add(id)
+            }
+          }
+        }
+      }
+    }
+    await extractFileNodes(edges)
+
     const orphanNodes = nodes.filter((n) => (fanIn.get(n.id) ?? 0) === 0).length
     const symbolCount = nodes.length
     const structuralComplexity = symbolCount > 0 ? edges.length / symbolCount : 0
     const metrics = { symbolCount, orphanNodes, structuralComplexity }
 
-    const moduleGraphNodes = sources.map((s) => ({
+    const moduleGraphNodes = allSources.map((s) => ({
       id: `file://${s.relPath}`,
       file: s.relPath,
       type: 'file' as const,

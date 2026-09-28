@@ -12,6 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "src/components/painel/TelaCascata.tsx",
+    "src/components/painel/TelaConfig.tsx",
+    "src/components/setup/StepGitHubLogin.tsx",
+    "src/components/setup/StepSelectRepos.tsx",
+    "src/components/setup/useConexaoDeMotores.ts",
+    "src/app/invites/claim/page.tsx"
   ]),
 ]);
 

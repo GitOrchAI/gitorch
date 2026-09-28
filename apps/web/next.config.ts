@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
   // GitHub Pages de projeto vive em /<repo>; domínio custom (js.org) vive na
   // raiz. Dinâmico por build — nunca fixo no código.
   basePath,
+  assetPrefix: basePath,
   trailingSlash: true,
   images: {
     unoptimized: true,

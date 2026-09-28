@@ -45,3 +45,13 @@ export const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 30_000
 export const LANGFUSE_DEFAULT_HOST = 'https://cloud.langfuse.com'
 export const TELEMETRY_EXPORT_TIMEOUT_MS = 10_000
 export const DEFAULT_GUEST_DURATION_HOURS = 24
+
+export const PROJECT_REPO_ROLES = [
+  'frontend',
+  'backend',
+  'database',
+  'automation',
+  'other',
+] as const
+export type ProjectRepoRole = (typeof PROJECT_REPO_ROLES)[number]
+export const MAX_REPOSITORIES_PER_PROJECT = 5

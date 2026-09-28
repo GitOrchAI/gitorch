@@ -5,7 +5,7 @@ export { ImpactAnalyzer } from './core/impact-analyzer'
 export type { ImpactResult } from './core/impact-analyzer'
 export { summarizeWorkspace, PoisonedFileError } from './summarize-workspace'
 export type { SummarizeOptions } from './summarize-workspace'
-export { diagnoseWorkspaceStructural } from './diagnose-workspace'
+export { diagnoseWorkspaceStructural, diagnoseCrossRepoIntegrity } from './diagnose-workspace'
 export type { StructuralDiagnosis } from './diagnose-workspace'
 export { exportGraph } from './export-graph'
 export type {
@@ -14,6 +14,7 @@ export type {
   GraphExportEdge,
   NodeHealth,
   ExportGraphOptions,
+  MultiRepoExportInput,
 } from './export-graph'
 export * from './types'
 export * from './scip/scip-exporter'

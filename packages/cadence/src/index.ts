@@ -57,3 +57,4 @@ export * from './skill-destillations'
 // A caixa que sumiu da leva 2: perda/tamanho da ordem escolhida, e o pedido
 // que mais se beneficiaria de uma troca. Só calcula — nunca reordena.
 export * from './custo-da-ordem'
+export { PRECOS_POR_MODELO, precificarSpan } from './custo-da-ordem'

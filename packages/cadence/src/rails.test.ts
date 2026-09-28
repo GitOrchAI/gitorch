@@ -1013,3 +1013,102 @@ describe('qaVerdict — entendimento obrigatório (Fase 3.1)', () => {
     expect(validateForm(RAILS_SCHEMAS.qaVerdict, valor).ok).toBe(true)
   })
 })
+
+describe('validarRailsMultiRepo (multi-repositório testes + DoD)', () => {
+  const repo1 = {
+    repositoryKey: 'owner/front',
+    subPath: 'apps/front',
+    testCommand: 'npm run test',
+    fields: {
+      titulo: 'feat(front): button',
+      goal: 'add button',
+      taskDetails: 'btn',
+      taskDescription: 'description',
+      implementationGuide: 'guide',
+      verificationCriteria: 'click button and see alert\\n\\n  ',
+      dependencies: 'none',
+      relatedFiles: 'btn.ts',
+      notes: 'note',
+    },
+  }
+
+  const repo2 = {
+    repositoryKey: 'owner/back',
+    subPath: 'apps/back',
+    testCommand: 'npm run test',
+    fields: {
+      titulo: 'feat(back): endpoint',
+      goal: 'add endpoint',
+      taskDetails: 'ep',
+      taskDescription: 'description',
+      implementationGuide: 'guide',
+      verificationCriteria: 'call endpoint and see 200\\n\\n  ',
+      dependencies: 'none',
+      relatedFiles: 'ep.ts',
+      notes: 'note',
+    },
+  }
+
+  it('valida múltiplos repositórios com sucesso se todos passam DoD e testes', async () => {
+    const { validarRailsMultiRepo } = await import('./rails')
+
+    let runnerCalled = 0
+    const runner = async (_cmd: string, _cwd?: string) => {
+      runnerCalled++
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    const result = await validarRailsMultiRepo([repo1, repo2], { runner })
+
+    expect(result.valid).toBe(true)
+    expect(result.errors).toEqual([])
+    expect(runnerCalled).toBe(2)
+    expect(result.reports['owner/front']?.passed).toBe(true)
+    expect(result.reports['owner/back']?.passed).toBe(true)
+  })
+
+  it('rejeita imediatamente e detalha erros se um repositório falha no teste', async () => {
+    const { validarRailsMultiRepo } = await import('./rails')
+
+    const runner = async (_cmd: string, cwd?: string) => {
+      if (cwd === 'apps/back') {
+        return { exitCode: 1, stdout: '', stderr: 'Jest failed' }
+      }
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    const result = await validarRailsMultiRepo([repo1, repo2], { runner })
+
+    expect(result.valid).toBe(false)
+    expect(result.errors).toContain('Repository owner/back failed DoD or tests.')
+    expect(result.reports['owner/front']?.passed).toBe(true)
+    expect(result.reports['owner/back']?.passed).toBe(false)
+    expect(result.reports['owner/back']?.errors).toContain('Test command failed: npm run test')
+    expect(result.reports['owner/back']?.errors).toContain('stderr: Jest failed')
+  })
+
+  it('rejeita imediatamente e detalha erros se um repositório falha na validação de DoD', async () => {
+    const { validarRailsMultiRepo } = await import('./rails')
+
+    const badRepo = {
+      ...repo1,
+      fields: {
+        ...repo1.fields,
+        verificationCriteria: '   ', // bad DoD
+      },
+    }
+
+    const runner = async (_cmd: string, _cwd?: string) => {
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    const result = await validarRailsMultiRepo([badRepo, repo2], { runner })
+
+    expect(result.valid).toBe(false)
+    expect(result.errors).toContain('Repository owner/front failed DoD or tests.')
+    expect(result.reports['owner/front']?.passed).toBe(false)
+    expect(result.reports['owner/front']?.errors).toContain(
+      'verificationCriteria: needs at least one verifiable criterion'
+    )
+  })
+})

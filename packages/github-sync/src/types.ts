@@ -60,6 +60,10 @@ export interface GitHubWorkItem {
   nodeId: string
   number: number
   repository: string
+  repositoryFullName?: string
+  repositoryId?: string
+  organization?: string
+  branchName?: string
   body?: string
   title: string
   type: GitHubIssueType
@@ -75,6 +79,7 @@ export interface GitHubWorkItem {
   mergedAt?: string | undefined
   leadTime?: number
   milestone?: string | undefined
+  assignees?: string[]
 }
 
 export interface GitHubDependencyEdge {
@@ -105,6 +110,9 @@ export interface GitHubSyncEvent {
   eventName: GitHubWebhookEventName
   action: string
   repository?: string
+  repositoryFullName?: string
+  repositoryId?: string
+  organization?: string
   occurredAt: string
   workItem?: GitHubWorkItem
   dependency?: GitHubDependencyEdge
@@ -121,6 +129,21 @@ export interface AvailabilityDecision {
   blockedByNodeIds: string[]
 }
 
+export interface CoordinatedPrRepo {
+  repositoryId: string
+  repositoryName: string
+  headBranch: string
+  baseBranch: string
+  title: string
+  body: string
+}
+
+export interface CoordinatedPrMissionResult {
+  projectId?: string
+  projectItemId?: string
+  repos: CoordinatedPrRepo[]
+}
+
 export interface GitHubSyncOperation {
   operationKey: string
   kind:
@@ -131,6 +154,7 @@ export interface GitHubSyncOperation {
     | 'create-issue'
     | 'link-sub-issue'
     | 'link-dependency'
+    | 'update-assignees'
   nodeId?: string
   projectId?: string
   projectItemId?: string
@@ -138,4 +162,5 @@ export interface GitHubSyncOperation {
   value?: string | number
   wishCreatedAt?: string
   mergedAt?: string
+  assignees?: string[]
 }

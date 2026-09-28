@@ -14,8 +14,17 @@ import {
 
 import { evaluateNodeTransition } from '@gitorch/cadence'
 
-import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
+import type {
+  F6AgentRole,
+  MissionState,
+  NodeTransition,
+  StateNode,
+  AgentMission,
+  MissionPlan,
+  MissionPlanItem,
+} from './types'
 import { primeWorkspace } from './workspace-priming'
+import { checkMissionLimits } from './execution-limits'
 
 /**
  * Enriquece o CONTEXTO da missão com CONHECIMENTO do projeto, depois que o
@@ -52,6 +61,7 @@ export interface AgentOrchestratorOptions {
   synapse?: SynapseClient
   workspace?: WorkspaceProvider
   enrichContext?: MissionContextEnricher
+  preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
 }
 
 export abstract class BaseAgentNode implements StateNode {
@@ -154,12 +164,14 @@ export class AgentOrchestrator {
   private readonly workspace: WorkspaceProvider
   private readonly enrichContext?: MissionContextEnricher
   private readonly nodeRegistry: Map<string, StateNode>
+  private readonly preExecutionInterceptor?: (mission: AgentMission) => Promise<void> | void
 
   constructor(options: AgentOrchestratorOptions) {
     this.registry = options.registry
     this.synapse = options.synapse ?? new SynapseClient()
     this.workspace = options.workspace ?? workspaceManager
     this.enrichContext = options.enrichContext
+    this.preExecutionInterceptor = options.preExecutionInterceptor
 
     this.nodeRegistry = new Map<string, StateNode>([
       ['po', new ProductOwnerNode(this)],
@@ -180,6 +192,10 @@ export class AgentOrchestrator {
     try {
       const adapter = this.registry.resolve(mission.runtime.runtime)
 
+      if (this.preExecutionInterceptor) {
+        await this.preExecutionInterceptor(mission)
+      }
+
       result = await withBackoffRetry(
         async () => {
           const res = await adapter.run({
@@ -189,6 +205,7 @@ export class AgentOrchestrator {
             credentialRef: mission.credentialRef,
             role: mission.role,
             cwd: workspacePath,
+            subPath: mission.subPath,
             timeoutMs,
           })
 
@@ -280,9 +297,34 @@ export class AgentOrchestrator {
       timeoutMs: input.timeoutMs,
     }
     let currentRole: string | 'done' | 'failed' = mission.role
+    let stepCount = 0
+    const executionStartTimeMs = Date.now()
 
     try {
       while (currentRole !== 'done' && currentRole !== 'failed') {
+        const limitsCheck = checkMissionLimits(
+          executionStartTimeMs,
+          stepCount,
+          mission.executionLimits,
+          input.timeoutMs
+        )
+
+        if (limitsCheck.interrupted) {
+          currentRole = 'failed'
+          result = {
+            missionId: mission.id,
+            runtime: mission.runtime.runtime,
+            exitCode: 124,
+            output: '',
+            stderr: limitsCheck.reason || 'Mission interrupted by execution limits',
+            durationMs: Date.now() - executionStartTimeMs,
+            failedStep: 'orchestrator-loop',
+            errorDetails: limitsCheck.reason || 'Mission interrupted by execution limits',
+          }
+          currentState.result = result
+          break
+        }
+
         const node = this.nodeRegistry.get(currentRole)
         if (!node) {
           throw new Error(`No state node registered for role: ${currentRole}`)
@@ -291,8 +333,21 @@ export class AgentOrchestrator {
         const transition = await node.execute(currentState)
         currentState = missionStateReducer(currentState, transition.state)
         currentRole = transition.nextRole ?? 'done'
+        stepCount++
+
+        const runtimeResult = currentState.result as RuntimeExecutionResult | undefined
+        if (runtimeResult?.waitingStatus === 'QUOTA_EXHAUSTED') {
+          await this.synapse.recordStateCheckpoint(
+            mission.id,
+            currentRole,
+            currentState as unknown as Record<string, unknown>
+          )
+          break
+        }
       }
-      result = currentState.result as RuntimeExecutionResult
+      if (!result) {
+        result = currentState.result as RuntimeExecutionResult
+      }
     } catch (err: unknown) {
       if (this.workspace.handleRuntimeFailure) {
         this.workspace.handleRuntimeFailure(String(err), 'run-mission', false)
@@ -323,6 +378,71 @@ export class AgentOrchestrator {
     })
 
     return result as RuntimeExecutionResult
+  }
+
+  orderMissionPlan(plan: MissionPlan): MissionPlanItem[] {
+    const sorted: MissionPlanItem[] = []
+    const visited = new Set<string>()
+    const visiting = new Set<string>()
+
+    const itemsByKey = new Map<string, MissionPlanItem>()
+    for (const item of plan.items) {
+      itemsByKey.set(item.repositoryKey, item)
+    }
+
+    const visit = (key: string) => {
+      if (visiting.has(key)) {
+        throw new Error(`Cyclic dependency detected: ${key}`)
+      }
+      if (!visited.has(key)) {
+        visiting.add(key)
+        const item = itemsByKey.get(key)
+        if (item) {
+          for (const dep of item.crossRepoPrerequisites) {
+            visit(dep)
+          }
+          visited.add(key)
+          sorted.push(item)
+        }
+        visiting.delete(key)
+      }
+    }
+
+    for (const item of plan.items) {
+      if (!visited.has(item.repositoryKey)) {
+        visit(item.repositoryKey)
+      }
+    }
+
+    return sorted
+  }
+
+  async executeMissionPlan(
+    plan: MissionPlan,
+    inputTpl: Omit<BuildAgentMissionInput, 'id' | 'repository' | 'role' | 'goal'>
+  ): Promise<RuntimeExecutionResult[]> {
+    const sortedItems = this.orderMissionPlan(plan)
+    const results: RuntimeExecutionResult[] = []
+
+    for (const item of sortedItems) {
+      const missionInput: BuildAgentMissionInput = {
+        ...inputTpl,
+        id: item.id,
+        repository: item.repositoryKey,
+        repositoryKey: item.repositoryKey,
+        subPath: item.subPath,
+        role: item.role,
+        goal: item.goal,
+      }
+      const result = await this.runMission(missionInput)
+      results.push(result)
+
+      if (result.exitCode !== 0) {
+        break // Stop execution downstream if an upstream task fails
+      }
+    }
+
+    return results
   }
 
   events() {

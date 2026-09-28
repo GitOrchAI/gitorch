@@ -24,12 +24,28 @@ export class DeterministicNodeTokenAdapter implements NodeTokenAdapter {
 
 export class PatchPromptBuilder {
   buildGraphSummary(subgraph: Pick<ExpandedSubgraph, 'anchors' | 'edges' | 'nodes'>): string {
-    return [
+    const nodesByRepo = new Map<string, typeof subgraph.nodes>()
+    for (const node of subgraph.nodes) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const repoId = (node.properties?.repositoryId as string) || (node as any).repositoryId || ''
+      const list = nodesByRepo.get(repoId) || []
+      list.push(node)
+      nodesByRepo.set(repoId, list)
+    }
+
+    const lines = [
       'Graph summary:',
       `- nodes: ${subgraph.nodes.length}`,
       `- edges: ${subgraph.edges.length}`,
       `- anchors: ${subgraph.anchors.length}`,
-    ].join('\n')
+    ]
+
+    for (const [repoId, nodes] of nodesByRepo.entries()) {
+      const tag = repoId ? `[Repository: ${repoId}]` : '[Repository: unknown]'
+      lines.push(`${tag} ${nodes.length} nodes`)
+    }
+
+    return lines.join('\n')
   }
 
   buildRankedFileSection(rankedFiles: RankedFile[]): string {

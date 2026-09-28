@@ -99,6 +99,15 @@ export interface GetNumberFieldInput {
   fieldName: string
 }
 
+export interface GetTextFieldInput {
+  projectId: string
+  fieldName: string
+}
+
+export interface CampoDeTexto {
+  fieldId: string
+}
+
 export interface CriarCampoNumericoInput {
   projectId: string
   fieldName: string
@@ -119,6 +128,18 @@ export interface SetNumberFieldInput {
   fieldId: string
   /** O valor. `ProjectV2FieldValue.number` é Float na API (introspection 31/08/2026). */
   number: number
+}
+
+export interface SetTextFieldInput {
+  projectId: string
+  itemId: string
+  fieldId: string
+  text: string
+}
+
+export interface AddAssigneesToAssignableInput {
+  assignableId: string
+  assigneeIds: string[]
 }
 
 /**
@@ -182,6 +203,19 @@ interface RespostaDeItensDoQuadro {
 export interface AddSubIssueInput {
   issueId: string
   subIssueId: string
+}
+
+export interface CreatePullRequestInput {
+  repositoryId: string
+  baseRefName: string
+  headRefName: string
+  title: string
+  body: string
+}
+
+export interface UpdatePullRequestInput {
+  pullRequestId: string
+  body: string
 }
 
 export interface CreateProjectV2Input {
@@ -343,6 +377,16 @@ export class CampoNumericoAusenteError extends Error {
   ) {
     super(`Number field "${fieldName}" not found on project ${projectId}.`)
     this.name = 'CampoNumericoAusenteError'
+  }
+}
+
+export class CampoDeTextoAusenteError extends Error {
+  constructor(
+    readonly fieldName: string,
+    readonly projectId: string
+  ) {
+    super(`Text field "${fieldName}" not found on project ${projectId}.`)
+    this.name = 'CampoDeTextoAusenteError'
   }
 }
 
@@ -1015,6 +1059,43 @@ export class ProjectV2Client {
     return { fieldId: homonimo.id }
   }
 
+  async getTextField(input: GetTextFieldInput): Promise<CampoDeTexto> {
+    const response = await this.request<{
+      node: { fields: { nodes: Array<{ id?: string; name?: string; dataType?: string }> } }
+    }>(
+      {
+        query: `
+          query GetTextField($projectId: ID!) {
+            node(id: $projectId) {
+              ... on ProjectV2 {
+                fields(first: 50) {
+                  nodes {
+                    __typename
+                    ... on ProjectV2FieldCommon { id name dataType }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { projectId: input.projectId },
+      },
+      this.token
+    )
+
+    const nodes = unwrap(response).node?.fields?.nodes ?? []
+    const homonimo = nodes.find((node) => node.name === input.fieldName)
+    if (!homonimo) throw new CampoDeTextoAusenteError(input.fieldName, input.projectId)
+    if (homonimo.dataType !== 'TEXT' || !homonimo.id) {
+      throw new NomeDeCampoEmConflitoError(
+        input.fieldName,
+        input.projectId,
+        homonimo.dataType ?? 'campo comum'
+      )
+    }
+    return { fieldId: homonimo.id }
+  }
+
   /**
    * Cria o campo NUMBER no quadro.
    *
@@ -1082,6 +1163,66 @@ export class ProjectV2Client {
     )
 
     return unwrap(response).updateProjectV2ItemFieldValue.projectV2Item.id
+  }
+
+  async setTextField(input: SetTextFieldInput): Promise<string> {
+    const response = await this.request<{
+      updateProjectV2ItemFieldValue: { projectV2Item: { id: string } }
+    }>(
+      {
+        query: `
+          mutation SetProjectV2Text(
+            $projectId: ID!
+            $itemId: ID!
+            $fieldId: ID!
+            $text: String!
+          ) {
+            updateProjectV2ItemFieldValue(
+              input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { text: $text }
+              }
+            ) {
+              projectV2Item { id }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).updateProjectV2ItemFieldValue.projectV2Item.id
+  }
+
+  async addAssigneesToAssignable(input: AddAssigneesToAssignableInput): Promise<string> {
+    const response = await this.request<{
+      addAssigneesToAssignable: { assignable: { id: string } }
+    }>(
+      {
+        query: `
+          mutation AddAssigneesToAssignable(
+            $assignableId: ID!
+            $assigneeIds: [ID!]!
+          ) {
+            addAssigneesToAssignable(
+              input: {
+                assignableId: $assignableId
+                assigneeIds: $assigneeIds
+              }
+            ) {
+              assignable { id }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).addAssigneesToAssignable.assignable.id
   }
 
   /**
@@ -1410,6 +1551,50 @@ export class ProjectV2Client {
     )
 
     return unwrap(response).addSubIssue.issue.id
+  }
+
+  async createPullRequest(
+    input: CreatePullRequestInput
+  ): Promise<{ id: string; number: number; url: string }> {
+    const response = await this.request<{
+      createPullRequest: { pullRequest: { id: string; number: number; url: string } }
+    }>(
+      {
+        query: `
+          mutation CreatePullRequest($repositoryId: ID!, $baseRefName: String!, $headRefName: String!, $title: String!, $body: String) {
+            createPullRequest(input: { repositoryId: $repositoryId, baseRefName: $baseRefName, headRefName: $headRefName, title: $title, body: $body }) {
+              pullRequest {
+                id
+                number
+                url
+              }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).createPullRequest.pullRequest
+  }
+
+  async updatePullRequest(input: UpdatePullRequestInput): Promise<string> {
+    const response = await this.request<{ updatePullRequest: { pullRequest: { id: string } } }>(
+      {
+        query: `
+          mutation UpdatePullRequest($pullRequestId: ID!, $body: String) {
+            updatePullRequest(input: { pullRequestId: $pullRequestId, body: $body }) {
+              pullRequest { id }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).updatePullRequest.pullRequest.id
   }
 
   /**

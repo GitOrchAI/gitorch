@@ -95,6 +95,27 @@ export function calcularCustoDeCI(metricas: MetricasDeExecucaoCI): number {
   return minutos * (metricas.cpus + metricas.ramGb)
 }
 
+/** Preços por 1 milhão de tokens (USD) */
+export const PRECOS_POR_MODELO: Record<string, { prompt: number; completion: number }> = {
+  claude: { prompt: 3.0, completion: 15.0 }, // Claude 3.5 Sonnet
+  codex: { prompt: 5.0, completion: 15.0 }, // GPT-4o
+  antigravity: { prompt: 0.075, completion: 0.3 }, // Gemini 1.5 Flash
+}
+
+/**
+ * Calcula o custo em dólares de um span de execução, com base no motor e tokens consumidos.
+ */
+export function precificarSpan(
+  usage: { promptTokens: number; completionTokens: number },
+  runtime: string
+): number {
+  const modelPricing = PRECOS_POR_MODELO[runtime] || PRECOS_POR_MODELO['antigravity']!
+  const cost =
+    (usage.promptTokens / 1_000_000) * modelPricing.prompt +
+    (usage.completionTokens / 1_000_000) * modelPricing.completion
+  return cost
+}
+
 /**
  * Abaixo disto, não há fila para otimizar: com 1 ou 2 pedidos o dono já vê a
  * ordem inteira de relance, e qualquer troca é óbvia sem ajuda nenhuma. O

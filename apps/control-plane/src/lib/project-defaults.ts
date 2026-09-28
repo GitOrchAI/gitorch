@@ -90,3 +90,69 @@ export async function ensureDefaultSchedules(
   }
   return created
 }
+
+import { PROJECT_REPO_ROLES, MAX_REPOSITORIES_PER_PROJECT } from '../config/constants.js'
+
+export interface ProjectRepository {
+  id: string
+  name: string
+  url: string
+  defaultBranch: string
+  role: 'frontend' | 'backend' | 'database' | 'automation' | 'other'
+  pathPrefix?: string
+}
+
+export interface ProjectConfig {
+  repositories: ProjectRepository[]
+}
+
+export function getDefaultProjectConfig(
+  legacyUrlOrConfig: string | ProjectConfig | null | undefined
+): ProjectConfig {
+  if (!legacyUrlOrConfig) {
+    return { repositories: [] }
+  }
+
+  if (typeof legacyUrlOrConfig === 'string') {
+    return {
+      repositories: [
+        {
+          id: 'primary',
+          name: 'Primary Repository',
+          url: legacyUrlOrConfig,
+          defaultBranch: 'main',
+          role: 'other',
+        },
+      ],
+    }
+  }
+
+  if (typeof legacyUrlOrConfig === 'object' && Array.isArray(legacyUrlOrConfig.repositories)) {
+    const validRepos = legacyUrlOrConfig.repositories
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((repo: any) => {
+        return (
+          repo &&
+          typeof repo === 'object' &&
+          typeof repo.url === 'string' &&
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          PROJECT_REPO_ROLES.includes(repo.role as any)
+        )
+      })
+      .slice(0, MAX_REPOSITORIES_PER_PROJECT)
+    return {
+      repositories: validRepos,
+    }
+  }
+
+  return { repositories: [] }
+}
+
+export function getPrimaryRepositoryUrl(
+  config: ProjectConfig | null | undefined
+): string | undefined {
+  if (!config || !Array.isArray(config.repositories) || config.repositories.length === 0) {
+    return undefined
+  }
+  return config.repositories[0]?.url
+}

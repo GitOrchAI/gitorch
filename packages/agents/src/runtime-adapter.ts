@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setTimeout } from 'node:timers/promises'
+import * as path from 'node:path'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 import type {
   AgentRuntimeSelection,
@@ -10,8 +11,12 @@ import type {
   RuntimeCredentialRef,
   Span,
 } from './types.js'
-import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
-import { getTracingEnvironment, BACKOFF_CONFIG } from './runtime-config'
+import {
+  wrapWithLimits,
+  isQuotaExhaustedFailure,
+  type ExecutionLimits,
+} from './execution-limits.js'
+import { getTracingEnvironment, BACKOFF_CONFIG } from './runtime-config.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -39,6 +44,8 @@ export interface RuntimeExecutionRequest {
   role?: F6AgentRole
   /** Diretório de trabalho da missão (workspace alocado). */
   cwd?: string
+  /** Subdiretório do repositório membro no workspace. */
+  subPath?: string
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
 }
@@ -81,6 +88,7 @@ export interface RuntimeCommandRequest {
   args: string[]
   env: Record<string, string>
   cwd?: string
+  subPath?: string
   /** Mata o processo após N ms (evita missão pendurada segurando RAM). */
   timeoutMs?: number
   /**
@@ -142,7 +150,10 @@ function normalizeExitCode(code: unknown): number {
 const MAX_PROMPT_ARG_BYTES = Number(process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] ?? 96 * 1024)
 
 export function isQuotaError(text: string): boolean {
-  return /\b429\b|resource.?exhausted|quota|rate.?limit/i.test(text)
+  return (
+    /\b429\b|resource.?exhausted|quota|rate.?limit|usage limit/i.test(text) ||
+    isQuotaExhaustedFailure(null, text)
+  )
 }
 
 export async function withBackoffRetry<T>(
@@ -457,6 +468,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           args: [...baseArgs, ...modelArgs, ...effortArgs, ...workspaceArgs, ...promptArgs],
           env,
           cwd: request.cwd,
+          subPath: request.subPath,
           timeoutMs: request.timeoutMs,
           ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
         })
@@ -479,6 +491,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         }
 
         if (isQuotaError(errorMessage)) {
+          const isGuestQuota = isQuotaExhaustedFailure(null, errorMessage)
           return {
             missionId: request.missionId,
             runtime: options.runtime,
@@ -486,8 +499,8 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
             stderr: errorMessage,
             exitCode: 0,
             durationMs: 0,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
+            waitingStatus: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'waiting_quota',
+            waitingReason: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'Quota or rate limit exceeded',
             span,
           }
         }
@@ -521,6 +534,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         }
 
         if (failed && isQuotaError(result.stderr)) {
+          const isGuestQuota = isQuotaExhaustedFailure(null, result.stderr)
           return {
             missionId: request.missionId,
             runtime: options.runtime,
@@ -528,8 +542,8 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
             stderr: result.stderr,
             exitCode: 0,
             durationMs: result.durationMs,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
+            waitingStatus: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'waiting_quota',
+            waitingReason: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'Quota or rate limit exceeded',
             span,
           }
         }
@@ -603,10 +617,15 @@ export function createPythonSdkRuntimeAdapter(
         }
       }
       const start = Date.now()
+      const cwd = request.subPath
+        ? request.cwd
+          ? path.join(request.cwd, request.subPath)
+          : request.subPath
+        : request.cwd
       try {
         const pending = execFileAsync(pythonBinary, args, {
           env: buildChildProcessEnv(geminiEnv),
-          cwd: request.cwd,
+          cwd,
           maxBuffer: 16 * 1024 * 1024,
           timeout: request.timeoutMs,
           killSignal: 'SIGKILL',
@@ -663,6 +682,7 @@ export function createPythonSdkRuntimeAdapter(
         }
 
         if (!timedOut && isQuotaError(errorMessage)) {
+          const isGuestQuota = isQuotaExhaustedFailure(null, errorMessage)
           return {
             missionId: request.missionId,
             runtime: options.runtime,
@@ -670,8 +690,8 @@ export function createPythonSdkRuntimeAdapter(
             stderr: errorMessage,
             exitCode: 0,
             durationMs: endTime - start,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
+            waitingStatus: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'waiting_quota',
+            waitingReason: isGuestQuota ? 'QUOTA_EXHAUSTED' : 'Quota or rate limit exceeded',
             span,
           }
         }

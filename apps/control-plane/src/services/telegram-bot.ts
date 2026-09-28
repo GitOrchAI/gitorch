@@ -1477,6 +1477,7 @@ export async function editTelegramMessageText(input: {
   chatId: string
   messageId?: number | undefined
   text: string
+  teclado?: unknown
   fetchImpl?: typeof fetch
 }): Promise<boolean> {
   if (input.messageId === undefined) return false
@@ -1489,6 +1490,7 @@ export async function editTelegramMessageText(input: {
         chat_id: input.chatId,
         message_id: input.messageId,
         text: input.text,
+        ...(input.teclado ? { reply_markup: input.teclado } : {}),
       }),
     })
     return resp.ok

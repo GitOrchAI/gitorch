@@ -1819,7 +1819,7 @@ describe('runQaMissionViaRails', () => {
   // sempre, com o contador subindo); a 3a fecha `MAX_TENTATIVAS_DE_MERGE` e
   // avisa o dono com o motivo real devolvido pelo GitHub.
   describe('Tarefa 10: mescla recusada não prende a entrega para sempre', () => {
-    it('entrega aprovada mas com mescla recusada é retomada na passagem seguinte — no 3o fracasso seguido avisa o dono', async () => {
+    it('entrega aprovada mas com mescla recusada é retomada na passagem seguinte', async () => {
       // A linha da sessão é a MESMA nas três passagens — como no banco real,
       // onde `registrarFracassoDeMerge` grava e a próxima leitura já vê o
       // contador atualizado. O teste simula essa persistência mutando o
@@ -1924,22 +1924,19 @@ describe('runQaMissionViaRails', () => {
       expect(r3.noOp).toBeFalsy()
       expect(posted3.merges).toHaveLength(1)
       expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
-      expect(avisos).toHaveLength(1)
-      expect(avisos[0]).toContain('#7')
-      expect(avisos[0]).toContain(`${MAX_TENTATIVAS_DE_MERGE} vezes seguidas`)
-      // O motivo é o texto REAL devolvido por `mesclarPr` (falha ao chamar o
-      // GitHub) — não um texto inventado pelo aviso.
-      expect(avisos[0]).toContain('pulls/7/merge failed (405)')
+      // O aviso cru "falhou MAX vezes, precisa ação humana" deixou de ser
+      // enviado pelo executor. Fica para o laço contextual.
+      expect(avisos).toHaveLength(0)
 
       // 4a passagem: MESMO commit, teto já batido. "Para de tentar até o
       // commit mudar" — nem posta review nova, nem chama merge de novo. UM
-      // segundo aviso chega — mas não é o mesmo caminho repetindo: é o laço
+      // aviso chega — mas não é o caminho normal de falha repetindo: é o laço
       // de RESGATE (travadasNoTeto/decidirResgateDaTravada,
       // entrega-travada-no-teto.ts) que passa a examinar esta entrega assim
       // que ela sai do caminho normal, sem sessão do dev viva
       // (avisarSessao ausente aqui) para pedir rebase. `jaPediuNesteHead`
       // (a marca de `registrarConserto`, gravada só porque avisarDono
-      // resolveu `true`) é o que impede um TERCEIRO aviso na próxima
+      // resolveu `true`) é o que impede um SEGUNDO aviso na próxima
       // passagem — ver o teste dedicado logo abaixo.
       const f4 = fakeFetch(
         [
@@ -1967,9 +1964,11 @@ describe('runQaMissionViaRails', () => {
       expect(posted4.reviews).toHaveLength(0)
       expect(posted4.merges).toHaveLength(0)
       expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
-      expect(avisos).toHaveLength(2) // o laço de resgate avisou de novo (sem sessão viva)
-      expect(avisos[1]).toContain('#7')
-      expect(avisos[1]).toContain('travou')
+      // Como o executor normal não avisa mais, este é o PRIMEIRO aviso no array,
+      // originado pelo laço de resgate.
+      expect(avisos).toHaveLength(1)
+      expect(avisos[0]).toContain('#7')
+      expect(avisos[0]).toContain('travou')
       expect(sessao.deployFixKey).not.toBeNull() // marcado só porque a entrega chegou
 
       // 5a passagem: MESMO commit, resgate já pedido — não repete (a marca
@@ -1994,7 +1993,7 @@ describe('runQaMissionViaRails', () => {
         ...opcoesComuns,
         fetchImpl: f5,
       })
-      expect(avisos).toHaveLength(2) // não repetiu o resgate
+      expect(avisos).toHaveLength(1) // não repetiu o resgate
     })
 
     // fix/resgate-merge-retenta-aviso: antes deste fix, o laço de resgate

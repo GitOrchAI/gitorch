@@ -25,7 +25,82 @@ function buildDepsVigia(
   }
 }
 
-describe('decidirAcaoNoPrOrfaoIntegrado - Regras de Mesclagem', () => {
+describe('decidirAcaoNoPrOrfaoIntegrado', () => {
+  it('retoma PR se houver REQUEST_CHANGES no HEAD atual (mesmo após duas tentativas anteriores, limit bypass)', async () => {
+    const depsVigia = {
+      numero: 3953,
+      sinais: {
+        autor: 'jules_gitorch',
+        labels: ['gitorch:task', 'jules', 'gitorch:agent:qa'],
+        corpo: null,
+      },
+      temSessaoViva: false,
+      issueNumber: 3841,
+      issueAberta: true,
+      mergeable: true,
+      verificacao: 'verde',
+      paradoHaMs: 8 * 24 * 60 * 60 * 1000,
+      acoesAnteriores: 2, // MAX_ACOES_DO_VIGIA (normally would trigger escalation)
+      podeAbrirSessao: true,
+      origem: 'desconhecido',
+      branchDoPr: 'feat-zap',
+      branchNoRepoDoProjeto: true,
+      headSha: '42ae8dc7',
+      rascunho: false,
+    } as unknown as Parameters<
+      NonNullable<import('../services/vigia-do-pr.js').VigiaDoPrDeps['decidirAcaoNoPrOrfao']>
+    >[0]
+
+    const ghGetMock = vi.fn().mockImplementation(async (caminho: string) => {
+      if (caminho.includes('/pulls/3953/reviews')) {
+        return [
+          {
+            body: `<!-- gitorch:qa -->\nO parecer de teste diz que a entrega nao coube inteira na janela de revisao.`,
+            commit_id: '42ae8dc7',
+            submitted_at: new Date(Date.now() - 1000).toISOString(),
+          },
+        ]
+      }
+      return []
+    })
+
+    const prismaMock = {
+      agentQuestion: {
+        findFirst: vi.fn().mockResolvedValue(null), // No pending question
+      },
+      event: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { createdAt: new Date(Date.now() - 5000), payload: { vigiaDoPr: { acao: 'escalar' } } },
+          ]), // Escalation happened BEFORE QA review
+        count: vi.fn().mockResolvedValue(0), // Count of actions since QA review is 0
+      },
+      repoItem: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as import('@prisma/client').PrismaClient
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: {},
+      agora: new Date(),
+      projeto: { id: 'p1', wingId: 'repo', devPlan: 'free' },
+      token: 'tok',
+      depsVigia,
+      prisma: prismaMock,
+      ghGet: ghGetMock,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result.acao).toBe('retomar')
+    if (result.acao === 'retomar') {
+      expect(result.pedido).toContain('Divida esta entrega')
+      expect(result.pedido).toContain('partes menores')
+    }
+  })
+
   const agora = new Date('2026-09-15T12:00:00.000Z')
   const projeto = { id: 'proj-1', wingId: 'org/repo', devPlan: 'free' }
   const token = 'gh-token'
@@ -96,13 +171,14 @@ describe('decidirAcaoNoPrOrfaoIntegrado - Regras de Mesclagem', () => {
     )
   })
 
-  it('QA pede mudancas nao mescla e acompanha', async () => {
+  it('QA pede mudancas nao mescla e RETOMA', async () => {
     const ghGet = vi.fn(async (url) => {
       if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
         return [
           {
             body: `reprovado\n${MARCA_DO_PARECER}\n<!-- gitorch:qa:reprovado-pelo-portao -->`,
             commit_id: 'sha1',
+            submitted_at: new Date().toISOString(),
           },
         ]
       }
@@ -123,8 +199,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado - Regras de Mesclagem', () => {
       onWarn: vi.fn(),
     })
 
-    expect(result.acao).toBe('ignorar')
-    expect(result.motivo).toMatch(/aguardando julgamento/)
+    expect(result.acao).toBe('retomar')
   })
 
   it('parecer em sha antigo nao mescla e aciona novo julgamento', async () => {
@@ -169,6 +244,35 @@ describe('decidirAcaoNoPrOrfaoIntegrado - Regras de Mesclagem', () => {
       onWarn: vi.fn(),
     })
     expect(result.acao).toBe('retomar')
+  })
+
+  it('(2) issue fechada mas PR com alteracoes reais -> FECHA como substituído', async () => {
+    const depsVigia = buildDepsVigia({ issueAberta: false })
+    const ghGet = vi.fn(async (url) => {
+      if (url === '/repos/org/repo/pulls/42') {
+        return { changed_files: 1 }
+      }
+      return null
+    })
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: config('sim'),
+      agora,
+      projeto,
+      token,
+      depsVigia,
+      prisma: getPrismaMock(true, { rascunho: false, ultimoCommitEm: null }),
+      ghGet,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result).toEqual({
+      acao: 'fechar',
+      motivo:
+        'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
+    })
   })
 
   it('rascunho nao mescla', async () => {
@@ -229,5 +333,120 @@ describe('decidirAcaoNoPrOrfaoIntegrado - Regras de Mesclagem', () => {
     expect(result.motivo).toMatch(
       /Falha na mesclagem segura: o QA aprovou sem registrar o entendimento do pedido/
     )
+  })
+
+  it('(2) issue fechada mas PR com alteracoes reais -> FECHA como substituído', async () => {
+    const depsVigia = buildDepsVigia({ issueAberta: false })
+    const ghGet = vi.fn(async (url) => {
+      if (url === '/repos/org/repo/pulls/42') {
+        return { changed_files: 1 }
+      }
+      return null
+    })
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: config('sim'),
+      agora,
+      projeto,
+      token,
+      depsVigia,
+      prisma: getPrismaMock(true, { rascunho: false, ultimoCommitEm: null }),
+      ghGet,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result).toEqual({
+      acao: 'fechar',
+      motivo:
+        'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
+    })
+  })
+
+  it('(3) changed_files desconhecido -> FECHA como substituído', async () => {
+    const depsVigia = buildDepsVigia({ issueAberta: false })
+    const ghGet = vi.fn(async (url) => {
+      if (url === '/repos/org/repo/pulls/42') {
+        return { changed_files: undefined }
+      }
+      return null
+    })
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: config('sim'),
+      agora,
+      projeto,
+      token,
+      depsVigia,
+      prisma: getPrismaMock(true, { rascunho: false, ultimoCommitEm: null }),
+      ghGet,
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result).toEqual({
+      acao: 'fechar',
+      motivo:
+        'A tarefa #10 já está fechada — ela foi resolvida por outro caminho. Fechando esta entrega, que ficou para trás.',
+    })
+  })
+
+  it('(4) retomar aciona a MESMA funcao de abertura de sessao do vigia antigo (retorna objeto `retomar` e passará a abrirSessaoDeConserto)', async () => {
+    const depsVigia = buildDepsVigia({ mergeable: false }) // causa conflito, e origem='jules'
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: config('sim'),
+      agora,
+      projeto,
+      token,
+      depsVigia,
+      prisma: getPrismaMock(true, { rascunho: false, ultimoCommitEm: null }),
+      ghGet: vi.fn().mockImplementation(async (path: string) => {
+        if (path.includes('/pulls/42/files')) return [{ filename: 'src/index.ts' }]
+        if (path.includes('/commits?')) return [{ sha: 'abc', commit: { message: 'Fix' } }]
+        return { base: { ref: 'main' }, head: { sha: 'xyz' }, title: 'Test PR' }
+      }),
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(result.acao).toBe('retomar')
+    if (result.acao === 'retomar') {
+      expect(result.issueNumber).toBe(10)
+      expect(result.causa).toBe('conflito')
+      expect(result.pedido).toContain(
+        'Traga a base para o seu ramo e resolva o conflito do pull request #42.'
+      )
+      // The dossier text expects #42
+      expect(result.pedido).toContain('Dossiê de Conflito para o PR #42')
+      expect(result.branchDoPr).toBe('ramo')
+      expect(result.motivo).toBe('#42: conflito, abrindo sessão nova')
+    }
+  })
+
+  it('(5) perguntar-se-cuida e mesclar nunca resultam em escalar (mapiam para ignorar por enquanto)', async () => {
+    // Para perguntar-se-cuida: configuracao 'perguntar' e issue null pra disparar rápido
+    let result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: { cuidaPorOrigem: { jules: 'perguntar' } },
+      agora,
+      projeto,
+      token,
+      depsVigia: buildDepsVigia({
+        issueNumber: null,
+        origem: 'jules',
+      } as unknown as Partial<Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]>),
+      prisma: getPrismaMock(true, { rascunho: false, ultimoCommitEm: null }),
+      ghGet: vi.fn(),
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+    expect(result).toEqual({
+      acao: 'ignorar',
+      motivo: 'tarefa 3.10: dados insuficientes para perguntar',
+    })
   })
 })

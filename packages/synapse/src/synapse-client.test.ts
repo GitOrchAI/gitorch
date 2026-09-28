@@ -121,7 +121,12 @@ test('records GitHub sync events through the public facade', () => {
 
 test('queries contextual similarity when cortexClient is provided', async () => {
   const fakeCortex = {
-    search: async (_wingId: string, _query: string, _limit: number) => {
+    search: async (
+      _wingId: string,
+      _query: string,
+      _limit: number,
+      _repositoryScope?: string[]
+    ) => {
       return [{ drawerId: 'd1', layer: 'L1', score: 0.9, content: 'test', metadata: {} }]
     },
   }

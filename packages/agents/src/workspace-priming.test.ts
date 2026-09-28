@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
-import { primeWorkspace } from './workspace-priming.js'
+import { primeWorkspace, generateMultiRepoManifest } from './workspace-priming.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -96,6 +96,63 @@ describe('primeWorkspace', () => {
 
     // clean -xfd deve apagar node_modules (ignorado)
     await expect(fs.stat(ignoredDir)).rejects.toThrow()
+
+    await fs.rm(ws, { recursive: true, force: true })
+  })
+})
+
+describe('generateMultiRepoManifest', () => {
+  test('gera manifesto correto com 4 submódulos e suas roles', async () => {
+    const ws = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-multirepo-'))
+
+    const repos = [
+      { name: 'front', role: 'frontend', relativePath: 'repos/front' },
+      { name: 'back', role: 'backend', relativePath: 'repos/back' },
+      { name: 'db', role: 'database', relativePath: 'repos/db' },
+      { name: 'tests', role: 'automation', relativePath: 'repos/tests' },
+    ]
+
+    for (const repo of repos) {
+      await fs.mkdir(path.join(ws, repo.relativePath), { recursive: true })
+    }
+
+    // Adiciona alguns contratos
+    await fs.writeFile(path.join(ws, 'repos/back/api.openapi.yml'), 'openapi: 3.0.0')
+    await fs.writeFile(path.join(ws, 'repos/db/schema.prisma'), 'datasource db { }')
+
+    // Adiciona um .env local no backend com uma variável existente
+    await fs.writeFile(
+      path.join(ws, 'repos/back/.env'),
+      'EXISTING_VAR=123\nBACKEND_DIR=/should/not/overwrite'
+    )
+
+    await generateMultiRepoManifest(ws, repos)
+
+    // Verifica o manifesto
+    const manifestPath = path.join(ws, '.gitorch', 'workspace-manifest.json')
+    const manifestRaw = await fs.readFile(manifestPath, 'utf8')
+    const manifest = JSON.parse(manifestRaw)
+
+    expect(Object.keys(manifest.repos).length).toBe(4)
+    expect(manifest.repos['front'].role).toBe('frontend')
+    expect(manifest.repos['front'].path).toBe(path.join(ws, 'repos/front'))
+
+    // Verifica indexação de contratos
+    expect(manifest.contracts.length).toBe(2)
+    expect(manifest.contracts).toContain(path.join(ws, 'repos/back/api.openapi.yml'))
+    expect(manifest.contracts).toContain(path.join(ws, 'repos/db/schema.prisma'))
+
+    // Verifica ambiente root
+    const rootEnv = await fs.readFile(path.join(ws, '.env'), 'utf8')
+    expect(rootEnv).toContain('FRONTEND_DIR=' + path.join(ws, 'repos/front'))
+    expect(rootEnv).toContain('BACKEND_DIR=' + path.join(ws, 'repos/back'))
+
+    // Verifica ambiente local e merge não destrutivo
+    const backEnv = await fs.readFile(path.join(ws, 'repos/back/.env'), 'utf8')
+    expect(backEnv).toContain('EXISTING_VAR=123')
+    expect(backEnv).toContain('BACKEND_DIR=/should/not/overwrite')
+    expect(backEnv).not.toContain('BACKEND_DIR=' + path.join(ws, 'repos/back'))
+    expect(backEnv).toContain('FRONTEND_DIR=' + path.join(ws, 'repos/front')) // Merged safely
 
     await fs.rm(ws, { recursive: true, force: true })
   })
