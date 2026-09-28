@@ -41,6 +41,8 @@ export interface DecisaoDoVigiaDeps {
   agentQuestion?: AgentQuestionAskerDeCuidado | undefined
   montarContextoExecutivo?: typeof montarContextoExecutivoDaPergunta | undefined
   depsDoContexto?: DepsDoContextoExecutivo | undefined
+  cortex?: import('@gitorch/cortex').CortexClient | undefined
+  execute?: import('./role-rails.js').StepExecutor | undefined
   /** Fase 5.3/#802: escrita de merge do caminho expresso do Dependabot. */
   ghSend: (
     method: 'POST' | 'PATCH' | 'PUT',
@@ -69,6 +71,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   agentQuestion,
   montarContextoExecutivo,
   depsDoContexto,
+  execute,
 }: DecisaoDoVigiaDeps): Promise<Awaited<AcaoDoVigia>> {
   const cuidaPorOrigem = lerCuidaPorOrigem(runtimeConfig, false)
   const janelaEmConstrucaoHoras = lerJanelaEmConstrucaoHoras(runtimeConfig)
@@ -366,6 +369,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
         depsDoContexto
       )
 
+      const fallbackCiState = depsVigia.verificacao || 'unknown'
       await perguntarSeCuida(
         {
           userId,
@@ -374,8 +378,20 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           repository: projeto.wingId,
           origem: origem as OrigemDoItem,
           contexto,
+          contextoPr: {
+            titulo: `PR #${depsVigia.numero}`,
+            idadeDias: depsVigia.paradoHaMs
+              ? Math.floor(depsVigia.paradoHaMs / (1000 * 60 * 60 * 24))
+              : 0,
+            estadoCi: fallbackCiState,
+            conflitos: depsVigia.mergeable === false,
+          },
         },
-        { agentQuestion }
+        {
+          agentQuestion: agentQuestion as NonNullable<typeof agentQuestion>,
+          ...(execute ? { execute } : {}),
+          onWarn,
+        }
       )
     } catch (err) {
       onWarn(`decidirAcaoNoPrOrfaoIntegrado: erro ao disparar perguntarSeCuida: ${err}`)
