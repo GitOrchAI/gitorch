@@ -2,26 +2,25 @@ import { describe, it, expect, vi } from 'vitest'
 import { atualizarGrafoDeVinculos, type AtualizarGrafoDeps } from './grafo-de-vinculos.js'
 import { MARCA_DO_PARECER } from './parecer-do-qa.js'
 
+const GRAFO_VAZIO = {
+  hierarquia: { parents: [], subIssues: [] },
+  milestone: null,
+  projectFields: [],
+  labelsAndAssignees: { labels: [], assignees: [] },
+  prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+  statusCheckRollup: null,
+  qaReview: null,
+}
+
 interface ClientFake {
-  getIssueHierarchy: ReturnType<typeof vi.fn>
-  getItemMilestone: ReturnType<typeof vi.fn>
-  getProjectsV2Fields: ReturnType<typeof vi.fn>
-  getItemLabelsAndAssignees: ReturnType<typeof vi.fn>
-  getPullRequestCrossReferences: ReturnType<typeof vi.fn>
-  getPullRequestChecksAndReview: ReturnType<typeof vi.fn>
+  getGrafoCompletoDaIssue: ReturnType<typeof vi.fn>
+  getGrafoCompletoDoPr: ReturnType<typeof vi.fn>
 }
 
 function clientFake(overrides: Partial<ClientFake> = {}): ClientFake {
   return {
-    getIssueHierarchy: vi.fn(async () => ({ parents: [], subIssues: [] })),
-    getItemMilestone: vi.fn(async () => null),
-    getProjectsV2Fields: vi.fn(async () => []),
-    getItemLabelsAndAssignees: vi.fn(async () => ({ labels: [], assignees: [] })),
-    getPullRequestCrossReferences: vi.fn(async () => ({
-      closedByPullRequests: [],
-      crossReferencedPullRequests: [],
-    })),
-    getPullRequestChecksAndReview: vi.fn(async () => ({ statusCheckRollup: null, qaReview: null })),
+    getGrafoCompletoDaIssue: vi.fn(async () => GRAFO_VAZIO),
+    getGrafoCompletoDoPr: vi.fn(async () => GRAFO_VAZIO),
     ...overrides,
   }
 }
@@ -76,27 +75,25 @@ describe('atualizarGrafoDeVinculos', () => {
   it('monta o grafo completo (tipo pr): hierarquia/milestone/projeto/labels/assignees/PRs/CI/parecer', async () => {
     const prisma = prismaFake([])
     const client = clientFake({
-      getItemMilestone: vi.fn(async () => ({
-        title: 'Sprint 1',
-        number: 3,
-        dueOn: '2026-08-13T00:00:00Z',
-        state: 'OPEN',
-      })),
-      getProjectsV2Fields: vi.fn(async () => [
-        {
-          project: { id: 'PVT_1', title: 'Board' },
-          status: 'Done',
-          iteration: { title: 'Sprint 1', startDate: '2026-09-26', duration: 3 },
-          peso: 2,
-          fields: [],
+      getGrafoCompletoDoPr: vi.fn(async () => ({
+        hierarquia: { parents: [], subIssues: [] },
+        milestone: {
+          title: 'Sprint 1',
+          number: 3,
+          dueOn: '2026-08-13T00:00:00Z',
+          state: 'OPEN',
         },
-      ]),
-      getItemLabelsAndAssignees: vi.fn(async () => ({ labels: ['bug'], assignees: ['loureng'] })),
-      getPullRequestCrossReferences: vi.fn(async () => ({
-        closedByPullRequests: [],
-        crossReferencedPullRequests: [884],
-      })),
-      getPullRequestChecksAndReview: vi.fn(async () => ({
+        projectFields: [
+          {
+            project: { id: 'PVT_1', title: 'Board' },
+            status: 'Done',
+            iteration: { title: 'Sprint 1', startDate: '2026-09-26', duration: 3 },
+            peso: 2,
+            fields: [],
+          },
+        ],
+        labelsAndAssignees: { labels: ['bug'], assignees: ['loureng'] },
+        prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [884] },
         statusCheckRollup: 'SUCCESS',
         qaReview: {
           state: 'APPROVED',
@@ -136,6 +133,30 @@ describe('atualizarGrafoDeVinculos', () => {
       resumo: `${MARCA_DO_PARECER}\nok`,
       submittedAt: '2026-09-02T00:00:00Z',
     })
+  })
+
+  it('issue #877: a coleta faz NO MÁXIMO 1 chamada GraphQL por item (nunca os dois métodos, nunca mais de uma vez)', async () => {
+    const clientIssue = clientFake()
+    await atualizarGrafoDeVinculos(
+      depsBase({
+        client: clientIssue as unknown as AtualizarGrafoDeps['client'],
+        tipo: 'issue',
+        numero: 580,
+      })
+    )
+    expect(clientIssue.getGrafoCompletoDaIssue).toHaveBeenCalledTimes(1)
+    expect(clientIssue.getGrafoCompletoDoPr).not.toHaveBeenCalled()
+
+    const clientPr = clientFake()
+    await atualizarGrafoDeVinculos(
+      depsBase({
+        client: clientPr as unknown as AtualizarGrafoDeps['client'],
+        tipo: 'pr',
+        numero: 583,
+      })
+    )
+    expect(clientPr.getGrafoCompletoDoPr).toHaveBeenCalledTimes(1)
+    expect(clientPr.getGrafoCompletoDaIssue).not.toHaveBeenCalled()
   })
 
   it('tipo issue: sessoesJules filtra pelas sessões com issueNumber igual ao número do item', async () => {

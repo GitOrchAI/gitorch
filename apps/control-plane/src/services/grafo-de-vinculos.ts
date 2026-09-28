@@ -69,29 +69,37 @@ export interface AtualizarGrafoDeps {
  * gravado OU do casamento por sufixo do branch (`existeSessaoLigada`), pro
  * grafo ficar correto mesmo que a ligação ainda não tenha sido persistida em
  * dev_sessions no instante em que este coletor roda.
+ *
+ * A coleta em si é UMA ÚNICA chamada GraphQL (`getGrafoCompletoDaIssue` ou
+ * `getGrafoCompletoDoPr`, `@gitorch/github-sync`) — antes eram 5-6 chamadas
+ * separadas por item, e isso estourou o rate limit da installation do
+ * GitHub App em produção (5.969 respostas 403 em 24h, medido 28/09/2026).
  */
 export async function atualizarGrafoDeVinculos(deps: AtualizarGrafoDeps): Promise<void> {
   const client = deps.client ?? new ProjectV2Client({ token: deps.githubToken })
-  const input = { owner: deps.owner, repo: deps.repo, number: deps.numero, type: deps.tipo }
 
-  const [hierarquia, milestone, projectFields, labelsAndAssignees, prsLigados, checksEReview] =
-    await Promise.all([
-      deps.tipo === 'issue'
-        ? client.getIssueHierarchy({ owner: deps.owner, repo: deps.repo, number: deps.numero })
-        : Promise.resolve({ parents: [], subIssues: [] }),
-      client.getItemMilestone(input),
-      client.getProjectsV2Fields(input),
-      client.getItemLabelsAndAssignees(input),
-      client.getPullRequestCrossReferences(input),
-      deps.tipo === 'pr'
-        ? client.getPullRequestChecksAndReview({
-            owner: deps.owner,
-            repo: deps.repo,
-            number: deps.numero,
-            marcaDoParecer: MARCA_DO_PARECER,
-          })
-        : Promise.resolve({ statusCheckRollup: null, qaReview: null }),
-    ])
+  const grafo =
+    deps.tipo === 'issue'
+      ? await client.getGrafoCompletoDaIssue({
+          owner: deps.owner,
+          repo: deps.repo,
+          number: deps.numero,
+        })
+      : await client.getGrafoCompletoDoPr({
+          owner: deps.owner,
+          repo: deps.repo,
+          number: deps.numero,
+          marcaDoParecer: MARCA_DO_PARECER,
+        })
+  const {
+    hierarquia,
+    milestone,
+    projectFields,
+    labelsAndAssignees,
+    prsLigados,
+    qaReview,
+    statusCheckRollup,
+  } = grafo
 
   const sessoesDoProjeto: SessaoDoGrafo[] = await deps.prisma.devSession.findMany({
     where: { projectId: deps.projectId },
@@ -128,8 +136,8 @@ export async function atualizarGrafoDeVinculos(deps: AtualizarGrafoDeps): Promis
     // literais de objeto "frescos" escapam dessa checagem. Os dados aqui são
     // JSON-seguros por construção (`paraJson` só produz string/number/null).
     sessoesJules: sessoesJules.map(paraJson) as unknown as Prisma.InputJsonValue,
-    qaReview: checksEReview.qaReview ?? Prisma.JsonNull,
-    statusCheckRollup: checksEReview.statusCheckRollup ?? Prisma.JsonNull,
+    qaReview: qaReview ?? Prisma.JsonNull,
+    statusCheckRollup: statusCheckRollup ?? Prisma.JsonNull,
   }
 
   await deps.prisma.repoItemVinculos.upsert({

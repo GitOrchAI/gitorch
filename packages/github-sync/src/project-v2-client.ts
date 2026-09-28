@@ -635,20 +635,20 @@ export class ProjectV2Client {
   }
 
   /**
-   * A cadeia de pais de uma issue, SUBINDO até a raiz (feature → épico → fase
-   * → pedido), e os filhos diretos (sub-issues). Issue #877: a ficha de um
-   * item precisa do GRAFO COMPLETO de hierarquia, não só o parent imediato.
-   *
-   * O limite de 4 níveis de `parent` aninhado no GraphQL é o teto real da
-   * hierarquia do produto (task → feature → épico → fase → pedido); uma
-   * hierarquia mais funda é sinal de planejamento quebrado, não caso a cobrir
-   * aqui. Forma validada AO VIVO contra a API de produção em 28/09/2026
-   * (issue #580 do GitOrchAI/gitorch: parent 578 → 576).
+   * O grafo completo de vínculos de uma ISSUE numa ÚNICA chamada GraphQL —
+   * hierarquia, milestone, campos do Project v2, labels/assignees e PRs
+   * ligados. Issue #877: a coleta original fazia 5-6 chamadas separadas por
+   * item (um método por pedaço) e isso estourou o rate limit da installation
+   * do GitHub App em produção (5.969 respostas 403 em 24h, medido 28/09/2026).
+   * Consolidado aqui em UMA query — `statusCheckRollup`/`qaReview` ficam
+   * sempre `null` (são conceito de PR, não de issue; `getGrafoCompletoDoPr`
+   * cobre isso).
    */
-  async getIssueHierarchy(input: { owner: string; repo: string; number: number }): Promise<{
-    parents: Array<{ number: number; title: string; state: string }>
-    subIssues: Array<{ number: number; title: string; state: string }>
-  }> {
+  async getGrafoCompletoDaIssue(input: {
+    owner: string
+    repo: string
+    number: number
+  }): Promise<GrafoCompletoDoItem> {
     interface NoDoPai {
       number: number
       title: string
@@ -660,152 +660,37 @@ export class ProjectV2Client {
         issue: {
           parent: NoDoPai | null
           subIssues: { nodes: Array<{ number: number; title: string; state: string }> }
+          milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+          projectItems: {
+            nodes: Array<{
+              project: { id: string; title: string }
+              fieldValues: { nodes: CampoDoProjeto[] }
+            }>
+          }
+          labels: { nodes: Array<{ name: string }> }
+          assignees: { nodes: Array<{ login: string }> }
+          closedByPullRequestsReferences: { nodes: Array<{ number: number }> }
+          timelineItems: { nodes: NoDaTimeline[] }
         } | null
       } | null
     }>(
       {
         query: `
-          query GetIssueHierarchy($owner: String!, $repo: String!, $number: Int!) {
+          query GetGrafoCompletoDaIssue($owner: String!, $repo: String!, $number: Int!) {
             repository(owner: $owner, name: $repo) {
               issue(number: $number) {
                 parent {
-                  number
-                  title
-                  state
+                  number title state
                   parent {
-                    number
-                    title
-                    state
+                    number title state
                     parent {
-                      number
-                      title
-                      state
-                      parent {
-                        number
-                        title
-                        state
-                      }
+                      number title state
+                      parent { number title state }
                     }
                   }
                 }
-                subIssues(first: 100) {
-                  nodes { number title state }
-                }
-              }
-            }
-          }
-        `,
-        variables: { owner: input.owner, repo: input.repo, number: input.number },
-      },
-      this.token
-    )
-
-    const issue = unwrap(response).repository?.issue
-    if (!issue) return { parents: [], subIssues: [] }
-
-    const parents: Array<{ number: number; title: string; state: string }> = []
-    let atual: NoDoPai | null = issue.parent
-    while (atual) {
-      parents.push({ number: atual.number, title: atual.title, state: atual.state })
-      atual = atual.parent
-    }
-
-    const subIssues = issue.subIssues.nodes.map((n) => ({
-      number: n.number,
-      title: n.title,
-      state: n.state,
-    }))
-
-    return { parents, subIssues }
-  }
-
-  /** O milestone (sprint/entrega do GitHub nativo) de uma issue ou PR: título,
-   *  número, prazo (`dueOn`) e estado. `null` quando o item não tem milestone.
-   *  Forma validada AO VIVO contra a API de produção (issue #580: "Sprint 1",
-   *  dueOn 2026-08-13). */
-  async getItemMilestone(input: {
-    owner: string
-    repo: string
-    number: number
-    type: 'issue' | 'pr'
-  }): Promise<{ title: string; number: number; dueOn: string | null; state: string } | null> {
-    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
-    const response = await this.request<{
-      repository: Record<
-        string,
-        {
-          milestone: { title: string; number: number; dueOn: string | null; state: string } | null
-        } | null
-      > | null
-    }>(
-      {
-        query: `
-          query GetItemMilestone($owner: String!, $repo: String!, $number: Int!) {
-            repository(owner: $owner, name: $repo) {
-              ${campo}(number: $number) {
+                subIssues(first: 100) { nodes { number title state } }
                 milestone { title number dueOn state }
-              }
-            }
-          }
-        `,
-        variables: { owner: input.owner, repo: input.repo, number: input.number },
-      },
-      this.token
-    )
-
-    return unwrap(response).repository?.[campo]?.milestone ?? null
-  }
-
-  /**
-   * Os campos do Project v2 de cada quadro onde este item aparece: Status
-   * (single-select), iteração/sprint (com início e duração), Peso (número) e
-   * qualquer outro campo single-select/número/texto que o quadro tenha.
-   * Forma validada AO VIVO (issue #580: Status "Done", Peso 2, Sprint 1 com
-   * startDate 2026-09-26 duration 3).
-   */
-  async getProjectsV2Fields(input: {
-    owner: string
-    repo: string
-    number: number
-    type: 'issue' | 'pr'
-  }): Promise<
-    Array<{
-      project: { id: string; title: string }
-      status: string | null
-      iteration: { title: string; startDate: string; duration: number } | null
-      peso: number | null
-      fields: Array<{ name: string; value: string }>
-    }>
-  > {
-    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
-    interface ValorDeCampo {
-      __typename: string
-      field?: { name: string } | null
-      name?: string
-      number?: number
-      text?: string
-      title?: string
-      startDate?: string
-      duration?: number
-    }
-    const response = await this.request<{
-      repository: Record<
-        string,
-        {
-          projectItems: {
-            nodes: Array<{
-              project: { id: string; title: string }
-              fieldValues: { nodes: ValorDeCampo[] }
-            }>
-          }
-        } | null
-      > | null
-    }>(
-      {
-        query: `
-          query GetProjectsV2Fields($owner: String!, $repo: String!, $number: Int!) {
-            repository(owner: $owner, name: $repo) {
-              ${campo}(number: $number) {
                 projectItems(first: 10) {
                   nodes {
                     project { id title }
@@ -818,9 +703,7 @@ export class ProjectV2Client {
                         }
                         ... on ProjectV2ItemFieldIterationValue {
                           field { ... on ProjectV2FieldCommon { name } }
-                          title
-                          startDate
-                          duration
+                          title startDate duration
                         }
                         ... on ProjectV2ItemFieldNumberValue {
                           field { ... on ProjectV2FieldCommon { name } }
@@ -834,139 +717,14 @@ export class ProjectV2Client {
                     }
                   }
                 }
-              }
-            }
-          }
-        `,
-        variables: { owner: input.owner, repo: input.repo, number: input.number },
-      },
-      this.token
-    )
-
-    const nodes = unwrap(response).repository?.[campo]?.projectItems?.nodes ?? []
-
-    return nodes.map((node) => {
-      let status: string | null = null
-      let iteration: { title: string; startDate: string; duration: number } | null = null
-      let peso: number | null = null
-      const fields: Array<{ name: string; value: string }> = []
-
-      for (const fv of node.fieldValues.nodes) {
-        const nomeDoCampo = fv.field?.name
-        if (!nomeDoCampo) continue
-
-        if (fv.__typename === 'ProjectV2ItemFieldSingleSelectValue' && fv.name) {
-          if (nomeDoCampo === 'Status') status = fv.name
-          else fields.push({ name: nomeDoCampo, value: fv.name })
-        } else if (fv.__typename === 'ProjectV2ItemFieldIterationValue' && fv.title) {
-          if (nomeDoCampo === 'Sprint' || nomeDoCampo === 'Iteration') {
-            iteration = {
-              title: fv.title,
-              startDate: fv.startDate ?? '',
-              duration: fv.duration ?? 0,
-            }
-          }
-          fields.push({ name: nomeDoCampo, value: fv.title })
-        } else if (fv.__typename === 'ProjectV2ItemFieldNumberValue' && fv.number !== undefined) {
-          if (nomeDoCampo === 'Peso' || nomeDoCampo === 'Weight') peso = fv.number
-          fields.push({ name: nomeDoCampo, value: String(fv.number) })
-        } else if (fv.__typename === 'ProjectV2ItemFieldTextValue' && fv.text) {
-          fields.push({ name: nomeDoCampo, value: fv.text })
-        }
-      }
-
-      return { project: node.project, status, iteration, peso, fields }
-    })
-  }
-
-  /** Labels e assignees de uma issue ou PR — parte fixa do grafo de vínculos. */
-  async getItemLabelsAndAssignees(input: {
-    owner: string
-    repo: string
-    number: number
-    type: 'issue' | 'pr'
-  }): Promise<{ labels: string[]; assignees: string[] }> {
-    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
-    const response = await this.request<{
-      repository: Record<
-        string,
-        {
-          labels: { nodes: Array<{ name: string }> }
-          assignees: { nodes: Array<{ login: string }> }
-        } | null
-      > | null
-    }>(
-      {
-        query: `
-          query GetItemLabelsAndAssignees($owner: String!, $repo: String!, $number: Int!) {
-            repository(owner: $owner, name: $repo) {
-              ${campo}(number: $number) {
                 labels(first: 20) { nodes { name } }
                 assignees(first: 10) { nodes { login } }
-              }
-            }
-          }
-        `,
-        variables: { owner: input.owner, repo: input.repo, number: input.number },
-      },
-      this.token
-    )
-
-    const item = unwrap(response).repository?.[campo]
-    if (!item) return { labels: [], assignees: [] }
-    return {
-      labels: item.labels.nodes.map((n) => n.name),
-      assignees: item.assignees.nodes.map((n) => n.login),
-    }
-  }
-
-  /**
-   * Os PRs ligados a um item: para uma ISSUE, os que a fecham formalmente
-   * (`closedByPullRequestsReferences`); para QUALQUER item, as referências
-   * cruzadas da timeline (`CROSS_REFERENCED_EVENT`/`CONNECTED_EVENT`) — cobre
-   * menção "fixes/closes #N" no corpo e vínculo feito pela UI. Forma validada
-   * AO VIVO (PR #583: timelineItems trouxe o cross-reference para #884).
-   */
-  async getPullRequestCrossReferences(input: {
-    owner: string
-    repo: string
-    number: number
-    type: 'issue' | 'pr'
-  }): Promise<{ closedByPullRequests: number[]; crossReferencedPullRequests: number[] }> {
-    const campo = input.type === 'issue' ? 'issue' : 'pullRequest'
-    const closedByTrecho =
-      input.type === 'issue' ? `closedByPullRequestsReferences(first: 10) { nodes { number } }` : ''
-
-    const response = await this.request<{
-      repository: Record<
-        string,
-        {
-          closedByPullRequestsReferences?: { nodes: Array<{ number: number }> }
-          timelineItems: {
-            nodes: Array<{
-              __typename: string
-              source?: { __typename: string; number?: number }
-              subject?: { __typename: string; number?: number }
-            }>
-          }
-        } | null
-      > | null
-    }>(
-      {
-        query: `
-          query GetPullRequestCrossReferences($owner: String!, $repo: String!, $number: Int!) {
-            repository(owner: $owner, name: $repo) {
-              ${campo}(number: $number) {
-                ${closedByTrecho}
+                closedByPullRequestsReferences(first: 10) { nodes { number } }
                 timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
                   nodes {
                     __typename
-                    ... on CrossReferencedEvent {
-                      source { __typename ... on PullRequest { number } }
-                    }
-                    ... on ConnectedEvent {
-                      subject { __typename ... on PullRequest { number } }
-                    }
+                    ... on CrossReferencedEvent { source { __typename ... on PullRequest { number } } }
+                    ... on ConnectedEvent { subject { __typename ... on PullRequest { number } } }
                   }
                 }
               }
@@ -978,63 +736,74 @@ export class ProjectV2Client {
       this.token
     )
 
-    const item = unwrap(response).repository?.[campo]
-    if (!item) return { closedByPullRequests: [], crossReferencedPullRequests: [] }
-
-    const closedByPullRequests =
-      item.closedByPullRequestsReferences?.nodes.map((n) => n.number) ?? []
-    const crossReferencedPullRequests: number[] = []
-    for (const node of item.timelineItems.nodes) {
-      if (
-        node.__typename === 'CrossReferencedEvent' &&
-        node.source?.__typename === 'PullRequest' &&
-        node.source.number
-      ) {
-        crossReferencedPullRequests.push(node.source.number)
-      } else if (
-        node.__typename === 'ConnectedEvent' &&
-        node.subject?.__typename === 'PullRequest' &&
-        node.subject.number
-      ) {
-        crossReferencedPullRequests.push(node.subject.number)
+    const issue = unwrap(response).repository?.issue
+    if (!issue) {
+      return {
+        hierarquia: { parents: [], subIssues: [] },
+        milestone: null,
+        projectFields: [],
+        labelsAndAssignees: { labels: [], assignees: [] },
+        prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+        statusCheckRollup: null,
+        qaReview: null,
       }
     }
 
+    const parents: Array<{ number: number; title: string; state: string }> = []
+    let atual: NoDoPai | null = issue.parent
+    while (atual) {
+      parents.push({ number: atual.number, title: atual.title, state: atual.state })
+      atual = atual.parent
+    }
+    const subIssues = issue.subIssues.nodes.map((n) => ({
+      number: n.number,
+      title: n.title,
+      state: n.state,
+    }))
+
     return {
-      closedByPullRequests: [...new Set(closedByPullRequests)],
-      crossReferencedPullRequests: [...new Set(crossReferencedPullRequests)],
+      hierarquia: { parents, subIssues },
+      milestone: issue.milestone,
+      projectFields: parseProjectFields(issue.projectItems.nodes),
+      labelsAndAssignees: {
+        labels: issue.labels.nodes.map((n) => n.name),
+        assignees: issue.assignees.nodes.map((n) => n.login),
+      },
+      prsLigados: parseCrossReferences(
+        issue.timelineItems.nodes,
+        issue.closedByPullRequestsReferences.nodes
+      ),
+      statusCheckRollup: null,
+      qaReview: null,
     }
   }
 
   /**
-   * Estado do CI (statusCheckRollup do head) e o ÚLTIMO parecer do QA do
-   * GitOrch (review cujo corpo carrega a marca `<!-- gitorch:qa -->`) num
-   * pull request — issue #877, item "para PR: estado do CI... e último
-   * parecer do QA (review do gitorch-ai: estado, sha julgado, resumo)".
-   *
-   * A marca é o mesmo texto que `parecer-do-qa.ts` (MARCA_DO_PARECER) usa
-   * para reconhecer o parecer do produto — não duplicado aqui como string
-   * solta porque quem chama (grafo-de-vinculos.ts) importa a constante de lá.
-   * Forma validada AO VIVO contra a API de produção (PR #583: statusCheckRollup
-   * SUCCESS, headRefName com o id de sessão do Jules no sufixo).
+   * O grafo completo de vínculos de um PR numa ÚNICA chamada GraphQL —
+   * milestone, campos do Project v2, labels/assignees, referências cruzadas
+   * (sem `closedByPullRequestsReferences`, que é só de issue), CI e o último
+   * parecer do QA do GitOrch. Issue #877 (mesma motivação de
+   * `getGrafoCompletoDaIssue` — consolidar as chamadas por rate limit).
    */
-  async getPullRequestChecksAndReview(input: {
+  async getGrafoCompletoDoPr(input: {
     owner: string
     repo: string
     number: number
     marcaDoParecer: string
-  }): Promise<{
-    statusCheckRollup: string | null
-    qaReview: {
-      state: string
-      headSha: string | null
-      resumo: string
-      submittedAt: string | null
-    } | null
-  }> {
+  }): Promise<GrafoCompletoDoItem> {
     const response = await this.request<{
       repository: {
         pullRequest: {
+          milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+          projectItems: {
+            nodes: Array<{
+              project: { id: string; title: string }
+              fieldValues: { nodes: CampoDoProjeto[] }
+            }>
+          }
+          labels: { nodes: Array<{ name: string }> }
+          assignees: { nodes: Array<{ login: string }> }
+          timelineItems: { nodes: NoDaTimeline[] }
           commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> }
           reviews: {
             nodes: Array<{
@@ -1049,15 +818,47 @@ export class ProjectV2Client {
     }>(
       {
         query: `
-          query GetPullRequestChecksAndReview($owner: String!, $repo: String!, $number: Int!) {
+          query GetGrafoCompletoDoPr($owner: String!, $repo: String!, $number: Int!) {
             repository(owner: $owner, name: $repo) {
               pullRequest(number: $number) {
-                commits(last: 1) {
-                  nodes { commit { statusCheckRollup { state } } }
+                milestone { title number dueOn state }
+                projectItems(first: 10) {
+                  nodes {
+                    project { id title }
+                    fieldValues(first: 20) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          name
+                        }
+                        ... on ProjectV2ItemFieldIterationValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          title startDate duration
+                        }
+                        ... on ProjectV2ItemFieldNumberValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          number
+                        }
+                        ... on ProjectV2ItemFieldTextValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          text
+                        }
+                      }
+                    }
+                  }
                 }
-                reviews(last: 30) {
-                  nodes { state body submittedAt commit { oid } }
+                labels(first: 20) { nodes { name } }
+                assignees(first: 10) { nodes { login } }
+                timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
+                  nodes {
+                    __typename
+                    ... on CrossReferencedEvent { source { __typename ... on PullRequest { number } } }
+                    ... on ConnectedEvent { subject { __typename ... on PullRequest { number } } }
+                  }
                 }
+                commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+                reviews(last: 30) { nodes { state body submittedAt commit { oid } } }
               }
             }
           }
@@ -1068,16 +869,33 @@ export class ProjectV2Client {
     )
 
     const pr = unwrap(response).repository?.pullRequest
-    if (!pr) return { statusCheckRollup: null, qaReview: null }
+    if (!pr) {
+      return {
+        hierarquia: { parents: [], subIssues: [] },
+        milestone: null,
+        projectFields: [],
+        labelsAndAssignees: { labels: [], assignees: [] },
+        prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+        statusCheckRollup: null,
+        qaReview: null,
+      }
+    }
 
     const statusCheckRollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? null
-
     const nossasReviews = pr.reviews.nodes.filter(
       (r) => typeof r.body === 'string' && r.body.includes(input.marcaDoParecer)
     )
     const ultima = nossasReviews.at(-1) ?? null
 
     return {
+      hierarquia: { parents: [], subIssues: [] },
+      milestone: pr.milestone,
+      projectFields: parseProjectFields(pr.projectItems.nodes),
+      labelsAndAssignees: {
+        labels: pr.labels.nodes.map((n) => n.name),
+        assignees: pr.assignees.nodes.map((n) => n.login),
+      },
+      prsLigados: parseCrossReferences(pr.timelineItems.nodes),
       statusCheckRollup,
       qaReview: ultima
         ? {
@@ -2087,6 +1905,126 @@ export class ProjectV2Client {
       this.token
     )
     return unwrap(response).node?.subIssues?.nodes ?? []
+  }
+}
+
+/** Um campo do Project v2 de um item, já achatado (issue #877). */
+interface CampoDoProjeto {
+  __typename: string
+  field?: { name: string } | null
+  name?: string
+  number?: number
+  text?: string
+  title?: string
+  startDate?: string
+  duration?: number
+}
+
+/** Um nó de timelineItems (CrossReferencedEvent ou ConnectedEvent), cru. */
+interface NoDaTimeline {
+  __typename: string
+  source?: { __typename: string; number?: number }
+  subject?: { __typename: string; number?: number }
+}
+
+/**
+ * O grafo completo de vínculos de UM item (issue ou PR) — forma unificada
+ * devolvida por `getGrafoCompletoDaIssue`/`getGrafoCompletoDoPr` (issue
+ * #877). Campos que não se aplicam ao tipo do item vêm vazios/`null` (uma
+ * issue nunca tem `statusCheckRollup`; um PR nunca tem `hierarquia`).
+ */
+export interface GrafoCompletoDoItem {
+  hierarquia: {
+    parents: Array<{ number: number; title: string; state: string }>
+    subIssues: Array<{ number: number; title: string; state: string }>
+  }
+  milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+  projectFields: Array<{
+    project: { id: string; title: string }
+    status: string | null
+    iteration: { title: string; startDate: string; duration: number } | null
+    peso: number | null
+    fields: Array<{ name: string; value: string }>
+  }>
+  labelsAndAssignees: { labels: string[]; assignees: string[] }
+  prsLigados: { closedByPullRequests: number[]; crossReferencedPullRequests: number[] }
+  statusCheckRollup: string | null
+  qaReview: {
+    state: string
+    headSha: string | null
+    resumo: string
+    submittedAt: string | null
+  } | null
+}
+
+/**
+ * Achata os campos do Project v2 de um item — mesma lógica que
+ * `getProjectsV2Fields` usava antes da consolidação (issue #877): Status
+ * (single-select) e Peso/Sprint viram atalhos nomeados, o resto cai em
+ * `fields` genérico.
+ */
+function parseProjectFields(
+  nodes: Array<{ project: { id: string; title: string }; fieldValues: { nodes: CampoDoProjeto[] } }>
+): GrafoCompletoDoItem['projectFields'] {
+  return nodes.map((node) => {
+    let status: string | null = null
+    let iteration: { title: string; startDate: string; duration: number } | null = null
+    let peso: number | null = null
+    const fields: Array<{ name: string; value: string }> = []
+
+    for (const fv of node.fieldValues.nodes) {
+      const nomeDoCampo = fv.field?.name
+      if (!nomeDoCampo) continue
+
+      if (fv.__typename === 'ProjectV2ItemFieldSingleSelectValue' && fv.name) {
+        if (nomeDoCampo === 'Status') status = fv.name
+        else fields.push({ name: nomeDoCampo, value: fv.name })
+      } else if (fv.__typename === 'ProjectV2ItemFieldIterationValue' && fv.title) {
+        if (nomeDoCampo === 'Sprint' || nomeDoCampo === 'Iteration') {
+          iteration = { title: fv.title, startDate: fv.startDate ?? '', duration: fv.duration ?? 0 }
+        }
+        fields.push({ name: nomeDoCampo, value: fv.title })
+      } else if (fv.__typename === 'ProjectV2ItemFieldNumberValue' && fv.number !== undefined) {
+        if (nomeDoCampo === 'Peso' || nomeDoCampo === 'Weight') peso = fv.number
+        fields.push({ name: nomeDoCampo, value: String(fv.number) })
+      } else if (fv.__typename === 'ProjectV2ItemFieldTextValue' && fv.text) {
+        fields.push({ name: nomeDoCampo, value: fv.text })
+      }
+    }
+
+    return { project: node.project, status, iteration, peso, fields }
+  })
+}
+
+/**
+ * Os PRs ligados a partir de `timelineItems` (+ `closedByPullRequestsReferences`
+ * quando o chamador é uma issue) — mesma lógica que
+ * `getPullRequestCrossReferences` usava antes da consolidação (issue #877).
+ */
+function parseCrossReferences(
+  timelineNodes: NoDaTimeline[],
+  closedByNodes?: Array<{ number: number }>
+): GrafoCompletoDoItem['prsLigados'] {
+  const closedByPullRequests = closedByNodes?.map((n) => n.number) ?? []
+  const crossReferencedPullRequests: number[] = []
+  for (const node of timelineNodes) {
+    if (
+      node.__typename === 'CrossReferencedEvent' &&
+      node.source?.__typename === 'PullRequest' &&
+      node.source.number
+    ) {
+      crossReferencedPullRequests.push(node.source.number)
+    } else if (
+      node.__typename === 'ConnectedEvent' &&
+      node.subject?.__typename === 'PullRequest' &&
+      node.subject.number
+    ) {
+      crossReferencedPullRequests.push(node.subject.number)
+    }
+  }
+  return {
+    closedByPullRequests: [...new Set(closedByPullRequests)],
+    crossReferencedPullRequests: [...new Set(crossReferencedPullRequests)],
   }
 }
 
