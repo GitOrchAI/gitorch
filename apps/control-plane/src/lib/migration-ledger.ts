@@ -60,6 +60,7 @@ export const MIGRATION_LEDGER = [
   'parecer-trava-migration.sql',
   'guest-limits-mapping-migration.sql',
   'multi-repo-wishlist-migration.sql',
+  'project-invitation-used-quota-migration.sql',
 ] as const
 
 /**
