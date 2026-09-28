@@ -3,6 +3,11 @@ import { FastifyPluginAsync } from 'fastify'
 import { isDeviceRuntime } from '@gitorch/agents'
 import { EngineConnectionService, resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
+
+import { pingJulesGate } from '@gitorch/agents'
+import { packGuestCredentials } from '../lib/credential-archive.js'
+import { verifyHmacToken } from '../lib/credential-crypto.js'
+
 import { checkLiveness, type CheckLivenessDeps } from '../services/engine-liveness.js'
 import {
   AssistedLoginService,
@@ -44,6 +49,49 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
   })
 
   // Lista as conexões de motor do usuário autenticado (só status).
+
+  app.post('/invitations/:token/credentials', async (request, reply) => {
+    const { token } = request.params as { token: string }
+
+    let invitationId: string
+    try {
+      // The token is likely the HMAC token.
+      invitationId = verifyHmacToken(token)
+    } catch {
+      return reply.code(400).send({ error: 'Invalid or expired invitation token' })
+    }
+
+    const body = request.body as Record<string, string>
+    if (!body || typeof body !== 'object') {
+      return reply.code(400).send({ error: 'Invalid credentials payload' })
+    }
+
+    const julesToken = body['jules'] || body['JULES_API_KEY']
+    if (!julesToken) {
+      return reply.code(400).send({ error: 'Jules API key is required' })
+    }
+
+    const isValid = await pingJulesGate(julesToken)
+    if (!isValid) {
+      return reply.code(400).send({ error: 'Invalid Jules API credentials (handshake failed)' })
+    }
+
+    const encryptedTokens = packGuestCredentials(body)
+
+    await app.prisma.guestProfile.upsert({
+      where: { invitationId },
+      create: {
+        invitationId,
+        encryptedTokens,
+      },
+      update: {
+        encryptedTokens,
+      },
+    })
+
+    return reply.send({ success: true })
+  })
+
   app.get('/api/v1/engines', async (request, reply) => {
     const userId = await resolveUserId(app, request)
     if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })

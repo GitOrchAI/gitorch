@@ -76,6 +76,22 @@ function loadKey(): Buffer {
  *  estiver ausente ou com formato inválido (achado Médio 3, Task 5/F8 — a
  *  metade desta correção que faltava; ver o comentário de decryptCredential
  *  abaixo para a metade que já existia). */
+/**
+ * Cifra um segredo de convidado (ex: BYO keys).
+ * Reutiliza o mesmo envelope e cofre de encryptCredential.
+ */
+export function encryptGuestCredential(plaintext: string): string {
+  return encryptCredential(plaintext)
+}
+
+/**
+ * Decifra um segredo de convidado.
+ * Lança CredentialDecryptError (ou reembala) caso haja problemas.
+ */
+export function decryptGuestCredential(envelope: string): string {
+  return decryptCredential(envelope)
+}
+
 export function encryptCredential(plaintext: string): string {
   let key: Buffer
   try {
