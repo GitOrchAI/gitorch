@@ -320,6 +320,11 @@ import {
 import { atualizarFichaDoItem } from '../services/ficha-do-item.js'
 import { varrerRetratoDoProjeto, CADENCIA_DO_RETRATO_MS } from '../services/varredura-do-retrato.js'
 import { atualizarGrafoDeVinculos } from '../services/grafo-de-vinculos.js'
+import { origemPrecisaDeReclassificacao } from '../services/origem-do-item.js'
+import {
+  classificarOrigemEIssueDoPr,
+  estadoDoPrAPartirDoPayload,
+} from '../routes/github-webhook.js'
 import {
   retomarPrReprovado,
   TETO_DE_RETOMADAS_POR_PR,
@@ -7470,6 +7475,66 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 repoItemId: linha.id,
                 projectId: projeto.id,
               })
+              return true
+            },
+          },
+          // Issue #877 (conserto pós-#979, achado real 29/09/2026 no PR
+          // #583): a MESMA varredura também reclassifica a origem de PRs
+          // ainda em baixa confiança — `classificarOrigemEIssueDoPr` só
+          // corria por webhook `pull_request` novo, então um PR que nunca
+          // mais recebe push (como o #583) ficava preso em `jules_fora`/
+          // `issueNumber` nulo pra sempre, mesmo depois do grafo chegar.
+          // Teto separado do `backfillGrafo` acima — mais simples que
+          // compartilhar um único contador entre as duas preocupações.
+          reclassificarOrigem: {
+            teto: 5,
+            aplicar: async ({ numero, pr }) => {
+              const linha = await app.prisma.repoItem.findFirst({
+                where: { projectId: projeto.id, tipo: 'pr', numero },
+                select: { id: true, origem: true, issueNumber: true },
+              })
+              // Sem ficha ainda, ou já classificada com confiança: nada a
+              // fazer — não gasta o teto à toa (issue #877).
+              if (!linha || !origemPrecisaDeReclassificacao(linha)) return false
+
+              const sessoesDoProjeto = await app.prisma.devSession.findMany({
+                where: { projectId: projeto.id },
+                select: { sessionName: true, issueNumber: true, pullRequestNumber: true },
+              })
+
+              let commits: Array<{ mensagem: string; autorLogin: string | null }> = []
+              try {
+                const crus = (await ghGet(
+                  `/repos/${projeto.wingId}/pulls/${numero}/commits`,
+                  token
+                )) as Array<{ commit?: { message?: string }; author?: { login?: string } }>
+                commits = crus.map((c) => ({
+                  mensagem: c.commit?.message ?? '',
+                  autorLogin: c.author?.login ?? null,
+                }))
+              } catch (err) {
+                app.log.warn(
+                  { err, projectId: projeto.id },
+                  '[Scheduler] varredura-do-retrato: falha ao buscar commits para reclassificar origem'
+                )
+              }
+
+              const classificacao = classificarOrigemEIssueDoPr({
+                payload: { pull_request: pr },
+                commits,
+                sessoesDoProjeto,
+              })
+
+              await atualizarFichaDoItem({
+                prisma: app.prisma as never,
+                projectId: projeto.id,
+                tipo: 'pr',
+                numero,
+                estado: estadoDoPrAPartirDoPayload({ pull_request: pr }),
+                origem: classificacao.origem,
+                issueNumber: classificacao.issueNumber,
+              })
+
               return true
             },
           },

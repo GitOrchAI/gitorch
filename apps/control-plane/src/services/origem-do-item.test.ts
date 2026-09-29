@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classificarOrigem } from './origem-do-item.js'
+import { classificarOrigem, origemPrecisaDeReclassificacao } from './origem-do-item.js'
 
 describe('classificarOrigem', () => {
   it('dependabot[bot] como autor → dependabot', () => {
@@ -79,5 +79,31 @@ describe('classificarOrigem', () => {
         temSessaoGitOrch: false,
       })
     ).toBe('outro_bot')
+  })
+})
+
+describe('origemPrecisaDeReclassificacao', () => {
+  it('issue #877 (PR #583): jules_fora sem issueNumber é baixa confiança → precisa reclassificar', () => {
+    expect(origemPrecisaDeReclassificacao({ origem: 'jules_fora', issueNumber: null })).toBe(true)
+  })
+
+  it('jules_gitorch já com issueNumber → já classificado com confiança, não reprocessa', () => {
+    expect(origemPrecisaDeReclassificacao({ origem: 'jules_gitorch', issueNumber: 580 })).toBe(
+      false
+    )
+  })
+
+  it('jules_fora com issueNumber já preenchido → não reprocessa (não deveria acontecer, mas o sinal é explícito)', () => {
+    expect(origemPrecisaDeReclassificacao({ origem: 'jules_fora', issueNumber: 580 })).toBe(false)
+  })
+
+  it('pessoa, dependabot, assistente, outro_bot → nunca precisam de reclassificação', () => {
+    for (const origem of ['pessoa', 'dependabot', 'assistente', 'outro_bot']) {
+      expect(origemPrecisaDeReclassificacao({ origem, issueNumber: null })).toBe(false)
+    }
+  })
+
+  it('ficha ainda sem origem nenhuma (null) → não é o sinal de jules_fora, não reprocessa aqui', () => {
+    expect(origemPrecisaDeReclassificacao({ origem: null, issueNumber: null })).toBe(false)
   })
 })
