@@ -26,6 +26,15 @@ export interface VarreduraDoRetratoDeps {
     estado: EstadoDoItem
   }) => Promise<void>
   onWarn?: (m: string) => void
+  /** Issue #877 item 5: backfill do grafo de vínculos para itens que ainda
+   *  não têm (repoItemVinculos ausente) — best-effort, com teto por ciclo
+   *  (a cota da installation do GitHub estourou em produção com a coleta
+   *  antiga, 5.969 respostas 403 em 24h — ver grafo-de-vinculos.ts).
+   *  Ausente = varredura não faz backfill (comportamento de hoje). */
+  backfillGrafo?: {
+    aplicar: (args: { tipo: TipoDoItem; numero: number }) => Promise<void>
+    teto: number
+  }
 }
 
 interface PrCru {
@@ -48,6 +57,25 @@ export async function varrerRetratoDoProjeto(
 ): Promise<{ prs: number; issues: number; alertas: number }> {
   let prs = 0
   let issues = 0
+  // Issue #877 item 5: contador COMPARTILHADO entre os dois laços (PRs e
+  // issues) — o teto é por CICLO da varredura inteira, não por laço. Se o
+  // ciclo termina antes de cobrir tudo, é esperado: o próximo ciclo (30 min)
+  // continua de onde faltou (não há registro de "onde parei" — o backfill só
+  // pula quem já tem `vinculos`, então repassar não duplica trabalho útil).
+  let tentativasDeBackfill = 0
+
+  const tentarBackfill = async (tipo: TipoDoItem, numero: number): Promise<void> => {
+    if (!deps.backfillGrafo) return
+    if (tentativasDeBackfill >= deps.backfillGrafo.teto) return
+    tentativasDeBackfill += 1
+    try {
+      await deps.backfillGrafo.aplicar({ tipo, numero })
+    } catch (err) {
+      deps.onWarn?.(
+        `varredura-do-retrato: backfill do grafo de vínculos falhou para ${tipo} #${numero} (${deps.repo}): ${err}`
+      )
+    }
+  }
 
   for (let pagina = 1; pagina <= MAX_PAGINAS_DA_VARREDURA; pagina += 1) {
     const lote = (await deps.ghGet(
@@ -60,6 +88,7 @@ export async function varrerRetratoDoProjeto(
         estado: estadoDoPrAPartirDoPayload({ pull_request: pr }),
       })
       prs += 1
+      await tentarBackfill('pr', pr.number)
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {
@@ -84,6 +113,7 @@ export async function varrerRetratoDoProjeto(
         estado: estadoDaIssueAPartirDoPayload({ issue }),
       })
       issues += 1
+      await tentarBackfill('issue', issue.number)
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {
