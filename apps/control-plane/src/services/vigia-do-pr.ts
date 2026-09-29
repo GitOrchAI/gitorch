@@ -25,7 +25,9 @@
 // isso é mais delicado que nos vizinhos, porque o pull request do dev sai com o
 // AUTOR do dono (conta da instalação) e sem label: o login não separa nada.
 
+import type { Prisma } from '@prisma/client'
 import { pedidoDeRebase } from './conflito-de-merge.js'
+import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
 
 /**
  * Rodapé emitido pelo dev assíncrono ao abrir o pull request — a ÚNICA
@@ -138,6 +140,86 @@ export function ehPRDaAutomacao(pr: SinaisDePR): boolean {
 export const MAX_ACOES_DO_VIGIA = 2
 
 /**
+ * Data de corte da contagem de ações do vigia por pull request.
+ *
+ * Retomadas anteriores publicavam no ramo antigo e nunca entregavam (62
+ * tentativas, 0 entregas em 14 dias); não contam para o limite.
+ * Só ações gravadas a partir daqui contam para `MAX_ACOES_DO_VIGIA`.
+ */
+export const CORTE_DAS_RETOMADAS_COM_DEFEITO = new Date('2026-09-30T00:00:00Z')
+
+/**
+ * Filtro dos eventos que contam como ação do vigia sobre UM pull request:
+ * só os gravados depois do corte (e, opcionalmente, depois de `depoisDe`).
+ */
+export function filtroDeAcoesDoVigia(args: {
+  projectId: string
+  numeroDoPr: number
+  depoisDe?: Date
+}): Prisma.EventWhereInput {
+  const desde =
+    args.depoisDe && args.depoisDe > CORTE_DAS_RETOMADAS_COM_DEFEITO
+      ? args.depoisDe
+      : CORTE_DAS_RETOMADAS_COM_DEFEITO
+  return {
+    projectId: args.projectId,
+    type: 'audit',
+    payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: args.numeroDoPr },
+    createdAt: { gte: desde },
+  }
+}
+
+/** O mínimo do banco que as contagens do vigia precisam. */
+export interface ContadorDeEventos {
+  event: { count: (args: { where: Prisma.EventWhereInput }) => Promise<number> }
+}
+
+/** Quantas ações o vigia já fez neste pull request, sem contar as do período com defeito. */
+export async function contarAcoesDoVigia(
+  db: ContadorDeEventos,
+  args: { projectId: string; numeroDoPr: number; depoisDe?: Date }
+): Promise<number> {
+  return db.event.count({ where: filtroDeAcoesDoVigia(args) })
+}
+
+/**
+ * Esta tarefa já foi devolvida à fila pelo vigia? A devolução acontece UMA
+ * única vez por tarefa: sem esta marca, cada PR novo da mesma tarefa
+ * repetiria o ciclo para sempre.
+ */
+export async function tarefaJaFoiDevolvidaAFila(
+  db: ContadorDeEventos,
+  args: { projectId: string; issueNumber: number }
+): Promise<boolean> {
+  const total = await db.event.count({
+    where: {
+      projectId: args.projectId,
+      type: 'audit',
+      AND: [
+        { payload: { path: ['vigiaDoPr', 'acao'], equals: 'devolver-a-fila' } },
+        { payload: { path: ['vigiaDoPr', 'issueNumber'], equals: args.issueNumber } },
+      ],
+    },
+  })
+  return total > 0
+}
+
+/**
+ * O pedido que a sessão de conserto recebe: o que consertar + a instrução de
+ * partir do ramo antigo e publicar pull request NOVO contra a `main`.
+ */
+export function montarPedidoDeConsertoDoVigia(args: {
+  numeroDoPr: number
+  ramoDoPr: string
+  pedido: string
+}): string {
+  return `${args.pedido}\n\n${instrucaoDePrNovoAPartirDoRamo({
+    numeroDoPr: args.numeroDoPr,
+    ramoDoPr: args.ramoDoPr,
+  })}`
+}
+
+/**
  * Quantas ações o vigia executa numa MESMA passada, somando todo o projeto
  * (ACHADO 2 do QA).
  *
@@ -243,8 +325,10 @@ export interface PrOrfaoObservado extends RamoDoPr {
   mergeable: boolean | null
   verificacao: EstadoDaVerificacao
   paradoHaMs: number
-  /** Quantas vezes o vigia JÁ agiu sobre este pull request (lido de `events`). */
+  /** Quantas vezes o vigia JÁ agiu sobre este pull request (lido de `events`, só após o corte). */
   acoesAnteriores: number
+  /** A tarefa de origem já foi devolvida à fila por este vigia (uma vez por tarefa)? */
+  tarefaJaDevolvidaAFila: boolean
   /** Há vaga na conta do dev para abrir mais uma sessão nesta passada? */
   podeAbrirSessao: boolean
 }
@@ -267,9 +351,23 @@ export type AcaoDoVigia =
     }
   /** Fechar o pull request dizendo por quê. */
   | { acao: 'fechar'; motivo: string }
+  /**
+   * O limite de tentativas estourou: fecha o pull request antigo e devolve a
+   * tarefa para a fila (tarefa nova a partir da `main`). Uma vez por tarefa.
+   */
+  | { acao: 'devolver-a-fila'; issueNumber: number; motivo: string }
   /** O produto não resolve: o dono precisa saber. */
   | { acao: 'escalar'; motivo: string }
   | { acao: 'pedir-julgamento'; motivo: string }
+
+/** O comentário deixado no pull request antigo — texto de negócio, sem jargão. */
+export function motivoDeDevolverAFila(numeroDoPr: number): string {
+  return (
+    `Tentei consertar a entrega #${numeroDoPr} mais de uma vez e ela continua parada. ` +
+    'Vou fechá-la e devolver a tarefa para a fila, para ser refeita do zero a partir da versão ' +
+    'mais recente do projeto.'
+  )
+}
 
 function pedidoDeConsertarVerificacao(numeroDoPr: number): string {
   return [
@@ -344,6 +442,15 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
     }
   }
   if (pr.acoesAnteriores >= MAX_ACOES_DO_VIGIA) {
+    // Antes de desistir, UMA chance: fecha o antigo e a tarefa recomeça da
+    // `main`. Só se isso também falhar (ou já foi feito) o dono é chamado.
+    if (pr.issueNumber !== null && pr.issueAberta && !pr.tarefaJaDevolvidaAFila) {
+      return {
+        acao: 'devolver-a-fila',
+        issueNumber: pr.issueNumber,
+        motivo: motivoDeDevolverAFila(pr.numero),
+      }
+    }
     return {
       acao: 'escalar',
       motivo:
@@ -463,6 +570,8 @@ export interface VigiaDoPrDeps {
   issueAberta: (issueNumber: number) => Promise<boolean>
   /** Quantas decisões o vigia já gravou para este pull request — é o teto. */
   acoesAnteriores: (numeroDoPr: number) => Promise<number>
+  /** A tarefa já foi devolvida à fila pelo vigia? (uma vez por tarefa) */
+  tarefaJaDevolvidaAFila: (issueNumber: number) => Promise<boolean>
   /** Vagas de sessão simultânea que sobram na conta do dev nesta passada. */
   vagasLivres: number
   decidirAcaoNoPrOrfao?: (pr: PrOrfaoObservado, rawPr: PrAberto) => Promise<AcaoDoVigia>
@@ -490,6 +599,8 @@ export interface VigiaDoPrDeps {
     numeroDoPr: number
     acao: AcaoDoVigia['acao']
     texto: string
+    /** Só na devolução à fila: é o que impede repetir o ciclo na mesma tarefa. */
+    issueNumber?: number
   }) => Promise<void>
   /**
    * Teto de ações desta passada. Padrão: `TETO_DE_ACOES_POR_PASSADA`.
@@ -570,6 +681,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   let retomados = 0
   let fechados = 0
   let escalados = 0
+  let devolvidos = 0
   let adiadosPeloTeto = 0
   let falhas = 0
 
@@ -609,6 +721,8 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         verificacao: pr.verificacao,
         paradoHaMs: pr.paradoHaMs,
         acoesAnteriores: await deps.acoesAnteriores(pr.numero),
+        tarefaJaDevolvidaAFila:
+          issueNumber === null ? false : await deps.tarefaJaDevolvidaAFila(issueNumber),
         podeAbrirSessao: vagas > 0,
       }
 
@@ -696,6 +810,40 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
           break
         }
 
+        case 'devolver-a-fila': {
+          // Fecha o PR antigo (com o motivo no comentário) e só então grava. O
+          // fechamento é o que devolve a tarefa: sem PR aberto, ela volta à
+          // fila e a próxima sessão parte da `main`. Se falhar, escala ao dono.
+          const fechou = await deps.fecharPr({ numero: pr.numero, motivo: decisao.motivo })
+          if (fechou) {
+            devolvidos += 1
+            await deps.registrarDecisao({
+              numeroDoPr: pr.numero,
+              acao: 'devolver-a-fila',
+              issueNumber: decisao.issueNumber,
+              texto: `Fechei a entrega #${pr.numero} e devolvi a tarefa #${decisao.issueNumber} para a fila: ${decisao.motivo}`,
+            })
+            break
+          }
+          warn(`[vigia-do-pr] não consegui fechar o #${pr.numero} para devolver a tarefa à fila`)
+          const motivoDaEscalada =
+            `Tentei consertar a entrega #${pr.numero} e não consegui, e também não consegui fechá-la ` +
+            'para devolver a tarefa à fila. Alguém precisa olhar.'
+          escalados += 1
+          await deps.registrarDecisao({
+            numeroDoPr: pr.numero,
+            acao: 'escalar',
+            texto: motivoDaEscalada,
+          })
+          if (!(await deps.avisarDono(`GitOrch: ${motivoDaEscalada}`))) {
+            warn(
+              `[vigia-do-pr] o recado sobre o #${pr.numero} não chegou ao dono; ` +
+                'ficou registrado na linha do tempo do painel'
+            )
+          }
+          break
+        }
+
         case 'escalar': {
           // O evento vem ANTES do recado, e é gravado mesmo se o recado não
           // chegar. É ele que conta o teto: se só contasse quando o Telegram
@@ -727,6 +875,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   const partes: string[] = []
   if (retomados > 0) partes.push(pluralizar(retomados, 'retomado', 'retomados'))
   if (fechados > 0) partes.push(pluralizar(fechados, 'fechado', 'fechados'))
+  if (devolvidos > 0) partes.push(pluralizar(devolvidos, 'devolvido à fila', 'devolvidos à fila'))
   if (escalados > 0) partes.push(pluralizar(escalados, 'escalado', 'escalados'))
   if (adiadosPeloTeto > 0) {
     partes.push(`${adiadosPeloTeto} além do teto desta passada (${teto})`)

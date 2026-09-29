@@ -15,7 +15,7 @@ import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.j
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
-import type { VigiaDoPrDeps } from './vigia-do-pr.js'
+import { contarAcoesDoVigia, type VigiaDoPrDeps } from './vigia-do-pr.js'
 import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
 import type {
   montarContextoExecutivoDaPergunta,
@@ -278,13 +278,10 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
 
     if (ultimoParecerQa) {
       try {
-        depsVigia.acoesAnteriores = await prisma.event.count({
-          where: {
-            projectId: projeto.id,
-            type: 'audit',
-            payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
-            createdAt: { gt: ultimoParecerQa.timestamp },
-          },
+        depsVigia.acoesAnteriores = await contarAcoesDoVigia(prisma, {
+          projectId: projeto.id,
+          numeroDoPr: depsVigia.numero,
+          depoisDe: ultimoParecerQa.timestamp,
         })
       } catch (err) {}
     }
@@ -542,6 +539,18 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       pedido: retomarAcao.pedido,
       branchDoPr: retomarAcao.branchDoPr,
       motivo: retomarAcao.motivo,
+    }
+  }
+  if (acaoMotor.acao === 'devolver-a-fila') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
+    return {
+      acao: 'devolver-a-fila',
+      issueNumber: acaoMotor.issueNumber,
+      motivo: acaoMotor.motivo,
     }
   }
   if (acaoMotor.acao === 'escalar') {

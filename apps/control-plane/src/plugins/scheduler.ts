@@ -313,7 +313,10 @@ import { vigiarSessoes } from '../services/session-watch.js'
 import {
   CADENCIA_DA_VARREDURA_MS,
   branchParaRetomar,
+  contarAcoesDoVigia,
   fecharPrDoVigia,
+  montarPedidoDeConsertoDoVigia,
+  tarefaJaFoiDevolvidaAFila,
   listarPrsAbertosParaOVigia,
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
@@ -2716,7 +2719,6 @@ export const varrerRespostasPrParado = async (app: FastifyInstance) => {
                       apiKey,
                       repository: args.repository,
                       startingBranch: args.startingBranch,
-                      workingBranch: args.workingBranch,
                       titulo: args.titulo,
                       prompt: args.prompt,
                     })
@@ -7013,12 +7015,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               })
               return Math.max(0, total - 1)
             },
-            criarSessaoDev: async ({ repository, startingBranch, workingBranch, titulo, prompt }) =>
+            criarSessaoDev: async ({ repository, startingBranch, titulo, prompt }) =>
               criarSessaoJules({
                 apiKey: (await chaveDoDevDoProjeto(linha.projectId)) ?? undefined,
                 repository,
                 startingBranch,
-                workingBranch,
                 titulo,
                 prompt,
                 onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
@@ -7304,14 +7305,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // nova, sem migração — e sem teto mudo: a contagem é feita pelo
           // banco, sobre a população inteira, e não sobre uma janela recente
           // que calaria depois de N eventos.
+          // Só conta o que foi gravado depois do corte: as retomadas antigas
+          // nunca entregaram (ver `CORTE_DAS_RETOMADAS_COM_DEFEITO`).
           acoesAnteriores: (numeroDoPr) =>
-            app.prisma.event.count({
-              where: {
-                projectId: projeto.id,
-                type: 'audit',
-                payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: numeroDoPr },
-              },
-            }),
+            contarAcoesDoVigia(app.prisma, { projectId: projeto.id, numeroDoPr }),
+          tarefaJaDevolvidaAFila: (issueNumber) =>
+            tarefaJaFoiDevolvidaAFila(app.prisma, { projectId: projeto.id, issueNumber }),
           // O teto de sessões simultâneas é da CONTA do dev, não deste
           // caminho. Estourá-lo por fora faria a delegação normal — a que tira
           // tarefa da fila — passar a ser recusada por culpa do vigia.
@@ -7380,7 +7379,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               projeto as NotifiableProject & { id: string; wingId: string },
               texto
             ),
-          registrarDecisao: async ({ numeroDoPr, acao, texto }) => {
+          registrarDecisao: async ({ numeroDoPr, acao, texto, issueNumber }) => {
             // `type: 'audit'` é o ÚNICO que a linha do tempo do dono lê
             // (`GET /api/v1/painel/timeline`, painel.ts). `payload.texto` é o
             // que ela renderiza; `payload.vigiaDoPr` viaja ao lado, invisível
@@ -7389,7 +7388,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               data: {
                 projectId: projeto.id,
                 type: 'audit',
-                payload: { texto, vigiaDoPr: { numeroDoPr, acao } },
+                payload: {
+                  texto,
+                  vigiaDoPr: {
+                    numeroDoPr,
+                    acao,
+                    ...(issueNumber !== undefined ? { issueNumber } : {}),
+                  },
+                },
               },
             })
           },
@@ -7705,31 +7711,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       })
     }
 
-    // O RAMO DO PULL REQUEST NOS DOIS CAMPOS — ACHADO 1 do QA.
-    //
-    // A versão reprovada mandava `startingBranch: 'main'`. Uma sessão que parte
-    // da principal não vê o trabalho do dev (que está no ramo dele) e, com
-    // `AUTO_CREATE_PR`, termina abrindo um SEGUNDO pull request: o órfão
-    // continua órfão e o cliente ganha uma entrega duplicada. A ação que dá
-    // nome à tarefa não retomava nada.
-    //
-    // `startingBranch` faz a sessão NASCER no ramo do pull request;
-    // `workingBranch` faz o resultado VOLTAR para o mesmo ramo, que é o que
-    // atualiza a entrega existente em vez de criar outra. Os dois campos foram
-    // conferidos ao vivo contra a API em 31/08/2026 (ver `jules-client.ts`), e
-    // não há um terceiro modo de automação: o enum tem só
-    // AUTOMATION_MODE_UNSPECIFIED (nenhuma automação, o trabalho não sai da
-    // sessão) e AUTO_CREATE_PR.
-    //
-    // Nunca cai na principal: quando o vigia não tem ramo utilizável ele nem
-    // chega aqui — a decisão vira `escalar` no portão 11.
+    // A sessão PARTE do ramo do pull request (`startingBranch`) para ver o
+    // trabalho do dev, traz a principal e publica um pull request NOVO — sem
+    // `workingBranch`: medido (62 retomadas, 0 entregas em 14 dias), com ele a
+    // sessão fazia o conserto e nunca publicava. O antigo é fechado como
+    // substituído quando o novo aparece (pr-substituido.ts). Nunca parte da
+    // principal: sem ramo utilizável o vigia nem chega aqui (portão 11).
     const criada = await criarSessaoJules({
       apiKey: (await chaveDoDevDoProjeto(args.projeto.id)) ?? undefined,
       repository: args.projeto.wingId,
       startingBranch: args.branchDoPr,
-      workingBranch: args.branchDoPr,
       titulo: `Destravar o pull request #${args.numeroDoPr} (tarefa #${args.issueNumber})`,
-      prompt: args.pedido,
+      prompt: montarPedidoDeConsertoDoVigia({
+        numeroDoPr: args.numeroDoPr,
+        ramoDoPr: args.branchDoPr,
+        pedido: args.pedido,
+      }),
       onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
     })
     if (criada.situacao !== 'criada') {
