@@ -11843,13 +11843,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await varrerCicloTerminalDaSessao().catch((err) =>
       app.log.warn(err, '[Scheduler] varredura do ciclo terminal falhou; tenta no próximo ciclo')
     )
-    // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás. DEPOIS do
-    // ciclo terminal de propósito — é ele que acaba de fechar a linha da sessão
-    // que terminou, então o conjunto "tem sessão viva" que separa o trabalho
-    // das duas varreduras já está atualizado nesta mesma passada.
-    await varrerPrsOrfaos().catch((err) =>
-      app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
-    )
+    // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás. MOVIDO para
+    // `tickRapido` (task fix-scheduler-tick-cabe, 29/09/2026): medido em
+    // produção que `tick()` rotineiramente ultrapassa os 60s do intervalo (13
+    // disparos pulados em 19min no journal de 28/09) porque os ~28 passos daqui
+    // são sequenciais e vários fazem I/O de rede pesado — e quando isso
+    // acontece, `varrerPrsOrfaos` simplesmente não roda naquele ciclo, e o PR
+    // que o teto de ações por passada adiou só é reexaminado 6h depois. Esta
+    // função é barata (leituras de Prisma + no máximo 1 chamada de rede por PR
+    // órfão) — o problema nunca foi ELA ser lenta, era estar no meio de uma
+    // cadeia sequencial que as OUTRAS etapas empurram para além de 60s. Ver
+    // `tickRapido`, seu próprio `setInterval`, mais abaixo.
     await varrerRetratos().catch((err) =>
       app.log.warn(err, '[Scheduler] varredura de retratos falhou; tenta no próximo ciclo')
     )
@@ -11867,20 +11871,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await rodarRetrospectiva().catch((err) =>
       app.log.error(err, '[Scheduler] retrospectiva falhou; tenta na semana que vem')
     )
-    // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
-    // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
-    // próprios erros e devolve `reason`.
-    await drenarPassagemDeBastao().catch((err) =>
-      app.log.error(err, '[Scheduler] a passagem de bastão falhou; tenta no próximo tique')
-    )
-    await drenarFilaDeJulgamento().catch((err) =>
-      app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
-    )
-    // DJ-T3: vaga liberada no dev assíncrono — acorda o SM na hora em vez de
-    // esperar a janela do cron.
-    await drenarFilaDeVagaLiberada().catch((err) =>
-      app.log.error(err, '[Scheduler] dreno da fila de vaga liberada falhou; tenta no próximo tick')
-    )
+    // `drenarPassagemDeBastao`, `drenarFilaDeJulgamento` e
+    // `drenarFilaDeVagaLiberada` MOVIDOS para `tickRapido` (task
+    // fix-scheduler-tick-cabe, 29/09/2026) — mesmo motivo de `varrerPrsOrfaos`
+    // acima: são baratos (fila em memória + no máximo uma missão disparada,
+    // fire-and-forget), mas ficavam reféns do tick principal quando os passos
+    // de rede pesados empurravam o tique para além de 60s.
     // Tarefa 17: falha aqui não pode derrubar o tick — o próprio
     // `varrerPublicacoes` já isola cada sessão em try/catch; este é só o
     // último cinto de segurança (mesmo padrão de `sweepExpiredEnvironments`
@@ -12111,6 +12107,100 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   app.addHook('onClose', async () => {
     if (intervalId) {
       clearInterval(intervalId)
+    }
+  })
+
+  // TICK RÁPIDO (task fix-scheduler-tick-cabe, 29/09/2026) — relógio PRÓPRIO
+  // para `varrerPrsOrfaos` (vigia-do-pr) e os 3 drenos (`drenarPassagemDeBastao`,
+  // `drenarFilaDeJulgamento`, `drenarFilaDeVagaLiberada`), DECOUPLED do tick
+  // principal.
+  //
+  // O PROBLEMA MEDIDO: `tick()` executa ~28 passos sequenciais com `await`, e
+  // vários fazem I/O de rede real (GitHub) sem paralelismo. Medido em
+  // produção no deploy de 28/09/2026 14:46 UTC (commit e6853b3e): o journal do
+  // systemd mostrou 13 disparos do `setInterval` principal pulados em 19min
+  // (15:15:24 → 15:34:24 UTC) com o log "tick anterior ainda em andamento;
+  // pulando este disparo do relógio" — ou seja, o próprio `tick()`
+  // rotineiramente ultrapassa os 60s do intervalo. Consequência real: o PR
+  // #3953 foi adiado pelo teto de ações por passada de `varrerPrsOrfaos`
+  // (`TETO_DE_ACOES_POR_PASSADA`), e como essa varredura simplesmente não
+  // rodava em vários ciclos seguidos (presa atrás dos outros ~24 passos), o PR
+  // ficava sem reprocessamento priorizado — a próxima passada só vem 6h
+  // depois (`CADENCIA_DA_VARREDURA_MS`, vigia-do-pr.ts) e reprocessa os
+  // mesmos PRs na mesma ordem.
+  //
+  // A ESCOLHA: das três formas cogitadas de consertar (orçamento de tempo por
+  // etapa com continuação; relógio próprio para as etapas baratas; mais
+  // paralelismo entre projetos), esta — relógio próprio — foi a mais segura e
+  // cirúrgica. `varrerPrsOrfaos` e os 3 drenos são, pelo código, BARATOS:
+  // leituras de Prisma + no máximo 1 chamada de rede por PR órfão (com teto de
+  // ações por passada) e disparo de missão fire-and-forget
+  // (`executeMissionWithFailover`, chamado via `void`, nunca aguardado). O
+  // problema nunca foi ELES serem lentos — era estarem no MEIO de uma cadeia
+  // sequencial onde as OUTRAS etapas (I/O de rede pesado, sem paralelismo por
+  // projeto) empurravam o tique inteiro para além de 60s. Extraí-los para o
+  // próprio relógio os torna confiáveis a cada ~60s mesmo que o tick principal
+  // leve minutos — SEM aumentar nenhuma chamada ao GitHub (mesmas chamadas, só
+  // desacopladas no tempo). Orçamento por etapa com continuação seria mais
+  // completo, mas é reescrita muito maior dos ~28 passos num arquivo de mais
+  // de 12 mil linhas com centenas de testes — fora de escopo seguro para esta
+  // correção. Mais paralelismo aumentaria chamadas simultâneas ao GitHub, o
+  // que o pedido original proíbe.
+  //
+  // MESMO PADRÃO do tick principal: trava própria (`tickRapidoEmAndamento`)
+  // para nunca deixar dois `tickRapido()` rodarem sobrepostos, intervalo
+  // configurável por env var (`GITORCH_SCHEDULER_TICK_RAPIDO_MS`, default
+  // igual ao principal — o ganho não é rodar mais rápido, é não ficar refém
+  // do tick pesado), e não roda sob teste.
+  let tickRapidoEmAndamento = false
+
+  const tickRapido = async (): Promise<void> => {
+    // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás.
+    await varrerPrsOrfaos().catch((err) =>
+      app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
+    )
+    // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
+    // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
+    // próprios erros e devolve `reason`.
+    await drenarPassagemDeBastao().catch((err) =>
+      app.log.error(err, '[Scheduler] a passagem de bastão falhou; tenta no próximo tique')
+    )
+    await drenarFilaDeJulgamento().catch((err) =>
+      app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
+    )
+    // DJ-T3: vaga liberada no dev assíncrono — acorda o SM na hora em vez de
+    // esperar a janela do cron.
+    await drenarFilaDeVagaLiberada().catch((err) =>
+      app.log.error(err, '[Scheduler] dreno da fila de vaga liberada falhou; tenta no próximo tick')
+    )
+  }
+
+  const intervalIdRapido =
+    process.env['NODE_ENV'] === 'test'
+      ? undefined
+      : setInterval(
+          () => {
+            if (tickRapidoEmAndamento) {
+              app.log.warn(
+                '[Scheduler] tickRapido anterior ainda em andamento; pulando este disparo'
+              )
+              return
+            }
+            tickRapidoEmAndamento = true
+            void tickRapido()
+              .catch((err) => {
+                app.log.error(err, '[Scheduler] tickRapido rejeitou')
+              })
+              .finally(() => {
+                tickRapidoEmAndamento = false
+              })
+          },
+          Number(process.env['GITORCH_SCHEDULER_TICK_RAPIDO_MS'] ?? 60 * 1000)
+        )
+
+  app.addHook('onClose', async () => {
+    if (intervalIdRapido) {
+      clearInterval(intervalIdRapido)
     }
   })
 
