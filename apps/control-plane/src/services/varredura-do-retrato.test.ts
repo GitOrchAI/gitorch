@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { varrerRetratoDoProjeto } from './varredura-do-retrato.js'
+import { varrerRetratoDoProjeto, type VarreduraDoRetratoDeps } from './varredura-do-retrato.js'
+import { classificarOrigemEIssueDoPr, type SessaoParaOrigem } from '../routes/github-webhook.js'
 
 function ghGetFake(rotas: Record<string, unknown>) {
   return vi.fn(async (caminho: string) => {
@@ -135,6 +136,70 @@ describe('varrerRetratoDoProjeto', () => {
       numero: 583,
       pr: expect.objectContaining({ number: 583 }),
     })
+  })
+
+  it('issue #877 (conserto pós-#979): reclassificarOrigem grava o RESULTADO da classificação, não só dispara a chamada — caso real do PR #583', async () => {
+    // A revisão de QA achou o furo: o teste anterior só provava que `aplicar`
+    // foi chamado com o PR cru. Não provava que a classificação de fato virou
+    // `{ origem: 'jules_gitorch', issueNumber: 580 }` nem que quem grava a
+    // ficha recebeu esses valores — o mesmo tipo de furo que deixou o bug real
+    // do teto (commit 4dfb2f86) passar despercebido por dois ciclos em
+    // produção. Este teste usa `classificarOrigemEIssueDoPr` de verdade (é
+    // pura, sem rede — mockar aqui só esconderia um bug real na classificação)
+    // com os dados reais do PR #583 e a sessão real da issue #580, e afirma
+    // sobre o registro que `aplicar` grava — não sobre a chamada.
+    const prCru583 = {
+      number: 583,
+      state: 'open',
+      draft: false,
+      mergeable: true,
+      body: 'PR created automatically by Jules for task [16385381233224183643](https://jules.google.com/task/16385381233224183643) started by @loureng',
+      user: { login: 'google-labs-jules[bot]' },
+      labels: [],
+      head: { ref: 'fix-tests-and-pipeline-check-16385381233224183643' },
+    }
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': [prCru583],
+      '/repos/dono/repo/issues?': [],
+    })
+
+    // A sessão real do dev assíncrono que faltava em produção (achado real
+    // 29/09/2026): o branch do PR #583 termina no mesmo identificador que a
+    // sessão da issue #580 usa.
+    const sessoesDoProjeto: SessaoParaOrigem[] = [
+      { sessionName: 'jules/16385381233224183643', issueNumber: 580, pullRequestNumber: null },
+    ]
+
+    // Simula o que `atualizarFichaDoItem` grava em produção (scheduler.ts) —
+    // sem prisma, só pra provar que o valor certo chega até quem persiste.
+    const fichasGravadas: Record<number, { origem: string; issueNumber: number | null }> = {}
+
+    type ArgsDoAplicar = Parameters<
+      NonNullable<VarreduraDoRetratoDeps['reclassificarOrigem']>['aplicar']
+    >[0]
+    const aplicar = vi.fn(async ({ numero, pr }: ArgsDoAplicar) => {
+      const classificacao = classificarOrigemEIssueDoPr({
+        payload: { pull_request: pr },
+        commits: [],
+        sessoesDoProjeto,
+      })
+      fichasGravadas[numero] = {
+        origem: classificacao.origem,
+        issueNumber: classificacao.issueNumber,
+      }
+      return true
+    })
+
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      reclassificarOrigem: { aplicar, teto: 5 },
+    })
+
+    // A prova real: não "aplicar foi chamado", e sim "o que foi gravado bate
+    // com a classificação correta do caso real que motivou a issue #877".
+    expect(fichasGravadas[583]).toEqual({ origem: 'jules_gitorch', issueNumber: 580 })
   })
 
   it('issue #877: reclassificarOrigem respeita o TETO por ciclo (nunca mais)', async () => {
