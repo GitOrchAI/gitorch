@@ -7237,6 +7237,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       ultimaVarreduraDePrOrfao.set(projeto.id, agora.getTime())
 
       try {
+        const inicioDoProjeto = Date.now()
         const token =
           process.env['GITORCH_GITHUB_TOKEN'] ??
           (await mintInstallationToken({
@@ -7389,7 +7390,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           onInfo: (m) => app.log.debug(`[Scheduler] ${m}`),
         })
-        app.log.info(`[Scheduler] ${projeto.wingId}: ${resumo}`)
+        app.log.info(
+          { duracaoMs: Date.now() - inicioDoProjeto },
+          `[Scheduler] ${projeto.wingId}: ${resumo}`
+        )
       } catch (err) {
         app.log.warn(err, `[Scheduler] vigia-do-pr falhou em ${projeto.wingId}; tenta na próxima`)
       }
@@ -11788,6 +11792,36 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // MEDIÇÃO DE DURAÇÃO POR ETAPA (task fix-scheduler-tick-cabe, item 3,
+  // 29/09/2026) — fecha a cegueira que o bug expôs: `tick()` executa ~28
+  // passos sequenciais e NENHUM tinha log de duração (confirmado:
+  // `grep -n "Date.now()\|performance.now()" scheduler.ts`, antes deste
+  // conserto, não achava nada relevante). Quando o journal mostrou 13
+  // disparos pulados em 19min (medido em produção, 28/09/2026), não dava
+  // para apontar qual dos ~28 passos era o mais lento — só que, JUNTOS, eles
+  // ultrapassavam os 60s. Isto aqui é o que resolve essa cegueira DAQUI PRA
+  // FRENTE (não retroativamente: os números do incidente de 28/09 continuam
+  // sem atribuição por etapa, e o PR desta task diz isso com todas as
+  // letras).
+  //
+  // `finally` de propósito, nunca `catch`: a duração precisa ser logada
+  // SEMPRE, sucesso ou falha — e um `catch` aqui engoliria a rejeição que o
+  // `.catch(...)` de CADA chamador já trata no lugar de sempre (ou, para as
+  // poucas etapas sem `.catch` inline, que o `.catch` do `tick()`/`tickRapido()`
+  // no `setInterval` trata). `medirEtapa` preserva os dois caminhos
+  // idênticos a como eram: quando `fn()` já resolve (porque tem `.catch`
+  // embutido), a duração é logada e nada mais muda; quando `fn()` rejeita
+  // (etapas sem `.catch` embutido), a duração é logada e a rejeição CONTINUA
+  // propagando — o `finally` não segura nem mascara o erro.
+  const medirEtapa = async (etapa: string, fn: () => Promise<void>): Promise<void> => {
+    const inicio = Date.now()
+    try {
+      await fn()
+    } finally {
+      app.log.info({ etapa, duracaoMs: Date.now() - inicio }, '[Scheduler] etapa concluída')
+    }
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -11795,21 +11829,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // gasta uma chamada de rede por conexão cujo ciclo de renovação venceu
     // — e (achado Baixo 5 da revisão da Task 5/F8) já registra o resumo da
     // passada sozinha, então nada precisa ser feito com o retorno aqui.
-    await completarAgendasDosProjetos()
-    await renovarTokensGithubDoRelogio(app)
+    await medirEtapa('completarAgendasDosProjetos', () => completarAgendasDosProjetos())
+    await medirEtapa('renovarTokensGithubDoRelogio', async () => {
+      await renovarTokensGithubDoRelogio(app)
+    })
     // Os MOTORES pelo mesmo motivo do GitHub, e com a mesma disciplina: o que
     // fica parado vence sozinho, e vencer em silêncio já parou a esteira por
     // três dias. Nunca rejeita.
-    await renovarMotoresDoRelogio().catch((err) =>
-      app.log.error(err, '[Scheduler] a renovação de motores falhou; tenta na próxima hora')
+    await medirEtapa('renovarMotoresDoRelogio', () =>
+      renovarMotoresDoRelogio().catch((err) =>
+        app.log.error(err, '[Scheduler] a renovação de motores falhou; tenta na próxima hora')
+      )
     )
     // Só DEPOIS: quem perdeu o acesso ao repositório não pode ter o dia
     // começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
     // nunca rejeita e só pergunta ao GitHub sobre os projetos cujo ciclo
     // venceu — não é uma chamada por tique nem por missão.
-    await reconferirAcessoDoRelogio(app)
-    await processSetupMissions()
-    await varrerSessoesDoDev()
+    await medirEtapa('reconferirAcessoDoRelogio', async () => {
+      await reconferirAcessoDoRelogio(app)
+    })
+    await medirEtapa('processSetupMissions', () => processSetupMissions())
+    await medirEtapa('varrerSessoesDoDev', () => varrerSessoesDoDev())
     // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd): ANTES dos
     // dois varredores abaixo, de propósito — são eles que fecham sessão. L4-
     // T30 (05/09, pós-D75): a reconciliação agora ENCERRA a sessão presa ela
@@ -11822,65 +11862,75 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // filtra `closedAt: null`, então uma sessão fechada some de vista para
     // sempre (medido em produção 03/09: 9 sessões assim). Nunca derruba o
     // tique: cada projeto se isola sozinho.
-    await reconciliarDuvidasEscaladasLegadas().catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] reconciliação de dúvidas escaladas falhou; tenta no próximo tick'
+    await medirEtapa('reconciliarDuvidasEscaladasLegadas', () =>
+      reconciliarDuvidasEscaladasLegadas().catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] reconciliação de dúvidas escaladas falhou; tenta no próximo tick'
+        )
       )
     )
     // Nunca derruba o tique: a varredura já isola cada arquivamento, este é o
     // último cinto de segurança, igual às vizinhas.
     // Antes da reconciliação de vagas de propósito: esta é a que devolve a
     // vaga presa por sessão que existe e não anda, o caso que trava o SM.
-    await devolverVagasDeSessaoAbandonada().catch((err) =>
-      app.log.warn(
-        err,
-        '[Scheduler] varredura de sessões abandonadas falhou; tenta no próximo ciclo'
+    await medirEtapa('devolverVagasDeSessaoAbandonada', () =>
+      devolverVagasDeSessaoAbandonada().catch((err) =>
+        app.log.warn(
+          err,
+          '[Scheduler] varredura de sessões abandonadas falhou; tenta no próximo ciclo'
+        )
       )
     )
     // Irmã da de cima: fecha a sessão que o Jules já CONCLUIU ou FALHOU e cuja
     // linha nunca fechou — a que encheu as vagas e parou a esteira em 29/08.
-    await varrerCicloTerminalDaSessao().catch((err) =>
-      app.log.warn(err, '[Scheduler] varredura do ciclo terminal falhou; tenta no próximo ciclo')
+    await medirEtapa('varrerCicloTerminalDaSessao', () =>
+      varrerCicloTerminalDaSessao().catch((err) =>
+        app.log.warn(err, '[Scheduler] varredura do ciclo terminal falhou; tenta no próximo ciclo')
+      )
     )
-    // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás. DEPOIS do
-    // ciclo terminal de propósito — é ele que acaba de fechar a linha da sessão
-    // que terminou, então o conjunto "tem sessão viva" que separa o trabalho
-    // das duas varreduras já está atualizado nesta mesma passada.
-    await varrerPrsOrfaos().catch((err) =>
-      app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
-    )
-    await varrerRetratos().catch((err) =>
-      app.log.warn(err, '[Scheduler] varredura de retratos falhou; tenta no próximo ciclo')
+    // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás. MOVIDO para
+    // `tickRapido` (task fix-scheduler-tick-cabe, 29/09/2026): medido em
+    // produção que `tick()` rotineiramente ultrapassa os 60s do intervalo (13
+    // disparos pulados em 19min no journal de 28/09) porque os ~28 passos daqui
+    // são sequenciais e vários fazem I/O de rede pesado — e quando isso
+    // acontece, `varrerPrsOrfaos` simplesmente não roda naquele ciclo, e o PR
+    // que o teto de ações por passada adiou só é reexaminado 6h depois. Esta
+    // função é barata (leituras de Prisma + no máximo 1 chamada de rede por PR
+    // órfão) — o problema nunca foi ELA ser lenta, era estar no meio de uma
+    // cadeia sequencial que as OUTRAS etapas empurram para além de 60s. Ver
+    // `tickRapido`, seu próprio `setInterval`, mais abaixo.
+    await medirEtapa('varrerRetratos', () =>
+      varrerRetratos().catch((err) =>
+        app.log.warn(err, '[Scheduler] varredura de retratos falhou; tenta no próximo ciclo')
+      )
     )
     // C10 (fix-up L4-T5, CSO): rede de segurança para PR duplicado LEGADO —
     // cadência própria de 6h (a função em si decide se roda ou não neste
     // tique). Nunca derruba o tique: cada projeto se isola sozinho.
-    await varrerPrsDuplicadosDosProjetos().catch((err) =>
-      app.log.warn(err, '[Scheduler] varredura de PRs duplicados falhou; tenta no próximo ciclo')
+    await medirEtapa('varrerPrsDuplicadosDosProjetos', () =>
+      varrerPrsDuplicadosDosProjetos().catch((err) =>
+        app.log.warn(err, '[Scheduler] varredura de PRs duplicados falhou; tenta no próximo ciclo')
+      )
     )
-    await reconciliarVagasDoDev().catch((err) =>
-      app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')
+    await medirEtapa('reconciliarVagasDoDev', () =>
+      reconciliarVagasDoDev().catch((err) =>
+        app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')
+      )
     )
     // A cerimônia semanal. Nunca derruba o tique: uma retrospectiva que falha
     // não pode calar o resto do relógio.
-    await rodarRetrospectiva().catch((err) =>
-      app.log.error(err, '[Scheduler] retrospectiva falhou; tenta na semana que vem')
+    await medirEtapa('rodarRetrospectiva', () =>
+      rodarRetrospectiva().catch((err) =>
+        app.log.error(err, '[Scheduler] retrospectiva falhou; tenta na semana que vem')
+      )
     )
-    // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
-    // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
-    // próprios erros e devolve `reason`.
-    await drenarPassagemDeBastao().catch((err) =>
-      app.log.error(err, '[Scheduler] a passagem de bastão falhou; tenta no próximo tique')
-    )
-    await drenarFilaDeJulgamento().catch((err) =>
-      app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
-    )
-    // DJ-T3: vaga liberada no dev assíncrono — acorda o SM na hora em vez de
-    // esperar a janela do cron.
-    await drenarFilaDeVagaLiberada().catch((err) =>
-      app.log.error(err, '[Scheduler] dreno da fila de vaga liberada falhou; tenta no próximo tick')
-    )
+    // `drenarPassagemDeBastao`, `drenarFilaDeJulgamento` e
+    // `drenarFilaDeVagaLiberada` MOVIDOS para `tickRapido` (task
+    // fix-scheduler-tick-cabe, 29/09/2026) — mesmo motivo de `varrerPrsOrfaos`
+    // acima: são baratos (fila em memória + no máximo uma missão disparada,
+    // fire-and-forget), mas ficavam reféns do tick principal quando os passos
+    // de rede pesados empurravam o tique para além de 60s.
     // Tarefa 17: falha aqui não pode derrubar o tick — o próprio
     // `varrerPublicacoes` já isola cada sessão em try/catch; este é só o
     // último cinto de segurança (mesmo padrão de `sweepExpiredEnvironments`
@@ -11890,32 +11940,45 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sem parar enquanto o resto do tique faz trabalho pesado.
     // ANTES da árvore, de propósito: fechar a tarefa é o que permite a
     // feature dela fechar em seguida, na mesma passada.
-    await varrerTarefasEntregues().catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] varredura de tarefas entregues falhou; tenta no próximo ciclo'
+    await medirEtapa('varrerTarefasEntregues', () =>
+      varrerTarefasEntregues().catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] varredura de tarefas entregues falhou; tenta no próximo ciclo'
+        )
       )
     )
-    await varrerArvoreDosPlanos().catch((err) =>
-      app.log.error(err, '[Scheduler] varredura da árvore do plano falhou; tenta no próximo ciclo')
+    await medirEtapa('varrerArvoreDosPlanos', () =>
+      varrerArvoreDosPlanos().catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] varredura da árvore do plano falhou; tenta no próximo ciclo'
+        )
+      )
     )
-    await varrerPublicacoes().catch((err) =>
-      app.log.error(err, '[Scheduler] varredura de publicações falhou; tenta no próximo tick')
+    await medirEtapa('varrerPublicacoes', () =>
+      varrerPublicacoes().catch((err) =>
+        app.log.error(err, '[Scheduler] varredura de publicações falhou; tenta no próximo tick')
+      )
     )
     // Depois das publicações e antes das missões: a cota manda no que o
     // relógio pode disparar, então é melhor decidir a leva de hoje com o
     // número de agora do que com o da última missão.
-    await varrerCotasDosMotores().catch((err) =>
-      app.log.error(err, '[Scheduler] varredura de cotas falhou; tenta no próximo tick')
+    await medirEtapa('varrerCotasDosMotores', () =>
+      varrerCotasDosMotores().catch((err) =>
+        app.log.error(err, '[Scheduler] varredura de cotas falhou; tenta no próximo tick')
+      )
     )
     // DJ-T4: logo depois da varredura de cota, pelo mesmo motivo dela — é
     // aqui que a esteira acorda a missão que dormia esperando o motor
     // voltar. Nunca derruba o tick: cada missão se isola sozinha dentro da
     // função (try/catch por missão, ver retomarMissoesEsperandoCota).
-    await retomarMissoesEsperandoCota().catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] retomada de missões esperando cota falhou; tenta no próximo tick'
+    await medirEtapa('retomarMissoesEsperandoCota', () =>
+      retomarMissoesEsperandoCota().catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] retomada de missões esperando cota falhou; tenta no próximo tick'
+        )
       )
     )
     // E o CATÁLOGO DE MODELOS, uma vez por dia, logo depois da cota e pelo
@@ -11923,110 +11986,124 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // ele aprova um modelo morto na hora de escolher com o que a missão roda.
     // Antes das missões de propósito: é esta lista que a guarda de modelo
     // consulta degrau a degrau.
-    await varrerCatalogoDeModelosDoRelogio(app).catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] varredura de catálogo de modelos falhou; tenta no próximo tick'
+    await medirEtapa('varrerCatalogoDeModelosDoRelogio', () =>
+      varrerCatalogoDeModelosDoRelogio(app).catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] varredura de catálogo de modelos falhou; tenta no próximo tick'
+        )
       )
     )
     // A sprint do quadro do cliente. Vem depois da cota e antes das missões
     // porque é barata quando não há nada a fazer (uma leitura por projeto) e
     // porque a sprint precisa existir ANTES de o Produto pendurar tarefa nela.
-    await varrerSprintDosProjetos().catch((err) =>
-      app.log.error(err, '[Scheduler] varredura de sprint falhou; tenta no próximo tick')
+    await medirEtapa('varrerSprintDosProjetos', () =>
+      varrerSprintDosProjetos().catch((err) =>
+        app.log.error(err, '[Scheduler] varredura de sprint falhou; tenta no próximo tick')
+      )
     )
     // LOGO DEPOIS, e nesta ordem: o ciclo precisa existir antes de ter o que
     // pôr dentro dele. Na primeira passada de um quadro novo, a de cima cria a
     // sprint e esta já a preenche na mesma volta do relógio.
-    await varrerItensDaSprint().catch((err) =>
-      app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
+    await medirEtapa('varrerItensDaSprint', () =>
+      varrerItensDaSprint().catch((err) =>
+        app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
+      )
     )
     // Cadência dedicada (Option B) para garantir que as issues que precisam de
     // análise não fiquem presas até o próximo agendamento do RA.
-    await varrerAnalisesPendentes().catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] varredura de análises pendentes falhou; tenta no próximo tick'
+    await medirEtapa('varrerAnalisesPendentes', () =>
+      varrerAnalisesPendentes().catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] varredura de análises pendentes falhou; tenta no próximo tick'
+        )
       )
     )
     // L4-T8: a rede de segurança do quadro — pendura no board qualquer issue
     // aberta que ainda ficou de fora (o anexo na hora da criação é
     // best-effort). Cadência própria (6h), não trava o resto do tique.
-    await varrerIssuesForaDoQuadroDosProjetos().catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] varredura de issues fora do quadro falhou; tenta no próximo tick'
+    await medirEtapa('varrerIssuesForaDoQuadroDosProjetos', () =>
+      varrerIssuesForaDoQuadroDosProjetos().catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] varredura de issues fora do quadro falhou; tenta no próximo tick'
+        )
       )
     )
     // D1 (leva 2): "sua ordem custa caro?" — só LÊ a fila e, quando vale a
     // pena, avisa o dono. Nunca reordena; a ordem dele prevalece sempre.
-    await avaliarCustoDaOrdem().catch((err) =>
-      app.log.error(err, '[Scheduler] avaliação do custo da ordem falhou; tenta no próximo tick')
+    await medirEtapa('avaliarCustoDaOrdem', () =>
+      avaliarCustoDaOrdem().catch((err) =>
+        app.log.error(err, '[Scheduler] avaliação do custo da ordem falhou; tenta no próximo tick')
+      )
     )
-    await sweepExpiredEnvironments()
-    const now = new Date()
-    let schedules
-    try {
-      schedules = await app.prisma.projectSchedule.findMany({
-        where: { isActive: true, project: { isActive: true } },
-      })
-    } catch (err) {
-      // Nunca deixar o tick rejeitar: um erro de banco não pode derrubar o
-      // processo (setInterval não trata a promise).
-      app.log.error(err, '[Scheduler] tick falhou ao ler agendas; tentando no próximo minuto')
-      return
-    }
-
-    for (const schedule of schedules) {
-      if (!isF6AgentRole(schedule.agentRole)) {
-        app.log.warn(
-          `[Scheduler] Agenda ${schedule.id} com papel desconhecido '${schedule.agentRole}'; ignorando`
-        )
-        continue
-      }
-
-      let due = false
+    await medirEtapa('sweepExpiredEnvironments', () => sweepExpiredEnvironments())
+    await medirEtapa('dispararAgendas', async () => {
+      const now = new Date()
+      let schedules
       try {
-        // O relógio DESTA agenda, e não o do tique. Os dois projetos tinham os
-        // quatro papéis no mesmo horário e o carimbo do último disparo era
-        // idêntico até os milissegundos (os dois RA às 18:01:00.339) — e a
-        // conta de motores é do DONO, não do projeto, então eles disputavam o
-        // mesmo motor no mesmo segundo. Recuar o relógio em N minutos adianta
-        // a agenda em N sem tocar no cron, que segue em hora redonda: é o que
-        // o dono lê e edita, e o desvio é decisão nossa, não dado dele.
-        due = isScheduleDue(
-          schedule.cron,
-          schedule.lastTriggeredAt,
-          relogioDaAgenda(now, schedule.projectId, schedule.agentRole)
-        )
-      } catch (err) {
-        app.log.warn(
-          `[Scheduler] Agenda ${schedule.id} com cron inválido '${schedule.cron}': ${String(err)}`
-        )
-        continue
-      }
-      if (!due) continue
-
-      try {
-        const claimed = await app.prisma.projectSchedule.updateMany({
-          where: { id: schedule.id, lastTriggeredAt: schedule.lastTriggeredAt },
-          data: { lastTriggeredAt: now },
+        schedules = await app.prisma.projectSchedule.findMany({
+          where: { isActive: true, project: { isActive: true } },
         })
-        if (claimed.count === 0) continue // outro tick já reivindicou esta janela
-
-        const result = await triggerAgentMission(schedule.agentRole, schedule.projectId)
-
-        // Recusa temporária: devolve a janela (reverte o claim) para reprocessar.
-        if (!result.triggered && result.reason && RETRYABLE_REASONS.has(result.reason)) {
-          await app.prisma.projectSchedule.updateMany({
-            where: { id: schedule.id, lastTriggeredAt: now },
-            data: { lastTriggeredAt: schedule.lastTriggeredAt },
-          })
-        }
       } catch (err) {
-        app.log.error(err, `[Scheduler] falha ao processar agenda ${schedule.id}`)
+        // Nunca deixar o tick rejeitar: um erro de banco não pode derrubar o
+        // processo (setInterval não trata a promise).
+        app.log.error(err, '[Scheduler] tick falhou ao ler agendas; tentando no próximo minuto')
+        return
       }
-    }
+
+      for (const schedule of schedules) {
+        if (!isF6AgentRole(schedule.agentRole)) {
+          app.log.warn(
+            `[Scheduler] Agenda ${schedule.id} com papel desconhecido '${schedule.agentRole}'; ignorando`
+          )
+          continue
+        }
+
+        let due = false
+        try {
+          // O relógio DESTA agenda, e não o do tique. Os dois projetos tinham os
+          // quatro papéis no mesmo horário e o carimbo do último disparo era
+          // idêntico até os milissegundos (os dois RA às 18:01:00.339) — e a
+          // conta de motores é do DONO, não do projeto, então eles disputavam o
+          // mesmo motor no mesmo segundo. Recuar o relógio em N minutos adianta
+          // a agenda em N sem tocar no cron, que segue em hora redonda: é o que
+          // o dono lê e edita, e o desvio é decisão nossa, não dado dele.
+          due = isScheduleDue(
+            schedule.cron,
+            schedule.lastTriggeredAt,
+            relogioDaAgenda(now, schedule.projectId, schedule.agentRole)
+          )
+        } catch (err) {
+          app.log.warn(
+            `[Scheduler] Agenda ${schedule.id} com cron inválido '${schedule.cron}': ${String(err)}`
+          )
+          continue
+        }
+        if (!due) continue
+
+        try {
+          const claimed = await app.prisma.projectSchedule.updateMany({
+            where: { id: schedule.id, lastTriggeredAt: schedule.lastTriggeredAt },
+            data: { lastTriggeredAt: now },
+          })
+          if (claimed.count === 0) continue // outro tick já reivindicou esta janela
+
+          const result = await triggerAgentMission(schedule.agentRole, schedule.projectId)
+
+          // Recusa temporária: devolve a janela (reverte o claim) para reprocessar.
+          if (!result.triggered && result.reason && RETRYABLE_REASONS.has(result.reason)) {
+            await app.prisma.projectSchedule.updateMany({
+              where: { id: schedule.id, lastTriggeredAt: now },
+              data: { lastTriggeredAt: schedule.lastTriggeredAt },
+            })
+          }
+        } catch (err) {
+          app.log.error(err, `[Scheduler] falha ao processar agenda ${schedule.id}`)
+        }
+      }
+    })
   }
 
   // Loop de verificação a cada minuto (GITORCH_SCHEDULER_TICK_MS sobrescreve —
@@ -12111,6 +12188,111 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   app.addHook('onClose', async () => {
     if (intervalId) {
       clearInterval(intervalId)
+    }
+  })
+
+  // TICK RÁPIDO (task fix-scheduler-tick-cabe, 29/09/2026) — relógio PRÓPRIO
+  // para `varrerPrsOrfaos` (vigia-do-pr) e os 3 drenos (`drenarPassagemDeBastao`,
+  // `drenarFilaDeJulgamento`, `drenarFilaDeVagaLiberada`), DECOUPLED do tick
+  // principal.
+  //
+  // O PROBLEMA MEDIDO: `tick()` executa ~28 passos sequenciais com `await`, e
+  // vários fazem I/O de rede real (GitHub) sem paralelismo. Medido em
+  // produção no deploy de 28/09/2026 14:46 UTC (commit e6853b3e): o journal do
+  // systemd mostrou 13 disparos do `setInterval` principal pulados em 19min
+  // (15:15:24 → 15:34:24 UTC) com o log "tick anterior ainda em andamento;
+  // pulando este disparo do relógio" — ou seja, o próprio `tick()`
+  // rotineiramente ultrapassa os 60s do intervalo. Consequência real: o PR
+  // #3953 foi adiado pelo teto de ações por passada de `varrerPrsOrfaos`
+  // (`TETO_DE_ACOES_POR_PASSADA`), e como essa varredura simplesmente não
+  // rodava em vários ciclos seguidos (presa atrás dos outros ~24 passos), o PR
+  // ficava sem reprocessamento priorizado — a próxima passada só vem 6h
+  // depois (`CADENCIA_DA_VARREDURA_MS`, vigia-do-pr.ts) e reprocessa os
+  // mesmos PRs na mesma ordem.
+  //
+  // A ESCOLHA: das três formas cogitadas de consertar (orçamento de tempo por
+  // etapa com continuação; relógio próprio para as etapas baratas; mais
+  // paralelismo entre projetos), esta — relógio próprio — foi a mais segura e
+  // cirúrgica. `varrerPrsOrfaos` e os 3 drenos são, pelo código, BARATOS:
+  // leituras de Prisma + no máximo 1 chamada de rede por PR órfão (com teto de
+  // ações por passada) e disparo de missão fire-and-forget
+  // (`executeMissionWithFailover`, chamado via `void`, nunca aguardado). O
+  // problema nunca foi ELES serem lentos — era estarem no MEIO de uma cadeia
+  // sequencial onde as OUTRAS etapas (I/O de rede pesado, sem paralelismo por
+  // projeto) empurravam o tique inteiro para além de 60s. Extraí-los para o
+  // próprio relógio os torna confiáveis a cada ~60s mesmo que o tick principal
+  // leve minutos — SEM aumentar nenhuma chamada ao GitHub (mesmas chamadas, só
+  // desacopladas no tempo). Orçamento por etapa com continuação seria mais
+  // completo, mas é reescrita muito maior dos ~28 passos num arquivo de mais
+  // de 12 mil linhas com centenas de testes — fora de escopo seguro para esta
+  // correção. Mais paralelismo aumentaria chamadas simultâneas ao GitHub, o
+  // que o pedido original proíbe.
+  //
+  // MESMO PADRÃO do tick principal: trava própria (`tickRapidoEmAndamento`)
+  // para nunca deixar dois `tickRapido()` rodarem sobrepostos, intervalo
+  // configurável por env var (`GITORCH_SCHEDULER_TICK_RAPIDO_MS`, default
+  // igual ao principal — o ganho não é rodar mais rápido, é não ficar refém
+  // do tick pesado), e não roda sob teste.
+  let tickRapidoEmAndamento = false
+
+  const tickRapido = async (): Promise<void> => {
+    // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás.
+    await medirEtapa('varrerPrsOrfaos', () =>
+      varrerPrsOrfaos().catch((err) =>
+        app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
+      )
+    )
+    // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
+    // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
+    // próprios erros e devolve `reason`.
+    await medirEtapa('drenarPassagemDeBastao', () =>
+      drenarPassagemDeBastao().catch((err) =>
+        app.log.error(err, '[Scheduler] a passagem de bastão falhou; tenta no próximo tique')
+      )
+    )
+    await medirEtapa('drenarFilaDeJulgamento', () =>
+      drenarFilaDeJulgamento().catch((err) =>
+        app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
+      )
+    )
+    // DJ-T3: vaga liberada no dev assíncrono — acorda o SM na hora em vez de
+    // esperar a janela do cron.
+    await medirEtapa('drenarFilaDeVagaLiberada', () =>
+      drenarFilaDeVagaLiberada().catch((err) =>
+        app.log.error(
+          err,
+          '[Scheduler] dreno da fila de vaga liberada falhou; tenta no próximo tick'
+        )
+      )
+    )
+  }
+
+  const intervalIdRapido =
+    process.env['NODE_ENV'] === 'test'
+      ? undefined
+      : setInterval(
+          () => {
+            if (tickRapidoEmAndamento) {
+              app.log.warn(
+                '[Scheduler] tickRapido anterior ainda em andamento; pulando este disparo'
+              )
+              return
+            }
+            tickRapidoEmAndamento = true
+            void tickRapido()
+              .catch((err) => {
+                app.log.error(err, '[Scheduler] tickRapido rejeitou')
+              })
+              .finally(() => {
+                tickRapidoEmAndamento = false
+              })
+          },
+          Number(process.env['GITORCH_SCHEDULER_TICK_RAPIDO_MS'] ?? 60 * 1000)
+        )
+
+  app.addHook('onClose', async () => {
+    if (intervalIdRapido) {
+      clearInterval(intervalIdRapido)
     }
   })
 
