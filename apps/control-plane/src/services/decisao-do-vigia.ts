@@ -414,6 +414,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           agentQuestion: agentQuestion as NonNullable<typeof agentQuestion>,
           ...(execute ? { execute } : {}),
           onWarn,
+          prisma,
         }
       )
     } catch (err) {
