@@ -52,6 +52,7 @@ function situacao(over: Partial<PrOrfaoObservado> = {}): PrOrfaoObservado {
     verificacao: 'verde',
     paradoHaMs: 7 * DIA,
     acoesAnteriores: 0,
+    tarefaJaDevolvidaAFila: false,
     podeAbrirSessao: true,
     ...over,
   }
@@ -258,7 +259,11 @@ describe('o que o vigia decide para o PR órfão', () => {
 describe('o teto DIZ quando morde', () => {
   it('estourado, a decisão vira escalar e o motivo traz o número de ações', () => {
     const d = decidirAcaoNoPrOrfao(
-      situacao({ mergeable: false, acoesAnteriores: MAX_ACOES_DO_VIGIA })
+      situacao({
+        mergeable: false,
+        acoesAnteriores: MAX_ACOES_DO_VIGIA,
+        tarefaJaDevolvidaAFila: true,
+      })
     )
     expect(d.acao).toBe('escalar')
     expect(d.motivo).toContain(String(MAX_ACOES_DO_VIGIA))
@@ -279,6 +284,7 @@ describe('o teto DIZ quando morde', () => {
       prs: [prAberto({ numero: 356, corpo: CORPO_PR_356_DEV, mergeable: false })],
       issueDoPr: () => 329,
       acoesAnteriores: async () => MAX_ACOES_DO_VIGIA,
+      tarefaJaDevolvidaAFila: async () => true,
       avisarDono: async (t) => {
         avisos.push(t)
         return true
@@ -438,6 +444,7 @@ async function rodar(over: {
   issueDoPr?: (n: number) => number | null
   issueAberta?: (n: number) => Promise<boolean>
   acoesAnteriores?: (n: number) => Promise<number>
+  tarefaJaDevolvidaAFila?: (issueNumber: number) => Promise<boolean>
   vagasLivres?: number
   abrirSessaoDeConserto?: VigiaDoPrDeps['abrirSessaoDeConserto']
   fecharPr?: VigiaDoPrDeps['fecharPr']
@@ -454,6 +461,7 @@ async function rodar(over: {
     issueDoPr: over.issueDoPr ?? (() => null),
     issueAberta: over.issueAberta ?? (async () => true),
     acoesAnteriores: over.acoesAnteriores ?? (async () => 0),
+    tarefaJaDevolvidaAFila: over.tarefaJaDevolvidaAFila ?? (async () => false),
     vagasLivres: over.vagasLivres ?? 15,
     pedirJulgamento: async () => {},
     abrirSessaoDeConserto: over.abrirSessaoDeConserto ?? (async () => true),
@@ -1010,7 +1018,7 @@ describe('ACHADO 1 — a ponta que nenhum teste de unidade alcança: o relógio'
     expect(i).toBeGreaterThan(-1)
     const j = scheduler.indexOf('const criada = await criarSessaoJules({', i)
     expect(j).toBeGreaterThan(i)
-    return scheduler.slice(j, scheduler.indexOf('})', j))
+    return scheduler.slice(j, scheduler.indexOf('onWarn:', j))
   }
 
   it('a sessão de conserto nasce no ramo do PR — e NÃO na principal', () => {
@@ -1020,8 +1028,10 @@ describe('ACHADO 1 — a ponta que nenhum teste de unidade alcança: o relógio'
     expect(chamada).not.toContain('GITORCH_DEV_BASE_BRANCH')
   })
 
-  it('e devolve o trabalho no mesmo ramo, para não abrir um SEGUNDO pull request', () => {
-    expect(corpoDeAbrirSessaoDeConsertoDoPr()).toContain('workingBranch: args.branchDoPr')
+  it('NÃO manda workingBranch (medido: com ele a sessão nunca publicava) e usa o pedido de PR novo', () => {
+    const chamada = corpoDeAbrirSessaoDeConsertoDoPr()
+    expect(chamada).not.toContain('workingBranch')
+    expect(chamada).toContain('montarPedidoDeConsertoDoVigia')
   })
 
   it('o fechamento no relógio passa por `fecharPrDoVigia` — a ordem não é recopiada lá', () => {

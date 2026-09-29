@@ -11,6 +11,7 @@ import {
   ehAutomacaoQueOVigiaNaoConserta,
   branchParaRetomar,
   MAX_ACOES_DO_VIGIA,
+  motivoDeDevolverAFila,
   IDADE_MINIMA_DE_ORFANDADE_MS,
   type SinaisDePR,
   type RamoDoPr,
@@ -30,6 +31,7 @@ export type AcaoDoMotor =
       motivo: string
     }
   | { acao: 'fechar-vazio'; motivo: string }
+  | { acao: 'devolver-a-fila'; issueNumber: number; motivo: string }
   | { acao: 'mesclar'; motivo: string }
   | { acao: 'perguntar-se-cuida'; motivo: string }
   | { acao: 'escalar'; motivo: string }
@@ -45,6 +47,8 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
   verificacao: EstadoDaVerificacao
   paradoHaMs: number
   acoesAnteriores: number
+  /** A tarefa já foi devolvida à fila pelo vigia (uma vez por tarefa)? */
+  tarefaJaDevolvidaAFila: boolean
   podeAbrirSessao: boolean
   origem: string
   cuidaPorOrigem: CuidaPorOrigem
@@ -169,6 +173,17 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
     return politica === 'perguntar'
       ? { acao: 'perguntar-se-cuida', motivo: `#${deps.numero} está pronto — cuido deste pedido?` }
       : { acao: 'so-acompanhar', motivo: `#${deps.numero}: aguardando julgamento` }
+  }
+
+  // Limite de tentativas estourado com algo ainda para consertar: em vez de
+  // insistir ou desistir calado, fecha o PR antigo e devolve a tarefa à fila —
+  // UMA vez por tarefa. Se já foi feito, segue o caminho de sempre.
+  if (deps.acoesAnteriores >= MAX_ACOES_DO_VIGIA && !deps.tarefaJaDevolvidaAFila) {
+    return {
+      acao: 'devolver-a-fila',
+      issueNumber: deps.issueNumber,
+      motivo: motivoDeDevolverAFila(deps.numero),
+    }
   }
 
   const branch = branchParaRetomar(deps)

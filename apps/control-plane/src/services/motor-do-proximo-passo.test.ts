@@ -13,6 +13,7 @@ function base(): MotorDoProximoPassoDeps {
     verificacao: 'verde',
     paradoHaMs: 4 * 24 * 60 * 60 * 1000,
     acoesAnteriores: 0,
+    tarefaJaDevolvidaAFila: false,
     podeAbrirSessao: true,
     origem: 'jules',
     cuidaPorOrigem: PADRAO_DE_CUIDADO,

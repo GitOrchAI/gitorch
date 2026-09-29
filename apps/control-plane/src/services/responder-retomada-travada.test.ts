@@ -133,7 +133,6 @@ describe('aoResponderRetomadaTravada', () => {
         expect.objectContaining({
           repository: 'loureng/patinhas-3d-crafts',
           startingBranch: 'jules-3917-branch',
-          workingBranch: 'jules-3917-branch',
         })
       )
       expect(registrarSessaoRetomada).toHaveBeenCalledWith({

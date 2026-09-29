@@ -214,11 +214,12 @@ describe('retomada no mesmo PR — wiring do ciclo terminal (real seam, C11/L4-T
       { timeout: 3000, interval: 10 }
     )
 
-    // A sessão nova nasce NA MESMA branch do PR reprovado — startingBranch E
-    // workingBranch, nunca deixando o Jules escolher um ramo novo (que
-    // criaria um PR NOVO do zero, o próprio defeito medido em #3884).
+    // A sessão nova PARTE do ramo do PR reprovado (startingBranch) e NÃO manda
+    // workingBranch: com esse campo, 62 retomadas em 14 dias nunca publicaram.
+    // O Jules publica num ramo novo e abre PR novo contra a main.
     const sourceContext = chamadasAoJules[0]!.body['sourceContext'] as Record<string, unknown>
-    expect(sourceContext['workingBranch']).toBe(BRANCH_DO_PR)
+    expect('workingBranch' in sourceContext).toBe(false)
+    expect(String(chamadasAoJules[0]!.body['prompt'])).toMatch(/pull request NOVO contra a `main`/)
     const githubCtx = sourceContext['githubRepoContext'] as Record<string, unknown>
     expect(githubCtx['startingBranch']).toBe(BRANCH_DO_PR)
 
