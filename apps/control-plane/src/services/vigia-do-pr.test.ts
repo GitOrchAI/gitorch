@@ -444,6 +444,8 @@ async function rodar(over: {
   avisarDono?: VigiaDoPrDeps['avisarDono']
   registrarDecisao?: VigiaDoPrDeps['registrarDecisao']
   teto?: number
+  foiAdiadoAntes?: VigiaDoPrDeps['foiAdiadoAntes']
+  registrarAdiadoPeloTeto?: VigiaDoPrDeps['registrarAdiadoPeloTeto']
 }): Promise<string> {
   return vigiarPrsOrfaos({
     teto: over.teto,
@@ -458,6 +460,10 @@ async function rodar(over: {
     fecharPr: over.fecharPr ?? (async () => true),
     avisarDono: over.avisarDono ?? (async () => true),
     registrarDecisao: over.registrarDecisao ?? (async () => undefined),
+    ...(over.foiAdiadoAntes !== undefined ? { foiAdiadoAntes: over.foiAdiadoAntes } : {}),
+    ...(over.registrarAdiadoPeloTeto !== undefined
+      ? { registrarAdiadoPeloTeto: over.registrarAdiadoPeloTeto }
+      : {}),
   })
 }
 
@@ -712,6 +718,58 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
       issueDoPr: () => 329,
     })
     expect(resumo).not.toContain('teto desta passada')
+  })
+
+  it('o adiado pelo teto tem prioridade na passada seguinte — nenhum PR passa fome (task fix-scheduler-tick-cabe)', async () => {
+    // Medido em produção (PR #3953): o teto corta a lista SEMPRE na mesma
+    // ordem, e a passada seguinte reprocessa os mesmos PRs na MESMA ordem —
+    // então quem foi adiado uma vez podia ser adiado para sempre se houvesse
+    // ≥ teto PRs "na frente" dele. `foiAdiadoAntes`/`registrarAdiadoPeloTeto`
+    // dão prioridade real ao que já ficou de fora.
+
+    // Passada 1: sem prioridade nenhuma — reproduz o teste "só o teto sai"
+    // acima, mas capturando explicitamente quem foi adiado desta vez.
+    const fechadosPassada1: number[] = []
+    const adiadosPassada1: number[] = []
+    await rodar({
+      prs: seisParaFechar.map((numero) =>
+        prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
+      ),
+      issueDoPr: (n) => n - 10,
+      issueAberta: async () => false,
+      fecharPr: async ({ numero }) => {
+        fechadosPassada1.push(numero)
+        return true
+      },
+      registrarAdiadoPeloTeto: (numero) => {
+        adiadosPassada1.push(numero)
+      },
+    })
+    expect(fechadosPassada1).toEqual([314, 324])
+    expect(adiadosPassada1).toEqual([330, 331, 335, 341])
+
+    // Passada 2: MESMA lista de PRs (nenhum foi resolvido ainda — é a mesma
+    // consulta ao GitHub de antes), mas agora `foiAdiadoAntes` sabe quem
+    // ficou de fora na passada 1. Sem prioridade, o teto fecharia [314, 324]
+    // de novo (mesma ordem do `findMany`/GitHub) — 330/331/335/341 nunca
+    // andariam. Com prioridade, quem foi adiado vai primeiro.
+    const adiadosDaPassada1 = new Set(adiadosPassada1)
+    const fechadosPassada2: number[] = []
+    const resumo2 = await rodar({
+      prs: seisParaFechar.map((numero) =>
+        prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
+      ),
+      issueDoPr: (n) => n - 10,
+      issueAberta: async () => false,
+      fecharPr: async ({ numero }) => {
+        fechadosPassada2.push(numero)
+        return true
+      },
+      foiAdiadoAntes: (numero) => adiadosDaPassada1.has(numero),
+    })
+    expect(fechadosPassada2).toEqual([330, 331])
+    expect(fechadosPassada2).not.toEqual([314, 324])
+    expect(resumo2).toContain('teto desta passada')
   })
 })
 

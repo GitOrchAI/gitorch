@@ -500,6 +500,24 @@ export interface VigiaDoPrDeps {
   teto?: number | undefined
   onWarn?: (m: string) => void
   onInfo?: (m: string) => void
+  /**
+   * O PR já foi adiado pelo teto numa passada anterior? (task
+   * fix-scheduler-tick-cabe / PR #3953). Sem isto, o teto corta a lista
+   * SEMPRE na mesma ordem e a passada seguinte reprocessa os mesmos PRs na
+   * MESMA ordem — então quem ficou de fora uma vez pode ficar de fora para
+   * sempre, se houver ≥ teto PRs "na frente" dele. Quando presente, os PRs
+   * para os quais isto devolve `true` são movidos para o INÍCIO da lista
+   * desta passada (partição estável — a ordem relativa dentro de cada grupo
+   * não muda).
+   */
+  foiAdiadoAntes?: ((numeroDoPr: number) => boolean) | undefined
+  /**
+   * Chamado toda vez que um PR é adiado pelo teto NESTA passada — mesmo
+   * ponto onde `adiadosPeloTeto` é incrementado. Quem injeta isto decide
+   * onde guardar a lista (ex.: memória do processo, banco) para alimentar
+   * `foiAdiadoAntes` na próxima passada.
+   */
+  registrarAdiadoPeloTeto?: ((numeroDoPr: number) => void) | undefined
 }
 
 function pluralizar(n: number, singular: string, plural: string): string {
@@ -519,7 +537,28 @@ function pluralizar(n: number, singular: string, plural: string): string {
 export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   const warn = deps.onWarn ?? (() => undefined)
   const info = deps.onInfo ?? (() => undefined)
-  const prs = await deps.listarPrsAbertos()
+  const prsLidos = await deps.listarPrsAbertos()
+
+  // PRIORIDADE PARA O ADIADO PELO TETO (task fix-scheduler-tick-cabe / PR
+  // #3953): sem isto, o teto corta SEMPRE na mesma ordem de entrada, e quem
+  // ficou de fora fica de fora de novo na próxima passada se houver ≥ teto
+  // PRs na frente dele. Partição estável: adiados-antes primeiro, o resto
+  // depois, preservando a ordem relativa dentro de cada grupo.
+  const prs = deps.foiAdiadoAntes
+    ? (() => {
+        const foiAdiadoAntes = deps.foiAdiadoAntes
+        const prioritarios: PrAberto[] = []
+        const resto: PrAberto[] = []
+        for (const pr of prsLidos) {
+          if (foiAdiadoAntes(pr.numero)) {
+            prioritarios.push(pr)
+          } else {
+            resto.push(pr)
+          }
+        }
+        return [...prioritarios, ...resto]
+      })()
+    : prsLidos
 
   const teto = deps.teto ?? TETO_DE_ACOES_POR_PASSADA
   let vagas = deps.vagasLivres
@@ -584,6 +623,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
       // que precisa andar devagar é a escrita, não o olhar.
       if (decisao.acao !== 'ignorar' && acoesFeitas >= teto) {
         adiadosPeloTeto += 1
+        deps.registrarAdiadoPeloTeto?.(pr.numero)
         warn(
           `[vigia-do-pr] o #${pr.numero} ficaria em "${decisao.acao}", mas já fiz ${acoesFeitas} ` +
             `ações nesta passada (teto ${teto}); fica para a próxima`
