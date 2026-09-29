@@ -334,14 +334,41 @@ export async function ensureProjectBoard(
       // logo após criar; falha em ligar NUNCA derruba a criação do board (o
       // roadmap ainda funciona sem o link — só a aba /projects que fica sem o
       // atalho).
-      if (deps.resolveRepositoryId && client.linkProjectV2ToRepository) {
-        try {
-          const repositoryId = await deps.resolveRepositoryId(deps.repository)
-          await client.linkProjectV2ToRepository({ projectId: criado.id, repositoryId })
-        } catch (err) {
-          warn(
-            `board ${deps.repository} criado mas falhou ao ligar ao repositório: ${(err as Error).message}`
-          )
+      if (deps.resolveRepositoryId) {
+        let ligado = false
+        if (client.linkProjectV2ToRepository) {
+          try {
+            const repositoryId = await deps.resolveRepositoryId(deps.repository)
+            await client.linkProjectV2ToRepository({ projectId: criado.id, repositoryId })
+            ligado = true
+          } catch (err) {
+            if (!clienteAlternativo?.linkProjectV2ToRepository || client === clienteAlternativo) {
+              warn(
+                `board ${deps.repository} criado mas falhou ao ligar ao repositório: ${(err as Error).message}`
+              )
+            }
+          }
+        }
+
+        // Fallback de credencial: se o link falhou com a credencial principal (ex: App token sem
+        // permissão na organização) e temos clienteAlternativo (PAT do usuário), tenta ligar com ele.
+        if (
+          !ligado &&
+          clienteAlternativo?.linkProjectV2ToRepository &&
+          client !== clienteAlternativo
+        ) {
+          try {
+            const repositoryId = await deps.resolveRepositoryId(deps.repository)
+            await clienteAlternativo.linkProjectV2ToRepository({
+              projectId: criado.id,
+              repositoryId,
+            })
+            ligado = true
+          } catch (errAlt) {
+            warn(
+              `board ${deps.repository} criado mas falhou ao ligar ao repositório: ${(errAlt as Error).message}`
+            )
+          }
         }
       }
 
@@ -560,10 +587,17 @@ export interface EnsureAndPersistDeps {
 
 /** Lê o board já gravado no projeto, no formato "dono/numero". */
 export function boardGravado(project: ProjectComBoard): string | undefined {
-  const envConfig = (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-    Record<string, unknown> | undefined
+  const runtimeConfig = project.runtimeConfig as Record<string, unknown> | null
+  const envConfig = runtimeConfig?.['envConfig'] as Record<string, unknown> | undefined
   const valor = envConfig?.['GITORCH_PROJECT_BOARD']
-  return typeof valor === 'string' && valor.length > 0 ? valor : undefined
+  if (typeof valor === 'string' && valor.length > 0) return valor
+
+  const boardNumber = runtimeConfig?.['githubBoardNumber']
+  if (typeof boardNumber === 'number' && Number.isFinite(boardNumber)) {
+    const owner = project.wingId.split('/')[0]
+    if (owner) return `${owner}/${boardNumber}`
+  }
+  return undefined
 }
 
 /**

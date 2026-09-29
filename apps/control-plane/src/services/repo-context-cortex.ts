@@ -92,6 +92,7 @@ export async function collectAndRememberRepoContext(
       repo,
       ownerType: ownerInfo.ownerType,
       ownerId: ownerInfo.ownerId,
+      ...(ownerInfo.repoId ? { repoId: ownerInfo.repoId, targetRepoId: ownerInfo.repoId } : {}),
       ...(deps.boardNumber !== undefined ? { boardNumber: deps.boardNumber } : {}),
     })
 
@@ -151,14 +152,15 @@ async function resolveRepoOwner(
   token: string,
   owner: string,
   repo: string
-): Promise<{ ownerId: string; ownerType: 'user' | 'organization' } | null> {
+): Promise<{ ownerId: string; ownerType: 'user' | 'organization'; repoId?: string } | null> {
   const response = await request<{
-    repository: { owner: { id: string; __typename: string } } | null
+    repository: { id?: string; owner: { id: string; __typename: string } } | null
   }>(
     {
       query: `
         query RepoOwner($owner: String!, $repo: String!) {
           repository(owner: $owner, name: $repo) {
+            id
             owner { id __typename }
           }
         }
@@ -173,11 +175,12 @@ async function resolveRepoOwner(
       `GitHub GraphQL request failed: ${response.errors.map((e) => e.message).join('; ')}`
     )
   }
-  const repoOwner = response.data?.repository?.owner
-  if (!repoOwner) return null
+  const repoNode = response.data?.repository
+  if (!repoNode?.owner) return null
   return {
-    ownerId: repoOwner.id,
-    ownerType: repoOwner.__typename === 'Organization' ? 'organization' : 'user',
+    ownerId: repoNode.owner.id,
+    ownerType: repoNode.owner.__typename === 'Organization' ? 'organization' : 'user',
+    ...(repoNode.id ? { repoId: repoNode.id } : {}),
   }
 }
 

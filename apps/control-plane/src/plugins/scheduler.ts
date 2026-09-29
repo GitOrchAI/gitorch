@@ -614,11 +614,21 @@ export function shouldChainOnboarding(args: {
  * exatamente o vazamento multi-tenant que esta task dizia matar). Pura e
  * testável isolada do resto do dispatch.
  */
-export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string | undefined {
-  return (
-    (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-      Record<string, unknown> | undefined
-  )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+export function resolveRailsBoard(project: {
+  wingId?: string
+  runtimeConfig?: unknown
+}): string | undefined {
+  const runtimeConfig = project.runtimeConfig as Record<string, unknown> | null
+  const envConfig = runtimeConfig?.['envConfig'] as Record<string, unknown> | undefined
+  const boardFromEnv = envConfig?.['GITORCH_PROJECT_BOARD'] as string | undefined
+  if (typeof boardFromEnv === 'string' && boardFromEnv.length > 0) return boardFromEnv
+
+  const boardNumber = runtimeConfig?.['githubBoardNumber']
+  if (typeof boardNumber === 'number' && Number.isFinite(boardNumber) && project.wingId) {
+    const owner = project.wingId.split('/')[0]
+    if (owner) return `${owner}/${boardNumber}`
+  }
+  return undefined
 }
 
 /**
@@ -2019,12 +2029,22 @@ export async function provisionSetupMission(
       // nunca rodava e todo provisionamento criava board NOVO — finalizar o
       // wizard 2x para o mesmo repositório duplicava o board. O número já
       // vive em runtimeConfig.envConfig.GITORCH_PROJECT_BOARD ("owner/N"),
-      // gravado pela primeira execução desta mesma função.
-      const boardJaGravado = (
-        (mission.project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-          Record<string, unknown> | undefined
-      )?.['GITORCH_PROJECT_BOARD'] as string | undefined
-      const existingNumber = boardJaGravado ? Number(boardJaGravado.split('/')[1]) : undefined
+      // gravado pela primeira execução desta mesma função, ou em
+      // runtimeConfig.githubBoardNumber (número), gravado no aceite final do wizard.
+      const runtimeConfig = mission.project.runtimeConfig as Record<string, unknown> | null
+      const envConfig = runtimeConfig?.['envConfig'] as Record<string, unknown> | undefined
+      const boardJaGravado = envConfig?.['GITORCH_PROJECT_BOARD'] as string | undefined
+      const boardNumberFromEnv = boardJaGravado ? Number(boardJaGravado.split('/')[1]) : undefined
+      const boardNumberFromRuntime =
+        typeof runtimeConfig?.['githubBoardNumber'] === 'number'
+          ? (runtimeConfig['githubBoardNumber'] as number)
+          : undefined
+      const existingNumber =
+        boardNumberFromEnv !== undefined && Number.isFinite(boardNumberFromEnv)
+          ? boardNumberFromEnv
+          : boardNumberFromRuntime !== undefined && Number.isFinite(boardNumberFromRuntime)
+            ? boardNumberFromRuntime
+            : undefined
 
       // D13 (01/09/2026): a credencial do PRÓPRIO cliente — a única que
       // cria/liga board em CONTA PESSOAL — nunca era lida aqui. Leitura

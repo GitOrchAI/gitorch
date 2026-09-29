@@ -171,6 +171,45 @@ describe('ensureProjectBoard', () => {
     expect(clienteDoCliente.createProjectV2).toHaveBeenCalled()
   })
 
+  it('quando a criação tem sucesso mas o link falha com a credencial principal (App), faz fallback para a credencial do cliente', async () => {
+    const clienteDoProduto = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_produto', number: 42 })),
+      linkProjectV2ToRepository: vi.fn(async () => {
+        throw new Error('Resource not accessible by integration')
+      }),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+    const clienteDoCliente = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_cliente', number: 43 })),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+
+    const r = await ensureProjectBoard({
+      repository: 'org-alvo/repo',
+      client: clienteDoProduto as never,
+      resolveOwner: async () => ({ id: 'O_org', type: 'organization' as const }),
+      resolveRepositoryId: async () => 'R_repo',
+      clientToken: 'tok-do-cliente',
+      criarClienteAlternativo: () => clienteDoCliente as never,
+    })
+
+    expect(r).toEqual({ owner: 'org-alvo', number: 42 })
+    expect(clienteDoProduto.createProjectV2).toHaveBeenCalled()
+    expect(clienteDoProduto.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_produto',
+      repositoryId: 'R_repo',
+    })
+    expect(clienteDoCliente.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_produto',
+      repositoryId: 'R_repo',
+    })
+  })
+
   it('sem credencial do cliente, a falha continua resolvendo em aviso acionável', async () => {
     const avisos: string[] = []
     const c = {
