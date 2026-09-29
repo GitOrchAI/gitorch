@@ -44,4 +44,42 @@ describe('varrerRetratoDoProjeto', () => {
     })
     expect(atualizados).toEqual([])
   })
+
+  it('issue #877: com backfillGrafo, tenta o backfill até o TETO por ciclo (nunca mais)', async () => {
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': [
+        { number: 10, state: 'open', draft: false, mergeable: true },
+        { number: 11, state: 'open', draft: false, mergeable: true },
+      ],
+      '/repos/dono/repo/issues?': [{ number: 20, state: 'open', pull_request: undefined }],
+    })
+    const aplicar = vi.fn(async () => {})
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      backfillGrafo: { aplicar, teto: 1 },
+    })
+    expect(resumo).toEqual({ prs: 2, issues: 1, alertas: 0 })
+    expect(aplicar).toHaveBeenCalledTimes(1)
+    expect(aplicar).toHaveBeenCalledWith({ tipo: 'pr', numero: 10 })
+  })
+
+  it('sem backfillGrafo (como hoje): comportamento antigo preservado, nenhum backfill tentado', async () => {
+    const atualizados: Array<{ tipo: string; numero: number }> = []
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': [{ number: 10, state: 'open', draft: false, mergeable: true }],
+      '/repos/dono/repo/issues?': [{ number: 20, state: 'open', pull_request: undefined }],
+    })
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async (args) => {
+        atualizados.push({ tipo: args.tipo, numero: args.numero })
+      },
+    })
+    expect(resumo).toEqual({ prs: 1, issues: 1, alertas: 0 })
+    expect(atualizados).toContainEqual({ tipo: 'pr', numero: 10 })
+    expect(atualizados).toContainEqual({ tipo: 'issue', numero: 20 })
+  })
 })

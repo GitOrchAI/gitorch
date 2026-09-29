@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { casarPrComSessao } from './casar-pr-com-sessao.js'
+import { casarPrComSessao, existeSessaoLigada } from './casar-pr-com-sessao.js'
 
 /**
  * O caso REAL que motivou este casador (medido em produção 20/08/2026):
@@ -145,5 +145,51 @@ describe('casarPrComSessao', () => {
 
   it('lista de sessões vazia não quebra', () => {
     expect(casarPrComSessao({ headRefName: 'jules-1-a', corpo: '', sessoes: [] })).toBeNull()
+  })
+})
+
+describe('existeSessaoLigada', () => {
+  // Issue #877: usado por origem-do-item.ts para decidir `temSessaoGitOrch`
+  // na classificação de origem — só a pergunta SIM/NÃO, sem o corte de
+  // idempotência que casarPrComSessao tem (esse corte é pra não regravar à
+  // toa; aqui a pergunta é puramente classificatória).
+  it('branch com sufixo batendo sessão FECHADA (sem PR) devolve true', () => {
+    expect(
+      existeSessaoLigada({
+        headRefName: 'fix-tests-and-pipeline-check-16385381233224183643',
+        corpo: '',
+        sessoes: [{ sessionName: 'sessions/16385381233224183643', pullRequestNumber: null }],
+      })
+    ).toBe(true)
+  })
+
+  it('branch com sufixo batendo sessão que JÁ aponta pro mesmo PR ainda devolve true (diferente de casarPrComSessao)', () => {
+    expect(
+      existeSessaoLigada({
+        headRefName: 'jules-12112302527133030906-e9d57552',
+        corpo: '',
+        sessoes: [{ sessionName: 'sessions/12112302527133030906', pullRequestNumber: 132 }],
+      })
+    ).toBe(true)
+  })
+
+  it('branch sem identificador de sessão devolve false', () => {
+    expect(
+      existeSessaoLigada({
+        headRefName: 'fix/issue-123',
+        corpo: '',
+        sessoes: [{ sessionName: 'sessions/123', pullRequestNumber: null }],
+      })
+    ).toBe(false)
+  })
+
+  it('nenhuma sessão bate o identificador devolve false', () => {
+    expect(
+      existeSessaoLigada({
+        headRefName: 'jules-99999999999999999-x',
+        corpo: '',
+        sessoes: [{ sessionName: 'sessions/12112302527133030906', pullRequestNumber: null }],
+      })
+    ).toBe(false)
   })
 })

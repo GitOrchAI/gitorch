@@ -63,6 +63,7 @@ import {
 } from './entrega-travada-no-teto.js'
 import { comecarPeloMaisAntigo, ordemDoJulgamento } from './ordem-do-julgamento.js'
 import { decidirSobreLegado } from './rejulgar-legados.js'
+import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -1364,9 +1365,31 @@ export async function runQaMissionViaRails(
       )) as ArquivoDoPr[],
   })
 
+  // Issue #877: o grafo completo de vínculos do PR (hierarquia, milestone,
+  // campos do quadro, PRs ligados, sessões do Jules, parecer anterior do QA)
+  // — best-effort, nunca derruba o julgamento. `options.prisma`/`projectId`
+  // só existem quando o chamador (scheduler.ts) os passa; sem eles, segue
+  // exatamente como antes (comportamento preservado).
+  let blocoDoGrafo: string | undefined
+  if (options.prisma && options.projectId) {
+    try {
+      const contexto = await montarContextoDoItem({
+        prisma: options.prisma,
+        projectId: options.projectId,
+        numero: target.number,
+      })
+      blocoDoGrafo = contexto?.bloco
+    } catch (err) {
+      options.onWarn?.(
+        `[qa] falha ao montar contexto do grafo de vínculos do #${target.number}: ${err}`
+      )
+    }
+  }
+
   // 3) Roteiro do QA: um formulário de veredito.
   const prompt = buildStepPrompt('qa', 'qa-verdict', RAILS_SCHEMAS.qaVerdict, [
     ...(options.contextBlocks ?? []),
+    ...(blocoDoGrafo ? [blocoDoGrafo] : []),
     'STRICT DEFINITION OF DONE (DoD) ENFORCEMENT:',
     '1. Read the Verification Criteria/issue to extract the DEFINITION OF DONE (expected files/pieces, required tests, evidence required in the PR body).',
     '2. If the issue lacks a clear DoD, you MUST judge based on what the issue asks and explicitly state in the notes that DoD was absent.',

@@ -319,6 +319,7 @@ import {
 } from '../services/vigia-do-pr.js'
 import { atualizarFichaDoItem } from '../services/ficha-do-item.js'
 import { varrerRetratoDoProjeto, CADENCIA_DO_RETRATO_MS } from '../services/varredura-do-retrato.js'
+import { atualizarGrafoDeVinculos } from '../services/grafo-de-vinculos.js'
 import {
   retomarPrReprovado,
   TETO_DE_RETOMADAS_POR_PR,
@@ -7435,6 +7436,39 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               estado: args.estado,
             }).then(() => undefined),
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          // Issue #877 item 5: backfill do grafo de vínculos para itens que
+          // ainda não têm — teto conservador de 5 tentativas por ciclo (30
+          // min) para não repetir o estouro de cota medido em produção
+          // (grafo-de-vinculos.ts).
+          backfillGrafo: {
+            teto: 5,
+            aplicar: async (args) => {
+              // `TipoDoItem` inclui 'alerta', mas o grafo de vínculos só
+              // existe para issue/PR (varrerRetratoDoProjeto nunca chama
+              // este backfill com 'alerta' hoje — alertas de segurança têm
+              // coleta própria, ver o comentário no fim de
+              // varredura-do-retrato.ts). O corte é o que estreita o tipo
+              // para o que `atualizarGrafoDeVinculos` aceita, sem cast.
+              if (args.tipo === 'alerta') return
+              const linha = await app.prisma.repoItem.findFirst({
+                where: { projectId: projeto.id, tipo: args.tipo, numero: args.numero },
+                select: { id: true, vinculos: { select: { id: true } } },
+              })
+              if (!linha || linha.vinculos) return
+              const [owner, repo] = projeto.wingId.split('/')
+              if (!owner || !repo) return
+              await atualizarGrafoDeVinculos({
+                prisma: app.prisma as never,
+                githubToken: token,
+                owner,
+                repo,
+                numero: args.numero,
+                tipo: args.tipo,
+                repoItemId: linha.id,
+                projectId: projeto.id,
+              })
+            },
+          },
         })
         app.log.info(
           { projectId: projeto.id, ...resumo },

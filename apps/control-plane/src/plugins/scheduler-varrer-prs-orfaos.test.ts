@@ -3,6 +3,7 @@ import { decidirAcaoNoPrOrfaoIntegrado } from '../services/decisao-do-vigia.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from '../services/vigia-do-pr.js'
 import { MARCA_DO_PARECER, MARCA_DE_APROVACAO } from '../services/parecer-do-qa.js'
+import { contextoExecutivoVazio } from '../services/contexto-executivo-da-pergunta.js'
 
 function buildDepsVigia(
   overrides: Partial<Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]> = {}
@@ -448,5 +449,71 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       acao: 'ignorar',
       motivo: 'tarefa 3.10: dados insuficientes para perguntar',
     })
+  })
+
+  it('issue #877: fluxo completo de perguntar-se-cuida busca o grafo de vínculos da issue e completa sem quebrar', async () => {
+    const agentQuestionAsk = vi.fn().mockResolvedValue(undefined)
+    const findFirstMock = vi.fn().mockResolvedValue({
+      id: 'issue-1',
+      projectId: 'proj-1',
+      tipo: 'issue',
+      numero: 10,
+      estado: { rascunho: false, ultimoCommitEm: null, fechadoEAbandonado: false },
+      origem: 'jules',
+      issueNumber: null,
+      entendimento: { ok: true },
+      vinculos: {
+        hierarquia: { parents: [], subIssues: [] },
+        milestone: null,
+        projectFields: [],
+        labelsAndAssignees: { labels: ['issue-877'], assignees: [] },
+        prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+        sessoesJules: [],
+        qaReview: null,
+        statusCheckRollup: null,
+      },
+    })
+    const prisma = {
+      repoItem: {
+        findUnique: vi.fn().mockResolvedValue({
+          numero: 10,
+          origem: 'jules',
+          estado: { rascunho: false, ultimoCommitEm: null, fechadoEAbandonado: false },
+          entendimento: { ok: true },
+          id: 'issue-1',
+          projectId: 'proj-1',
+          tipo: 'issue',
+        }),
+        findFirst: findFirstMock,
+      },
+    } as unknown as PrismaClient
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: { cuidaPorOrigem: { jules: 'perguntar' } },
+      agora,
+      projeto,
+      token,
+      depsVigia: buildDepsVigia(),
+      prisma,
+      ghGet: vi.fn(),
+      ghSend: vi.fn(),
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+      userId: 'user-1',
+      agentQuestion: { ask: agentQuestionAsk },
+      montarContextoExecutivo: async () => contextoExecutivoVazio(),
+      depsDoContexto: {} as never,
+    })
+
+    expect(result).toEqual({
+      acao: 'ignorar',
+      motivo: 'pergunta executiva "cuido deste pedido?" enviada ao dono',
+    })
+    expect(agentQuestionAsk).toHaveBeenCalledTimes(1)
+    expect(findFirstMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ projectId: 'proj-1', numero: 10 }),
+      })
+    )
   })
 })

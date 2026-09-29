@@ -429,6 +429,67 @@ describe('runQaMissionViaRails', () => {
     expect(posted.comments).toHaveLength(0)
   })
 
+  it('issue #877: injeta o grafo de vínculos (montarContextoDoItem) no prompt do veredito', async () => {
+    const f = fakeFetch([{ number: 7, user: 'google-labs-jules[bot]' }])
+    const prompts: string[] = []
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: {
+          upsert: vi.fn(),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findFirst: vi.fn().mockResolvedValue({
+            id: 'item-1',
+            projectId: 'proj',
+            tipo: 'pr',
+            numero: 7,
+            estado: { status: 'aberto' },
+            origem: 'jules_gitorch',
+            issueNumber: 50,
+            entendimento: null,
+            vinculos: {
+              hierarquia: { parents: [], subIssues: [] },
+              milestone: { title: 'Sprint Grafo 877', number: 9, dueOn: null, state: 'OPEN' },
+              projectFields: [],
+              labelsAndAssignees: { labels: ['grafo-teste-877'], assignees: [] },
+              prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+              sessoesJules: [],
+              qaReview: null,
+              statusCheckRollup: null,
+            },
+          }),
+        },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async (prompt) => {
+        prompts.push(prompt)
+        return APPROVE
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(prompts[0]).toContain('grafo-teste-877')
+    expect(prompts[0]).toContain('Sprint Grafo 877')
+  })
+
+  it('issue #877: sem options.prisma/projectId (como hoje), nada quebra — comportamento preservado', async () => {
+    const f = fakeFetch([{ number: 7, user: 'google-labs-jules[bot]' }])
+    const posted = (
+      f as unknown as {
+        posted: { reviews: Array<{ event?: string }>; comments: Array<{ body?: string }> }
+      }
+    ).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+  })
+
   it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules E sessão para ela', async () => {
     // fix/pr-humano-nao-e-entrega-do-dev: o caminho 3 (corpo + etiqueta) só
     // reconhece delegação com uma linha de sessão por trás — a SM cria a
