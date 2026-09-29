@@ -53,7 +53,9 @@ describe('varrerRetratoDoProjeto', () => {
       ],
       '/repos/dono/repo/issues?': [{ number: 20, state: 'open', pull_request: undefined }],
     })
-    const aplicar = vi.fn(async () => {})
+    // `aplicar` retorna true = de fato disparou a coleta (item não tinha
+    // grafo ainda) — é isso que consome o teto, não a mera chamada.
+    const aplicar = vi.fn(async () => true)
     const resumo = await varrerRetratoDoProjeto({
       repo: 'dono/repo',
       ghGet,
@@ -63,6 +65,45 @@ describe('varrerRetratoDoProjeto', () => {
     expect(resumo).toEqual({ prs: 2, issues: 1, alertas: 0 })
     expect(aplicar).toHaveBeenCalledTimes(1)
     expect(aplicar).toHaveBeenCalledWith({ tipo: 'pr', numero: 10 })
+  })
+
+  it('issue #877: itens que JÁ TÊM grafo não gastam o teto — o teto fica pra quem realmente precisa', async () => {
+    // Bug real em produção (commit 4dfb2f86, ciclos 13:44 e 14:14 UTC de
+    // 29/09): o contador do teto incrementava para TODO item do lote, mesmo
+    // os que já tinham `vinculos` preenchido — então os 5 slots eram sempre
+    // consumidos pelos itens mais recentes (já cobertos em ciclos
+    // anteriores), e itens antigos sem grafo (ex.: PR #583) nunca eram
+    // alcançados. Lote de 10 PRs: os 5 primeiros (1-5) já têm grafo
+    // (`aplicar` retorna false = não coletou), os 5 últimos (6-10) não têm
+    // (`aplicar` retorna true = coletou). Com teto=5, os 5 ÚLTIMOS devem ser
+    // os que efetivamente disparam a coleta.
+    const coletaram: number[] = []
+    const aplicar = vi.fn(async ({ numero }: { tipo: string; numero: number }) => {
+      const jaTinhaGrafo = numero <= 5
+      if (jaTinhaGrafo) return false
+      coletaram.push(numero)
+      return true
+    })
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': Array.from({ length: 10 }, (_, i) => ({
+        number: i + 1,
+        state: 'open',
+        draft: false,
+        mergeable: true,
+      })),
+      '/repos/dono/repo/issues?': [],
+    })
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      backfillGrafo: { aplicar, teto: 5 },
+    })
+    expect(resumo).toEqual({ prs: 10, issues: 0, alertas: 0 })
+    // todos os 10 itens são ao menos consultados (pra saber se já têm grafo)…
+    expect(aplicar).toHaveBeenCalledTimes(10)
+    // …mas só os 5 últimos (sem grafo ainda) de fato coletaram.
+    expect(coletaram).toEqual([6, 7, 8, 9, 10])
   })
 
   it('sem backfillGrafo (como hoje): comportamento antigo preservado, nenhum backfill tentado', async () => {
