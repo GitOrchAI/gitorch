@@ -22,6 +22,7 @@ import type {
   DepsDoContextoExecutivo,
 } from './contexto-executivo-da-pergunta.js'
 import type { OrigemDoItem } from './origem-do-item.js'
+import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 
 type AcaoDoVigia = ReturnType<
   NonNullable<
@@ -370,6 +371,27 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       )
 
       const fallbackCiState = depsVigia.verificacao || 'unknown'
+
+      // Issue #877: o grafo de vínculos da issue de origem (hierarquia,
+      // milestone, campos do quadro, PRs ligados, sessões do Jules, parecer
+      // do QA) — best-effort, nunca impede a pergunta de nascer. Só roda
+      // quando há issue vinculada (garantido pelo corte no topo deste bloco).
+      let historicoGitorch: string[] | undefined
+      if (depsVigia.issueNumber !== null) {
+        try {
+          const contextoDoGrafo = await montarContextoDoItem({
+            prisma,
+            projectId: projeto.id,
+            numero: depsVigia.issueNumber,
+          })
+          if (contextoDoGrafo) historicoGitorch = contextoDoGrafo.linhas
+        } catch (err) {
+          onWarn(
+            `decidirAcaoNoPrOrfaoIntegrado: falha ao montar contexto do grafo para a issue #${depsVigia.issueNumber}: ${err}`
+          )
+        }
+      }
+
       await perguntarSeCuida(
         {
           userId,
@@ -385,6 +407,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
               : 0,
             estadoCi: fallbackCiState,
             conflitos: depsVigia.mergeable === false,
+            ...(historicoGitorch ? { historicoGitorch } : {}),
           },
         },
         {
