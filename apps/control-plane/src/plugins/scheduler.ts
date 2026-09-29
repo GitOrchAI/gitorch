@@ -7449,14 +7449,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // coleta própria, ver o comentário no fim de
               // varredura-do-retrato.ts). O corte é o que estreita o tipo
               // para o que `atualizarGrafoDeVinculos` aceita, sem cast.
-              if (args.tipo === 'alerta') return
+              // Retorna `false` (não coletou) em todo caminho de saída
+              // antecipada — é esse retorno que diz à varredura pra NÃO
+              // gastar o teto do ciclo neste item (issue #877).
+              if (args.tipo === 'alerta') return false
               const linha = await app.prisma.repoItem.findFirst({
                 where: { projectId: projeto.id, tipo: args.tipo, numero: args.numero },
                 select: { id: true, vinculos: { select: { id: true } } },
               })
-              if (!linha || linha.vinculos) return
+              if (!linha || linha.vinculos) return false
               const [owner, repo] = projeto.wingId.split('/')
-              if (!owner || !repo) return
+              if (!owner || !repo) return false
               await atualizarGrafoDeVinculos({
                 prisma: app.prisma as never,
                 githubToken: token,
@@ -7467,6 +7470,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 repoItemId: linha.id,
                 projectId: projeto.id,
               })
+              return true
             },
           },
         })

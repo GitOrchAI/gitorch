@@ -30,9 +30,18 @@ export interface VarreduraDoRetratoDeps {
    *  não têm (repoItemVinculos ausente) — best-effort, com teto por ciclo
    *  (a cota da installation do GitHub estourou em produção com a coleta
    *  antiga, 5.969 respostas 403 em 24h — ver grafo-de-vinculos.ts).
-   *  Ausente = varredura não faz backfill (comportamento de hoje). */
+   *  Ausente = varredura não faz backfill (comportamento de hoje).
+   *
+   *  `aplicar` devolve `true` quando REALMENTE disparou a coleta (o item não
+   *  tinha grafo ainda, ou o grafo está velho o bastante pra justificar
+   *  recoleta) e `false` quando só constatou que o item já está em dia e
+   *  pulou. Bug real em produção (commit 4dfb2f86, 29/09/2026): o teto era
+   *  gasto em TODO item do lote, inclusive os já cobertos — os 5 slots iam
+   *  sempre pros itens mais recentes (já tinham grafo de ciclos anteriores),
+   *  e itens antigos sem grafo (ex.: PR #583, issue #877) nunca eram
+   *  alcançados. Só contar quem `aplicar` de fato coletou resolve isso. */
   backfillGrafo?: {
-    aplicar: (args: { tipo: TipoDoItem; numero: number }) => Promise<void>
+    aplicar: (args: { tipo: TipoDoItem; numero: number }) => Promise<boolean>
     teto: number
   }
 }
@@ -67,10 +76,17 @@ export async function varrerRetratoDoProjeto(
   const tentarBackfill = async (tipo: TipoDoItem, numero: number): Promise<void> => {
     if (!deps.backfillGrafo) return
     if (tentativasDeBackfill >= deps.backfillGrafo.teto) return
-    tentativasDeBackfill += 1
     try {
-      await deps.backfillGrafo.aplicar({ tipo, numero })
+      // Só incrementa o teto quando `aplicar` de fato disparou a coleta —
+      // item que já estava em dia (retornou false) é pulado sem gastar slot,
+      // deixando o teto sobrar pra quem realmente precisa (issue #877).
+      const coletou = await deps.backfillGrafo.aplicar({ tipo, numero })
+      if (coletou) tentativasDeBackfill += 1
     } catch (err) {
+      // Erro aconteceu DEPOIS de decidir coletar (aplicar só lança depois de
+      // já ter passado da checagem "já tem grafo?") — conta como tentativa
+      // real pra não virar retry-storm no mesmo item dentro do ciclo.
+      tentativasDeBackfill += 1
       deps.onWarn?.(
         `varredura-do-retrato: backfill do grafo de vínculos falhou para ${tipo} #${numero} (${deps.repo}): ${err}`
       )
