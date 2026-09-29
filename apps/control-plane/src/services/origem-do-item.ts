@@ -73,3 +73,30 @@ export function classificarOrigem(sinais: SinaisDeOrigem): OrigemDoItem {
 
   return 'pessoa'
 }
+
+/**
+ * Issue #877 (conserto pós-#979, achado real 29/09/2026 no PR #583): diz se
+ * um PR ainda merece nova tentativa de classificação de origem.
+ *
+ * `classificarOrigemEIssueDoPr` só roda quando chega um evento de webhook
+ * `pull_request` NOVO — um PR que nunca mais recebe push fica preso na
+ * classificação da primeira vez, mesmo que o vínculo (a sessão do dev
+ * assíncrono em `dev_sessions`) só tenha aparecido DEPOIS. O PR #583 recebeu
+ * o grafo de vínculos pelo backfill (#979) e continuou `jules_fora` com
+ * `issueNumber` nulo, porque nada disparava a reclassificação.
+ *
+ * `jules_fora` sem `issueNumber` é exatamente esse estado de baixa
+ * confiança: o corpo tem o rodapé do dev assíncrono, mas no instante da
+ * classificação não havia sessão correspondente em `dev_sessions` — pode ter
+ * sido criada depois. Qualquer outra origem (inclusive `jules_fora`
+ * LEGÍTIMO, de alguém que usou o dev assíncrono fora do produto, sem
+ * NENHUMA sessão nossa) não tem sinal de baixa confiança e não reprocessa —
+ * é assim que a varredura evita gastar o teto à toa em quem já está
+ * classificado corretamente.
+ */
+export function origemPrecisaDeReclassificacao(ficha: {
+  origem: string | null
+  issueNumber: number | null
+}): boolean {
+  return ficha.origem === 'jules_fora' && ficha.issueNumber === null
+}

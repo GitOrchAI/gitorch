@@ -106,6 +106,97 @@ describe('varrerRetratoDoProjeto', () => {
     expect(coletaram).toEqual([6, 7, 8, 9, 10])
   })
 
+  it('issue #877 (conserto pós-#979): com reclassificarOrigem, chama aplicar com o PR cru para cada PR', async () => {
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': [
+        {
+          number: 583,
+          state: 'open',
+          draft: false,
+          mergeable: true,
+          body: 'PR created automatically by Jules for task [16385381233224183643](https://jules.google.com/task/16385381233224183643) started by @loureng',
+          user: { login: 'google-labs-jules[bot]' },
+          labels: [],
+          head: { ref: 'fix-tests-and-pipeline-check-16385381233224183643' },
+        },
+      ],
+      '/repos/dono/repo/issues?': [],
+    })
+    const aplicar = vi.fn(async () => true)
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      reclassificarOrigem: { aplicar, teto: 5 },
+    })
+    expect(resumo).toEqual({ prs: 1, issues: 0, alertas: 0 })
+    expect(aplicar).toHaveBeenCalledTimes(1)
+    expect(aplicar).toHaveBeenCalledWith({
+      numero: 583,
+      pr: expect.objectContaining({ number: 583 }),
+    })
+  })
+
+  it('issue #877: reclassificarOrigem respeita o TETO por ciclo (nunca mais)', async () => {
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': [
+        { number: 1, state: 'open', draft: false, mergeable: true },
+        { number: 2, state: 'open', draft: false, mergeable: true },
+      ],
+      '/repos/dono/repo/issues?': [],
+    })
+    const aplicar = vi.fn(async () => true)
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      reclassificarOrigem: { aplicar, teto: 1 },
+    })
+    expect(aplicar).toHaveBeenCalledTimes(1)
+  })
+
+  it('issue #877: PR já classificado corretamente (aplicar retorna false) não gasta o teto — o resto do lote continua sendo consultado', async () => {
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': [
+        { number: 1, state: 'open', draft: false, mergeable: true },
+        { number: 2, state: 'open', draft: false, mergeable: true },
+        { number: 3, state: 'open', draft: false, mergeable: true },
+      ],
+      '/repos/dono/repo/issues?': [],
+    })
+    // PR 1 e 2 já classificados com confiança (aplicar decide isso sozinho,
+    // igual ao backfillGrafo.aplicar) — só o 3 realmente reclassifica.
+    const reclassificaram: number[] = []
+    const aplicar = vi.fn(async ({ numero }: { numero: number }) => {
+      if (numero !== 3) return false
+      reclassificaram.push(numero)
+      return true
+    })
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      reclassificarOrigem: { aplicar, teto: 1 },
+    })
+    expect(aplicar).toHaveBeenCalledTimes(3)
+    expect(reclassificaram).toEqual([3])
+  })
+
+  it('reclassificarOrigem nunca é chamado para issues (só PRs têm origem classificada por webhook)', async () => {
+    const ghGet = ghGetFake({
+      '/repos/dono/repo/pulls?': [],
+      '/repos/dono/repo/issues?': [{ number: 20, state: 'open', pull_request: undefined }],
+    })
+    const aplicar = vi.fn(async () => true)
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      reclassificarOrigem: { aplicar, teto: 5 },
+    })
+    expect(aplicar).not.toHaveBeenCalled()
+  })
+
   it('sem backfillGrafo (como hoje): comportamento antigo preservado, nenhum backfill tentado', async () => {
     const atualizados: Array<{ tipo: string; numero: number }> = []
     const ghGet = ghGetFake({

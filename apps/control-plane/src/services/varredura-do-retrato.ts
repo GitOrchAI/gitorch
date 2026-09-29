@@ -44,6 +44,29 @@ export interface VarreduraDoRetratoDeps {
     aplicar: (args: { tipo: TipoDoItem; numero: number }) => Promise<boolean>
     teto: number
   }
+  /** Issue #877 (conserto pós-#979, achado real 29/09/2026 no PR #583): a
+   *  MESMA varredura que faz o backfill do grafo também reclassifica a
+   *  origem de PRs que ainda estão em baixa confiança (`jules_fora` sem
+   *  `issueNumber` — ver `origemPrecisaDeReclassificacao`,
+   *  origem-do-item.ts). `classificarOrigemEIssueDoPr` só corre hoje por
+   *  webhook `pull_request` novo; um PR que nunca mais recebe push fica
+   *  preso na classificação errada pra sempre sem isto.
+   *
+   *  Só PRs (issues não têm essa classificação de origem por webhook) — por
+   *  isso este dep só é consultado no laço de PRs, nunca no de issues.
+   *
+   *  Teto SEPARADO do `backfillGrafo` (decisão: mais simples que
+   *  compartilhar um único contador entre duas preocupações diferentes, e
+   *  não mexe no contador do backfill, que já tem comentário cuidadoso
+   *  sobre o bug real que corrigiu). `aplicar` decide sozinho (mesmo padrão
+   *  de `backfillGrafo.aplicar`) se este PR precisa reclassificar — só
+   *  retorna `true` quando REALMENTE tentou (gastou uma chamada de API),
+   *  igual ao backfill: PR já classificado com confiança não gasta o
+   *  teto. */
+  reclassificarOrigem?: {
+    aplicar: (args: { numero: number; pr: PrCru }) => Promise<boolean>
+    teto: number
+  }
 }
 
 interface PrCru {
@@ -51,8 +74,14 @@ interface PrCru {
   state?: string
   draft?: boolean
   mergeable?: boolean | null
-  head?: { sha?: string }
+  head?: { sha?: string; ref?: string }
   changed_files?: number
+  /** Só usados por `reclassificarOrigem` (issue #877) — a rota
+   *  `/pulls?state=open` do GitHub já devolve o PR completo, corpo, autor e
+   *  labels inclusos, sem chamada extra. */
+  body?: string
+  user?: { login?: string }
+  labels?: Array<{ name?: string }>
 }
 
 interface IssueCru {
@@ -93,6 +122,25 @@ export async function varrerRetratoDoProjeto(
     }
   }
 
+  let tentativasDeReclassificacao = 0
+
+  const tentarReclassificarOrigem = async (pr: PrCru): Promise<void> => {
+    if (!deps.reclassificarOrigem) return
+    if (tentativasDeReclassificacao >= deps.reclassificarOrigem.teto) return
+    try {
+      // Mesmo padrão de `tentarBackfill`: só conta contra o teto quando
+      // `aplicar` de fato reclassificou — PR já classificado com confiança
+      // (`aplicar` decide isso sozinho) retorna `false` sem gastar slot.
+      const reclassificou = await deps.reclassificarOrigem.aplicar({ numero: pr.number, pr })
+      if (reclassificou) tentativasDeReclassificacao += 1
+    } catch (err) {
+      tentativasDeReclassificacao += 1
+      deps.onWarn?.(
+        `varredura-do-retrato: reclassificação de origem falhou para pr #${pr.number} (${deps.repo}): ${err}`
+      )
+    }
+  }
+
   for (let pagina = 1; pagina <= MAX_PAGINAS_DA_VARREDURA; pagina += 1) {
     const lote = (await deps.ghGet(
       `/repos/${deps.repo}/pulls?state=open&per_page=100&page=${pagina}`
@@ -105,6 +153,7 @@ export async function varrerRetratoDoProjeto(
       })
       prs += 1
       await tentarBackfill('pr', pr.number)
+      await tentarReclassificarOrigem(pr)
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {
