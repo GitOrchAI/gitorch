@@ -14,6 +14,18 @@ import type { LinhaDeSessao } from './dev-session-store.js'
 import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
 import type { EstadoDaJanela } from './aviso-por-janela.js'
 import { textoDeEntregaSemConteudo } from './entrega-sem-conteudo.js'
+import {
+  cacheDoProcesso,
+  criarCacheDeVerificacaoPendente,
+  chaveDaVerificacao,
+  TTL_DA_VERIFICACAO_PENDENTE_MS,
+} from './cache-de-verificacao-pendente.js'
+
+// O cache de pendentes é do processo: sem zerar, um teste herdaria o pendente
+// gravado por outro que usa o mesmo repositório, PR e sha.
+beforeEach(() => {
+  cacheDoProcesso.limpar()
+})
 
 const RECON = JSON.stringify({
   ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
@@ -4763,7 +4775,291 @@ describe('runQaMissionViaRails: a fila anda quando o primeiro PR está pendente'
     expect(r.output).toContain('PR #10 não julgado')
   })
 
-  it('o teto é 6 (limite de chamadas ao GitHub por missão)', () => {
-    expect(MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS).toBe(6)
+  it('o teto é 16 (cobre a fila típica de ~15 PRs abertos do Jardim)', () => {
+    expect(MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS).toBe(16)
+  })
+})
+
+// Fome por causa do teto (30/09/2026, Jardim): ~14 PRs abertos, quase todos com
+// CI pendente num runner só. O #4046 (14/14 verde, delegado) era o 11º da
+// ordem; as 6 leituras iam todas para os mais antigos, pendentes, e a missão
+// devolvia "não julgado" sem nunca chegar nele. Duas defesas: teto maior e um
+// cache curto do resultado PENDENTE (por head), que não gasta a cota.
+describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () => {
+  const PENDENTE = [{ name: 'ci', status: 'in_progress' }]
+  const VERDE = [{ name: 'ci', conclusion: 'success', status: 'completed' }]
+  const VERMELHO = [{ name: 'ci', conclusion: 'failure', status: 'completed' }]
+  const novoPrisma = () =>
+    ({
+      repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    }) as unknown as import('@prisma/client').PrismaClient
+
+  /** Relógio do cache nas mãos do teste (o `Date` da missão é outro assunto). */
+  const relogio = { agora: 0 }
+  const novoCache = () =>
+    criarCacheDeVerificacaoPendente({ agora: () => relogio.agora, maxEntradas: 50 })
+
+  const NUMERO_DO_VERDE = 21
+  /** 10 PRs pendentes (#10..#19 -> 10 candidatos) e o verde na 11ª posição. */
+  const filaComVerdeNaOnzena = (
+    verde: Array<{ conclusion?: string; status?: string; name?: string }> = VERDE
+  ) => [
+    ...Array.from({ length: 10 }, (_, i) => ({
+      number: 10 + i,
+      user: 'jules[bot]',
+      headSha: `sha-${10 + i}`,
+      checkRuns: PENDENTE,
+    })),
+    {
+      number: NUMERO_DO_VERDE,
+      user: 'jules[bot]',
+      headSha: `sha-${NUMERO_DO_VERDE}`,
+      checkRuns: verde,
+    },
+  ]
+  const sessoesDaFila = (numeros: number[]) =>
+    numeros.map((n) =>
+      linha({ issueNumber: 50, pullRequestNumber: n, sessionName: `sessions/${n}` })
+    )
+
+  const missao = async (
+    prs: ReturnType<typeof filaComVerdeNaOnzena>,
+    extra: Partial<Parameters<typeof runQaMissionViaRails>[0]> = {}
+  ) => {
+    const f = fakeFetch(prs)
+    const posted = (
+      f as unknown as { posted: { reviews: Array<{ event?: string }>; checkRunReads: string[] } }
+    ).posted
+    const execute = vi.fn(async () => APPROVE)
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute,
+      sessoes: sessoesDaFila(prs.map((p) => p.number)),
+      fetchImpl: f,
+      ...extra,
+    })
+    return { r, posted, execute }
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    relogio.agora = 0
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-30T12:00:30Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('(a) 10 pendentes à frente e 1 verde sem parecer na 11ª posição: julga o verde', async () => {
+    const { r, posted, execute } = await missao(filaComVerdeNaOnzena(), {
+      cacheDeVerificacaoPendente: novoCache(),
+    })
+    expect(r.noOp).toBeUndefined()
+    expect(r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(execute).toHaveBeenCalledTimes(1)
+    // Sem cache, o custo é 1 leitura por candidato até chegar no verde.
+    expect(posted.checkRunReads).toHaveLength(11)
+  })
+
+  it('(b) segunda missão com os mesmos heads pendentes NÃO relê os pendentes e ainda julga o verde', async () => {
+    const cache = novoCache()
+    const primeira = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(primeira.posted.checkRunReads).toHaveLength(11)
+    expect(cache.tamanho()).toBe(10)
+
+    // O dublê do GitHub é novo a cada missão: o verde volta a estar sem parecer.
+    relogio.agora += 60_000
+    const segunda = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(segunda.posted.checkRunReads).toEqual([`sha-${NUMERO_DO_VERDE}`])
+    expect(segunda.r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
+    expect(segunda.posted.reviews).toHaveLength(1)
+    expect(segunda.posted.reviews[0]!.event).toBe('APPROVE')
+  })
+
+  it('(b2) o pendente vindo do cache não gasta a cota: com 19 pendentes em cache o verde da 20ª ainda é lido', async () => {
+    const cache = novoCache()
+    const pendentes = Array.from({ length: 19 }, (_, i) => ({
+      number: 10 + i,
+      user: 'jules[bot]',
+      headSha: `sha-${10 + i}`,
+      checkRuns: PENDENTE,
+    }))
+    const verde = { number: 40, user: 'jules[bot]', headSha: 'sha-40', checkRuns: VERDE }
+    // Primeira missão: o teto (16) corta antes do verde; os 16 lidos viram cache.
+    const primeira = await missao([...pendentes, verde], { cacheDeVerificacaoPendente: cache })
+    expect(primeira.r.noOp).toBe(true)
+    expect(primeira.posted.checkRunReads).toHaveLength(16)
+    // Segunda: os 16 já estão em cache e saem de graça; sobra cota para os
+    // 3 restantes e para o verde.
+    const segunda = await missao([...pendentes, verde], { cacheDeVerificacaoPendente: cache })
+    expect(segunda.r.noOp).toBeUndefined()
+    expect(segunda.r.output).toContain('PR #40')
+    expect(segunda.posted.checkRunReads).toEqual(['sha-26', 'sha-27', 'sha-28', 'sha-40'])
+  })
+
+  it('(c) o cache expira depois do TTL (relógio injetado) e a missão relê', async () => {
+    const cache = novoCache()
+    await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+
+    relogio.agora += TTL_DA_VERIFICACAO_PENDENTE_MS - 1
+    const dentro = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(dentro.posted.checkRunReads).toHaveLength(1)
+
+    relogio.agora += 2
+    const fora = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(fora.posted.checkRunReads).toHaveLength(11)
+    expect(fora.r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
+  })
+
+  it('(d) head novo invalida: chave nova, relê os check-runs', async () => {
+    const cache = novoCache()
+    await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+
+    const fila = filaComVerdeNaOnzena()
+    fila[0] = { ...fila[0]!, headSha: 'sha-10-novo' }
+    const segunda = await missao(fila, { cacheDeVerificacaoPendente: cache })
+    // Só o #10 (head novo) é relido, mais o verde; os outros 9 vêm do cache.
+    expect(segunda.posted.checkRunReads).toEqual(['sha-10-novo', `sha-${NUMERO_DO_VERDE}`])
+  })
+
+  it('(e) verde e vermelho nunca entram no cache: sempre relê', async () => {
+    const cache = novoCache()
+    const verde = [{ number: 10, user: 'jules[bot]', headSha: 'sha-v', checkRuns: VERDE }]
+    const v1 = await missao(verde, { cacheDeVerificacaoPendente: cache })
+    const v2 = await missao(verde, { cacheDeVerificacaoPendente: cache })
+    expect(v1.posted.checkRunReads).toEqual(['sha-v'])
+    expect(v2.posted.checkRunReads).toEqual(['sha-v'])
+    expect(cache.ler(chaveDaVerificacao('o/r', 10, 'sha-v'))).toBeUndefined()
+
+    const vermelho = [{ number: 11, user: 'jules[bot]', headSha: 'sha-r', checkRuns: VERMELHO }]
+    const r1 = await missao(vermelho, { cacheDeVerificacaoPendente: cache })
+    const r2 = await missao(vermelho, { cacheDeVerificacaoPendente: cache })
+    expect(r1.posted.checkRunReads).toEqual(['sha-r'])
+    expect(r2.posted.checkRunReads).toEqual(['sha-r'])
+    expect(cache.ler(chaveDaVerificacao('o/r', 11, 'sha-r'))).toBeUndefined()
+    expect(cache.tamanho()).toBe(0)
+  })
+
+  it('(e2) um head que estava pendente e ficou verde depois do TTL é julgado e sai do cache', async () => {
+    const cache = novoCache()
+    const pendente = [{ number: 10, user: 'jules[bot]', headSha: 'sha-x', checkRuns: PENDENTE }]
+    const m1 = await missao(pendente, { cacheDeVerificacaoPendente: cache })
+    expect(m1.r.noOp).toBe(true)
+    expect(cache.tamanho()).toBe(1)
+
+    relogio.agora += TTL_DA_VERIFICACAO_PENDENTE_MS
+    const verdeAgora = [{ number: 10, user: 'jules[bot]', headSha: 'sha-x', checkRuns: VERDE }]
+    const m2 = await missao(verdeAgora, { cacheDeVerificacaoPendente: cache })
+    expect(m2.posted.reviews).toHaveLength(1)
+    expect(cache.tamanho()).toBe(0)
+  })
+
+  it('(f) o cache da missão não cresce além do limite', async () => {
+    const cache = criarCacheDeVerificacaoPendente({ agora: () => relogio.agora, maxEntradas: 4 })
+    await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(cache.tamanho()).toBe(4)
+    // Ficaram os 4 pendentes mais NOVOS lidos (#16..#19).
+    expect(cache.ler(chaveDaVerificacao('o/r', 10, 'sha-10'))).toBeUndefined()
+    expect(cache.ler(chaveDaVerificacao('o/r', 19, 'sha-19'))).toBe('pending')
+  })
+
+  it('(g) a primeira vez pendente é registrada mesmo quando o pendente vem do cache', async () => {
+    const cache = novoCache()
+    // A missão 1 lê o pendente sem saber de sessão nenhuma (linha ainda não existia).
+    const f1 = fakeFetch([
+      { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+    ])
+    await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [],
+      fetchImpl: f1,
+      cacheDeVerificacaoPendente: cache,
+    })
+    expect(cache.tamanho()).toBe(1)
+
+    // A missão 2 já tem a linha: o pendente vem do cache (zero leitura) e a
+    // marca de "primeira vez pendente" precisa ser gravada assim mesmo.
+    const registradas: string[] = []
+    const f2 = fakeFetch([
+      { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+    ])
+    const posted2 = (f2 as unknown as { posted: { checkRunReads: string[] } }).posted
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('pendente: ninguém a julgar')
+      },
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' })],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f2,
+      cacheDeVerificacaoPendente: cache,
+    })
+    expect(posted2.checkRunReads).toEqual([])
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #10 não julgado')
+    expect(registradas).toEqual(['sessions/a'])
+  })
+
+  it('(g2) o aviso de demora continua saindo (uma vez por head) com o pendente vindo do cache', async () => {
+    const cache = novoCache()
+    const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
+    const avisos: string[] = []
+    const marcas: Array<{ sessionName: string; hash: string }> = []
+    const rodar = (answeredHash: string | null) =>
+      missao(
+        [
+          { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+          { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: VERDE },
+        ],
+        {
+          cacheDeVerificacaoPendente: cache,
+          sessoes: [
+            linha({
+              issueNumber: 50,
+              pullRequestNumber: 10,
+              sessionName: 'sessions/a',
+              pendingSince,
+              answeredHash,
+            }),
+            linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+          ],
+          avisarDono: async (mensagem) => {
+            avisos.push(mensagem)
+            return true
+          },
+          registrarAvisoDeDemora: async (args) => {
+            marcas.push(args)
+          },
+        }
+      )
+
+    const primeira = await rodar(null)
+    expect(primeira.posted.checkRunReads).toContain('sha-a')
+    expect(avisos).toHaveLength(1)
+
+    // Segunda missão: #10 sai do cache (não relê), o aviso já foi dado neste head.
+    const segunda = await rodar(marcas[0]!.hash)
+    expect(segunda.posted.checkRunReads).toEqual(['sha-b'])
+    expect(avisos).toHaveLength(1)
+
+    // Terceira: marca ainda não gravada -> o aviso ainda sai, mesmo vindo do cache.
+    const terceira = await rodar(null)
+    expect(terceira.posted.checkRunReads).toEqual(['sha-b'])
+    expect(avisos).toHaveLength(2)
   })
 })

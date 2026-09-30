@@ -63,6 +63,11 @@ import {
   pedidoDeResgate,
 } from './entrega-travada-no-teto.js'
 import { comecarPeloMaisAntigo, ordemDoJulgamento } from './ordem-do-julgamento.js'
+import {
+  cacheDoProcesso,
+  chaveDaVerificacao,
+  type CacheDeVerificacaoPendente,
+} from './cache-de-verificacao-pendente.js'
 import { decidirSobreLegado } from './rejulgar-legados.js'
 import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 
@@ -96,10 +101,14 @@ export const MAX_TENTATIVAS_DE_MERGE = 3
  * O laço pula PR com verificação pendente e segue para o próximo pronto, mas
  * cada candidato lido custa chamadas ao GitHub (o PR isolado e os check-runs).
  * Sem teto, um repositório com dezenas de PRs pendentes gastaria a cota toda
- * num único tique. Com 6, o pior caso é ~12 chamadas a mais — e quem ficou de
- * fora entra na próxima acordada, já que o QA acorda várias vezes por hora.
+ * num único tique. Quem ficou de fora entra na próxima acordada, já que o QA
+ * acorda várias vezes por hora.
+ *
+ * 16: com o cache de pendentes (cache-de-verificacao-pendente.ts) o custo real
+ * por missão fica baixo, e 16 cobre a fila típica de ~15 PRs abertos do Jardim.
+ * Com 6, o PR verde na 11ª posição nunca era lido (fome, 30/09/2026).
  */
-export const MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS = 6
+export const MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS = 16
 
 /**
  * Família de opções que só faz sentido ligada ao Prisma/notificador real do
@@ -239,6 +248,12 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    */
   mode?: 'judge' | 'recon'
   fetchImpl?: typeof fetch
+  /**
+   * Cache curto dos check-runs PENDENTES por head (ver
+   * cache-de-verificacao-pendente.ts). Sem ele vale o cache do processo; só os
+   * testes injetam outro, com relógio próprio.
+   */
+  cacheDeVerificacaoPendente?: CacheDeVerificacaoPendente
   /**
    * Linhas de sessão deste projeto — a forma autoritativa de reconhecer o PR
    * e, quando o PR ainda não foi gravado na linha (ver o aviso de reprovação
@@ -618,6 +633,7 @@ export async function runQaMissionViaRails(
   // o resultado ("não julgado") quando NENHUM candidato ficou pronto.
   let primeiroPendente: { numeroDoPr: number; motivo: string } | undefined
   let candidatosLidos = 0
+  const cacheDePendentes = options.cacheDeVerificacaoPendente ?? cacheDoProcesso
 
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
@@ -989,6 +1005,32 @@ export async function runQaMissionViaRails(
     //
     // Pendente (ou desconhecido) PULA para o próximo; a pendência continua
     // registrada e o aviso de demora continua saindo (uma vez por head).
+    //
+    // Pendente já visto NESTE head há pouco (cache de ~3 min) não relê nada e
+    // não gasta a cota de leituras: a decisão é a mesma de uma leitura nova
+    // (marca de primeira vez pendente e aviso de demora incluídos) e o laço
+    // segue para o próximo candidato.
+    const chaveDoHead = p.head?.sha
+      ? chaveDaVerificacao(options.repository, p.number, p.head.sha)
+      : undefined
+    const pendenteEmCache = chaveDoHead ? cacheDePendentes.ler(chaveDoHead) : undefined
+    if (pendenteEmCache) {
+      const agoraDoCache = new Date()
+      const decisaoDoCache = decidirSobreVerificacao({
+        estado: pendenteEmCache,
+        primeiraVezVistoPendenteEm: linhaCandidata?.pendingSince ?? null,
+        agora: agoraDoCache,
+      })
+      await agirSobreVerificacaoPendente({
+        numeroDoPr: p.number,
+        headSha: p.head?.sha,
+        linha: linhaCandidata,
+        decisao: decisaoDoCache,
+        agora: agoraDoCache,
+      })
+      primeiroPendente ??= { numeroDoPr: p.number, motivo: decisaoDoCache.motivo }
+      continue
+    }
     // Teto de candidatos lidos: custo de chamadas ao GitHub por missão.
     if (candidatosLidos >= MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS) break
     candidatosLidos++
@@ -998,6 +1040,16 @@ export async function runQaMissionViaRails(
     // abaixo (L5-T1) a reprova antes de olhar o CI, como sempre foi.
     if (!(veredito.delegado && ehEntregaSemConteudo(prLido))) {
       verificacaoLida = await lerVerificacao(prLido.head?.sha)
+      // Só pendente/desconhecido entra no cache; veredito (verde, vermelho,
+      // sem checks) e cancelado nunca — e uma entrada velha some.
+      if (prLido.head?.sha) {
+        const chaveLida = chaveDaVerificacao(options.repository, p.number, prLido.head.sha)
+        if (verificacaoLida.estado === 'pending' || verificacaoLida.estado === 'unknown') {
+          cacheDePendentes.gravar(chaveLida, verificacaoLida.estado)
+        } else {
+          cacheDePendentes.esquecer(chaveLida)
+        }
+      }
       const agoraDaLeitura = new Date()
       const decisaoDaLeitura = decidirSobreVerificacao({
         estado: verificacaoLida.estado,
