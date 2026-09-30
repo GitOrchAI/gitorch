@@ -316,7 +316,7 @@ import {
   branchParaRetomar,
   contarAcoesDoVigia,
   fecharPrDoVigia,
-  montarPedidoDeConsertoDoVigia,
+  montarSessaoDeConsertoDoVigia,
   tarefaJaFoiDevolvidaAFila,
   listarPrsAbertosParaOVigia,
   vigiarPrsOrfaos,
@@ -339,6 +339,7 @@ import { registrarNoPainelUmaVez } from '../services/registro-no-painel.js'
 import { rodarReavaliacaoDeProjetoSeForAHora } from '../services/reavaliar-bloqueios.js'
 import { varrerPrsDuplicadosDoDev } from '../services/varrer-prs-duplicados.js'
 import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
+import { baseDoDev } from '../services/base-do-dev.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
 import { sessoesAbandonadas } from '../services/sessao-abandonada.js'
 import { medirRetrospectiva, escolherAMelhoria } from '../services/retrospectiva.js'
@@ -2737,6 +2738,8 @@ export const varrerRespostasPrParado = async (app: FastifyInstance) => {
                     return criarSessaoJules({
                       apiKey,
                       repository: args.repository,
+                      // Sempre a base do projeto (retomarPrReprovado): o ramo
+                      // antigo só vai no prompt.
                       startingBranch: args.startingBranch,
                       titulo: args.titulo,
                       prompt: args.prompt,
@@ -3878,7 +3881,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
                 apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
-                startingBranch: process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
+                startingBranch: baseDoDev(),
                 titulo,
                 prompt,
                 onWarn: (m) => app.log.warn(m),
@@ -7038,6 +7041,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               criarSessaoJules({
                 apiKey: (await chaveDoDevDoProjeto(linha.projectId)) ?? undefined,
                 repository,
+                // Base do projeto (retomarPrReprovado) — nunca o ramo do PR antigo.
                 startingBranch,
                 titulo,
                 prompt,
@@ -7698,7 +7702,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     numeroDoPr: number
     issueNumber: number
     pedido: string
-    /** O ramo do pull request. Nunca a principal — ver abaixo. */
+    /** O ramo do pull request: só citado no prompt, nunca a base da sessão. */
     branchDoPr: string
   }): Promise<boolean> => {
     const reserva = await abrirSessao({
@@ -7729,19 +7733,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       })
     }
 
-    // A sessão PARTE do ramo do pull request (`startingBranch`) para ver o
-    // trabalho do dev, traz a principal e publica um pull request NOVO — sem
+    // A sessão PARTE da principal (`startingBranch` = base do projeto): o Jules
+    // abre o PR novo com BASE no ponto de partida, então partir do ramo do PR
+    // antigo fazia o PR novo mirar esse ramo e nunca chegar na principal
+    // (medido em 30/09). O trabalho antigo viaja só no prompt. Sem
     // `workingBranch`: medido (62 retomadas, 0 entregas em 14 dias), com ele a
     // sessão fazia o conserto e nunca publicava. O antigo é fechado como
-    // substituído quando o novo aparece (pr-substituido.ts). Nunca parte da
-    // principal: sem ramo utilizável o vigia nem chega aqui (portão 11).
+    // substituído quando o novo aparece (pr-substituido.ts).
     const criada = await criarSessaoJules({
       apiKey: (await chaveDoDevDoProjeto(args.projeto.id)) ?? undefined,
       repository: args.projeto.wingId,
-      startingBranch: args.branchDoPr,
-      titulo: `Destravar o pull request #${args.numeroDoPr} (tarefa #${args.issueNumber})`,
-      prompt: montarPedidoDeConsertoDoVigia({
+      ...montarSessaoDeConsertoDoVigia({
         numeroDoPr: args.numeroDoPr,
+        issueNumber: args.issueNumber,
         ramoDoPr: args.branchDoPr,
         pedido: args.pedido,
       }),

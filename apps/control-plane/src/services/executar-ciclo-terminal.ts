@@ -55,7 +55,7 @@ export interface CicloTerminalDeps {
     numeroDoPr: number
   }) => Promise<string | null>
   /**
-   * L4-T5: executa a retomada de fato — abre a sessão nova na mesma branch
+   * L4-T5: executa a retomada de fato — abre a sessão nova a partir da main (o ramo do PR só vai no prompt)
    * (ou escala ao dono se o teto de tentativas do PR já bateu; ver
    * `retomarPrReprovado`, retomar-pr-reprovado.ts). Só chamado quando
    * `branchRetomavel` devolveu um ramo utilizável. A linha ANTIGA já foi
@@ -252,7 +252,7 @@ export async function executarCicloTerminal(
         r.issuesRetomadasNoPr.push(linha.issueNumber)
         info(
           `[ciclo-terminal] ${linha.sessionName} (issue #${linha.issueNumber}) fechada; PR ` +
-            `#${linha.pullRequestNumber} retomado na mesma branch (${decisao.branchDoPr})`
+            `#${linha.pullRequestNumber} retomado (ramo antigo só no prompt: ${decisao.branchDoPr})`
         )
       } catch (err) {
         warn(

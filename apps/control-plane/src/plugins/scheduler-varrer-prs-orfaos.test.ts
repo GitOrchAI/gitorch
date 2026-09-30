@@ -112,12 +112,16 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     return { cuidaPorOrigem: { jules: policy } }
   }
 
-  function getPrismaMock(entendimento: boolean, issueState: Record<string, unknown> = {}) {
+  function getPrismaMock(
+    entendimento: boolean,
+    issueState: Record<string, unknown> = {},
+    origem = 'jules'
+  ) {
     return {
       repoItem: {
         findUnique: vi.fn(async () => ({
           numero: 10,
-          origem: 'jules',
+          origem,
           estado: {
             rascunho: false,
             ultimoCommitEm: null,
@@ -146,8 +150,9 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
         return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
       }
-      if (url === '/repos/org/repo/pulls/42') return { head: { sha: 'sha1' } }
-      if (url === '/repos/org/repo') return { private: true }
+      if (url === '/repos/org/repo/pulls/42')
+        return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+      if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
       return null
     })
     const ghSend = vi.fn(async () => ({}))
@@ -172,6 +177,106 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       token,
       expect.any(Object)
     )
+  })
+
+  it('aprovado + CI verde, mas o PR mira um ramo antigo (não a main) NÃO mescla', async () => {
+    const ghGet = vi.fn(async (url) => {
+      if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
+        return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
+      }
+      if (url === '/repos/org/repo/pulls/42') {
+        return { head: { sha: 'sha1' }, base: { ref: 'jules-1084-abc' } }
+      }
+      if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
+      return null
+    })
+    const ghSend = vi.fn(async () => ({}))
+
+    const result = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: config('sim'),
+      agora,
+      projeto,
+      token,
+      depsVigia: buildDepsVigia(),
+      prisma: getPrismaMock(true),
+      ghGet,
+      ghSend,
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(ghSend).not.toHaveBeenCalledWith(
+      'PUT',
+      '/repos/org/repo/pulls/42/merge',
+      token,
+      expect.anything()
+    )
+    expect(result.acao).toBe('ignorar')
+    expect(result.motivo).toContain('jules-1084-abc')
+    expect(result.motivo).toContain('`main`')
+  })
+
+  describe('Dependabot expresso só mescla o que mira a branch padrão', () => {
+    const configDependabot = { cuidaPorOrigem: { dependabot: 'sim' } }
+
+    function ghDoDependabot(baseRef: string) {
+      return vi.fn(async (url: string) => {
+        if (url === '/repos/org/repo/pulls/42')
+          return { head: { sha: 'sha1' }, base: { ref: baseRef } }
+        if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
+        return null
+      })
+    }
+
+    it('base = main → mescla e registra o merge no painel', async () => {
+      const ghSend = vi.fn(async () => ({}))
+      const registrarNoPainel = vi.fn()
+      const result = await decidirAcaoNoPrOrfaoIntegrado({
+        runtimeConfig: configDependabot,
+        agora,
+        projeto,
+        token,
+        depsVigia: buildDepsVigia(),
+        prisma: getPrismaMock(true, {}, 'dependabot'),
+        ghGet: ghDoDependabot('main'),
+        ghSend,
+        registrarNoPainel,
+        onWarn: vi.fn(),
+      })
+      expect(result.motivo).toBe('Mesclado pelo caminho expresso do Dependabot')
+      expect(ghSend).toHaveBeenCalledWith(
+        'PUT',
+        '/repos/org/repo/pulls/42/merge',
+        token,
+        expect.any(Object)
+      )
+    })
+
+    it('base = outro ramo → NÃO mescla e NÃO registra "merge feito" no painel', async () => {
+      const ghSend = vi.fn(async () => ({}))
+      const registrarNoPainel = vi.fn()
+      const result = await decidirAcaoNoPrOrfaoIntegrado({
+        runtimeConfig: configDependabot,
+        agora,
+        projeto,
+        token,
+        depsVigia: buildDepsVigia(),
+        prisma: getPrismaMock(true, {}, 'dependabot'),
+        ghGet: ghDoDependabot('release/2026'),
+        ghSend,
+        registrarNoPainel,
+        onWarn: vi.fn(),
+      })
+      expect(ghSend).not.toHaveBeenCalled()
+      expect(registrarNoPainel).not.toHaveBeenCalledWith(
+        'proj-1',
+        expect.stringContaining('dependabot-merge:'),
+        expect.anything()
+      )
+      expect(result.acao).toBe('ignorar')
+      expect(result.motivo).toContain('release/2026')
+      expect(result.motivo).toContain('`main`')
+    })
   })
 
   it('QA pede mudancas nao mescla e RETOMA', async () => {
@@ -317,7 +422,8 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
         return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
       }
-      if (url === '/repos/org/repo/pulls/42') return { head: { sha: 'sha1' } }
+      if (url === '/repos/org/repo/pulls/42')
+        return { head: { sha: 'sha1' }, base: { ref: 'main' } }
       return null
     })
     const result = await decidirAcaoNoPrOrfaoIntegrado({

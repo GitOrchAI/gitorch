@@ -6,7 +6,7 @@
 // automação copiado — não no produto, e portanto não para cliente nenhum.
 //
 // Decisão do dono (D7): o produto mescla sozinho desde o primeiro ciclo, sem
-// confirmação humana. São CINCO porteiros, todos determinísticos.
+// confirmação humana. São SEIS porteiros, todos determinísticos.
 //
 // Task 9 acrescentou os dois primeiros — cada um nasceu de dano real ou
 // quase-dano:
@@ -22,6 +22,11 @@
 //    dev empurrou algo novo entre a aprovação e o merge, o código que entraria
 //    não é o que foi lido — aprovação não se transfere para código que
 //    ninguém viu.
+//
+// O sexto (30/09/2026): `baseDoPr === branchPadrao`. Medido em produção — PRs
+// de retomada nasciam com BASE num ramo antigo e eram "mesclados" nele sem
+// nunca chegar na principal (padrao-executores #154/#155, Jardim #4044/#4045).
+// Mesclar num ramo que não é a principal é declarar entregue o que não foi.
 //
 // Os outros três (já existiam): a verificação diz se o código roda, o QA diz
 // se resolve o que a tarefa pediu, e o diff completo garante que o julgamento
@@ -40,6 +45,10 @@ export async function mesclarPr(deps: {
   diffTruncado: boolean
   /** Task 9: true só quando a entrega foi reconhecida como trabalho do dev assíncrono. */
   delegado: boolean
+  /** `base.ref` do PR agora (lido fresco). `null` = não deu para ler. */
+  baseDoPr: string | null
+  /** A branch padrão do projeto — a única para onde o produto mescla sozinho. */
+  branchPadrao: string
   /** Commit que o juiz de fato leu ao montar a diferença julgada. */
   shaRevisado: string
   /** Commit da entrega agora, no instante do merge — lido fresco, nunca herdado. */
@@ -55,6 +64,22 @@ export async function mesclarPr(deps: {
   // perigoso de pular: mesclar código de humano sem autorização nenhuma dele.
   if (!deps.delegado) {
     return { mesclado: false, motivo: 'esta entrega não foi encomendada pelo produto' }
+  }
+  // Base do PR: só a principal do projeto. Antes do sha porque é um fato
+  // estrutural do PR, não do commit.
+  if (deps.baseDoPr === null) {
+    return {
+      mesclado: false,
+      motivo: `não deu para confirmar para qual ramo este pull request aponta — por segurança não mescla sozinho; precisa de julgamento humano`,
+    }
+  }
+  if (deps.baseDoPr !== deps.branchPadrao) {
+    return {
+      mesclado: false,
+      motivo:
+        `este pull request aponta para o ramo \`${deps.baseDoPr}\`, não para a \`${deps.branchPadrao}\` ` +
+        'do projeto — mesclá-lo aí não entrega nada na principal; precisa de julgamento humano',
+    }
   }
   // Segundo porteiro: garante que o commit que vai entrar é o MESMO que o
   // juiz leu — não um push posterior que ninguém verificou.

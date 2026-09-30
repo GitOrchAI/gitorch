@@ -635,6 +635,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             (await resolverChaveDoDevDoProjeto(depsDaChaveDoDevParaRetomada, args.projectId)) ??
             undefined,
           repository,
+          // Base do projeto (retomarPrReprovado) — nunca o ramo do PR antigo.
           startingBranch,
           titulo,
           prompt,

@@ -3,6 +3,7 @@ import { horasEmConstrucao } from './em-construcao.js'
 import { decidirProximoPasso } from './motor-do-proximo-passo.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
+import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
 import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
 import {
@@ -84,6 +85,26 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   let currentHeadSha: string | undefined
   let diffTruncado = false
 
+  // Base do PR (agora) e branch padrão do repositório — o motor só mescla sozinho
+  // PR que mira a branch padrão (merge-do-pr.ts). Lido fresco na porta do merge.
+  const lerBaseParaMerge = async (): Promise<{ baseDoPr: string | null; branchPadrao: string }> => {
+    let baseDoPr: string | null = null
+    try {
+      baseDoPr = baseDoPrDe(
+        await ghGet(`/repos/${projeto.wingId}/pulls/${depsVigia.numero}`, token)
+      )
+    } catch (err) {
+      onWarn(
+        `decidirAcaoNoPrOrfaoIntegrado: não deu para ler a base do PR #${depsVigia.numero}: ${(err as Error).message}`
+      )
+    }
+    const branchPadrao = await branchPadraoDoRepositorio(
+      async () => ghGet(`/repos/${projeto.wingId}`, token),
+      onWarn
+    )
+    return { baseDoPr, branchPadrao }
+  }
+
   if (depsVigia.issueNumber !== null) {
     const ficha = await lerFichaDoItem({
       prisma: prisma as never,
@@ -127,12 +148,14 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
           token
         )) as { head: { sha: string } }
-        await mesclarPr({
+        const baseDoMerge = await lerBaseParaMerge()
+        const resultadoDoMerge = await mesclarPr({
           numeroDoPr: depsVigia.numero,
           ciState: 'green',
           vereditoDoQa: 'approve',
           diffTruncado: false,
           delegado: true,
+          ...baseDoMerge,
           shaRevisado: currentPr.head.sha,
           shaAtual: currentPr.head.sha,
           entendimentoPresente: true,
@@ -154,6 +177,14 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
             }
           },
         })
+        // Antes ignorava o resultado e registrava "merge feito" mesmo com o
+        // merge barrado (base fora da principal, GitHub recusando...).
+        if (!resultadoDoMerge.mesclado) {
+          return {
+            acao: 'ignorar',
+            motivo: `Dependabot expresso não mesclado: ${resultadoDoMerge.motivo}`,
+          }
+        }
         await registrarNoPainel(
           projeto.id,
           `dependabot-merge:${projeto.wingId}:${depsVigia.numero}`,
@@ -431,12 +462,14 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     )
 
     try {
+      const baseDoMerge = await lerBaseParaMerge()
       const result = await mesclarPr({
         numeroDoPr: depsVigia.numero,
         ciState: depsVigia.verificacao === 'verde' ? 'green' : 'red',
         vereditoDoQa: vereditoDoQa ?? 'unknown',
         diffTruncado: diffTruncado,
         delegado: true,
+        ...baseDoMerge,
         shaRevisado: currentHeadSha ?? '',
         shaAtual: currentHeadSha ?? '',
         entendimentoPresente: entendimentoCompleto,

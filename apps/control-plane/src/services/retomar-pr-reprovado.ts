@@ -7,12 +7,15 @@
 // Medido: issue #3884 do Jardim (02/09/2026), 5 sessões e 3 pull requests
 // (#3907 31/08, #3913 01/09, #3917 02/09) para UMA task.
 //
-// A retomada certa PARTE do ramo do PR reprovado (`startingBranch`, para não
-// perder o trabalho), traz a `main` e publica um pull request NOVO contra a
-// `main`. NÃO se manda `workingBranch`: medido em produção (62 retomadas em 14
-// dias), com ele a sessão concluía o conserto e nunca publicava nada. O PR
-// antigo é fechado como substituído quando o novo aparece (pr-substituido.ts),
-// porque a sessão de retomada continua registrada com a mesma issue.
+// A retomada certa parte da `main` (`startingBranch` = base do projeto, nunca
+// o ramo do PR antigo: medido em 30/09, o Jules abre o PR novo com BASE no
+// ponto de partida da sessão, e o PR nascia mirando o ramo velho). O trabalho
+// antigo viaja só pelo PROMPT (pedido-de-pr-novo.ts) e o resultado é um pull
+// request NOVO contra a `main`. NÃO se manda `workingBranch`: medido em
+// produção (62 retomadas em 14 dias), com ele a sessão concluía o conserto e
+// nunca publicava nada. O PR antigo é fechado como substituído quando o novo
+// aparece (pr-substituido.ts), porque a sessão de retomada continua
+// registrada com a mesma issue.
 //
 // PURO NA DECISÃO, INJETADO NA AÇÃO — mesma disciplina de `vigia-do-pr.ts` e
 // `sessao-terminal.ts`: o teto de retomadas por PR é testável sem rede, e
@@ -20,6 +23,7 @@
 
 import type { ResultadoDoAcionamentoDoDev } from './sm-delegation.js'
 import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
+import { baseDoDev } from './base-do-dev.js'
 
 /**
  * Quantas vezes a esteira tenta retomar o MESMO pull request reprovado antes
@@ -145,7 +149,7 @@ function neutralizarMarcasDeMoldura(texto: string): string {
 
 /**
  * O prompt que o dev recebe ao retomar: o parecer do QA (como DADO, nunca
- * instrução) + a instrução explícita de partir do ramo antigo e publicar um
+ * instrução) + a instrução explícita de buscar o ramo antigo e publicar um
  * pull request NOVO contra a `main`.
  *
  * S1 (CSO): o parecer nunca entra cru. Nesta ordem: (1) filtro de segredo no
@@ -158,7 +162,7 @@ function neutralizarMarcasDeMoldura(texto: string): string {
  */
 export function montarPromptDeRetomada(args: {
   numeroDoPr: number
-  /** O ramo do PR antigo — o ponto de partida da sessão nova. */
+  /** O ramo do PR antigo — só citado no prompt, nunca base da sessão. */
   ramoDoPr: string
   parecerDoQa: string
   /** Só para a mensagem de `onWarn` (repo#pr) — nunca usado na sanitização em si. */
@@ -209,7 +213,11 @@ export interface DepsDeRetomadaDoPr {
    * sessão ORIGINAL que abriu o PR, só as retomadas depois dela.
    */
   contarRetomadasAnteriores: (args: { projectId: string; prNumber: number }) => Promise<number>
-  /** Aciona o dev de verdade — mesma família de `criarSessaoJules`. */
+  /**
+   * Aciona o dev de verdade — mesma família de `criarSessaoJules`.
+   * `startingBranch` é SEMPRE a base do projeto (`baseDoDev`), nunca o ramo do
+   * PR reprovado: o PR novo herda a base do ponto de partida da sessão.
+   */
   criarSessaoDev: (args: {
     repository: string
     startingBranch: string
@@ -316,7 +324,7 @@ export async function retomarPrReprovado(
 
   const resultado = await deps.criarSessaoDev({
     repository: args.repository,
-    startingBranch: args.pr.headRef,
+    startingBranch: baseDoDev(),
     titulo: `Retomada do PR #${args.pr.number} (issue #${args.issueNumber})`,
     prompt: montarPromptDeRetomada({
       numeroDoPr: args.pr.number,
@@ -340,7 +348,7 @@ export async function retomarPrReprovado(
   })
   info(
     `[retomada] sessão ${args.sessaoAnterior.sessionName} fechada; PR #${args.pr.number} ` +
-      `(issue #${args.issueNumber}) retomado na sessão ${resultado.sessionName} — PR novo a partir do mesmo ramo`
+      `(issue #${args.issueNumber}) retomado na sessão ${resultado.sessionName} — PR novo contra a base`
   )
   return { acao: 'retomou', sessionName: resultado.sessionName }
 }

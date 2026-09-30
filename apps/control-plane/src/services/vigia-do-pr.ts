@@ -28,6 +28,7 @@
 import type { Prisma } from '@prisma/client'
 import { pedidoDeRebase } from './conflito-de-merge.js'
 import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
+import { baseDoDev } from './base-do-dev.js'
 
 /**
  * Rodapé emitido pelo dev assíncrono ao abrir o pull request — a ÚNICA
@@ -209,7 +210,7 @@ export async function tarefaJaFoiDevolvidaAFila(
 
 /**
  * O pedido que a sessão de conserto recebe: o que consertar + a instrução de
- * partir do ramo antigo e publicar pull request NOVO contra a `main`.
+ * buscar o ramo antigo e publicar pull request contra a `main`.
  */
 export function montarPedidoDeConsertoDoVigia(args: {
   numeroDoPr: number
@@ -220,6 +221,28 @@ export function montarPedidoDeConsertoDoVigia(args: {
     numeroDoPr: args.numeroDoPr,
     ramoDoPr: args.ramoDoPr,
   })}`
+}
+
+/**
+ * A sessão de conserto inteira: nasce da base do projeto (NUNCA do ramo do PR
+ * antigo — o PR novo herda a base do ponto de partida, e a entrega precisa
+ * chegar na `main`), e o ramo antigo viaja só no prompt.
+ */
+export function montarSessaoDeConsertoDoVigia(args: {
+  numeroDoPr: number
+  issueNumber: number
+  ramoDoPr: string
+  pedido: string
+}): { startingBranch: string; titulo: string; prompt: string } {
+  return {
+    startingBranch: baseDoDev(),
+    titulo: `Destravar o pull request #${args.numeroDoPr} (tarefa #${args.issueNumber})`,
+    prompt: montarPedidoDeConsertoDoVigia({
+      numeroDoPr: args.numeroDoPr,
+      ramoDoPr: args.ramoDoPr,
+      pedido: args.pedido,
+    }),
+  }
 }
 
 /**

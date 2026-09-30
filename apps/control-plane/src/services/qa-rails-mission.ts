@@ -23,6 +23,7 @@ import {
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
+import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 import { hashDaMensagem } from './session-watch.js'
 import { fetchComTeto } from './fetch-com-teto.js'
@@ -1594,8 +1595,14 @@ export async function runQaMissionViaRails(
         'GET',
         `/repos/${options.repository}/pulls/${target.number}`
       )) as { head?: { sha?: string } }
+      // A branch padrão REAL do repositório — o PR só é mesclado sozinho se
+      // mirar nela (merge-do-pr.ts, sexto porteiro).
+      const branchPadrao = await branchPadraoDoRepositorio(
+        async () => gh('GET', `/repos/${options.repository}`),
+        (m) => options.onWarn?.(m)
+      )
 
-      // Os CINCO porteiros (delegado, sha revisado = sha atual, QA aprovou,
+      // Os SEIS porteiros (delegado, base = branch padrão, sha revisado = sha atual, QA aprovou,
       // CI verde, diff completo) já foram satisfeitos para chegar aqui —
       // `mesclarPr` os reconfere de propósito: é o guarda final antes de
       // tocar no repositório do cliente, não uma confiança cega no que a
@@ -1620,6 +1627,8 @@ export async function runQaMissionViaRails(
         vereditoDoQa: effectiveVerdict,
         diffTruncado: truncado,
         delegado,
+        baseDoPr: baseDoPrDe(entregaAgora),
+        branchPadrao,
         shaRevisado: pr.head?.sha ?? '',
         shaAtual: entregaAgora.head?.sha ?? '',
         entendimentoPresente: Boolean(

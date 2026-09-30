@@ -130,6 +130,7 @@ const ENV_KEYS = [
   'GITORCH_TELEGRAM_BOT_TOKEN',
   'TELEGRAM_BOT_TOKEN',
   'GITORCH_RETOMADAS_POR_PR',
+  'GITORCH_DEV_BASE_BRANCH',
 ]
 
 describe('retomada no mesmo PR — wiring do ciclo terminal (real seam, C11/L4-T5)', () => {
@@ -214,14 +215,16 @@ describe('retomada no mesmo PR — wiring do ciclo terminal (real seam, C11/L4-T
       { timeout: 3000, interval: 10 }
     )
 
-    // A sessão nova PARTE do ramo do PR reprovado (startingBranch) e NÃO manda
-    // workingBranch: com esse campo, 62 retomadas em 14 dias nunca publicaram.
-    // O Jules publica num ramo novo e abre PR novo contra a main.
+    // A sessão nova PARTE da main (startingBranch) e NÃO manda workingBranch:
+    // com esse campo, 62 retomadas em 14 dias nunca publicaram. E com
+    // startingBranch = ramo do PR antigo (30/09) o PR novo nascia com BASE nesse
+    // ramo, nunca na main. O ramo antigo só vai no prompt.
     const sourceContext = chamadasAoJules[0]!.body['sourceContext'] as Record<string, unknown>
     expect('workingBranch' in sourceContext).toBe(false)
-    expect(String(chamadasAoJules[0]!.body['prompt'])).toMatch(/pull request NOVO contra a `main`/)
+    expect(String(chamadasAoJules[0]!.body['prompt'])).toMatch(/pull request contra a `main`/)
     const githubCtx = sourceContext['githubRepoContext'] as Record<string, unknown>
-    expect(githubCtx['startingBranch']).toBe(BRANCH_DO_PR)
+    expect(githubCtx['startingBranch']).toBe('main')
+    expect(String(chamadasAoJules[0]!.body['prompt'])).toContain(BRANCH_DO_PR)
 
     // A linha antiga fecha (a vaga da conta precisa voltar) — isto É
     // esperado e intencional, não o defeito. O que prova que a issue NÃO
