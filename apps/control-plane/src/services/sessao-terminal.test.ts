@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decidirSessaoTerminal } from './sessao-terminal.js'
+import { decidirSessaoTerminal, HORAS_ATE_DESISTIR_DO_PR_REJEITADO } from './sessao-terminal.js'
 
 const base = {
   estado: 'COMPLETED',
@@ -80,17 +80,31 @@ describe('decidirSessaoTerminal', () => {
     })
   })
 
-  it('PR aberto rejeitado, ainda dentro das 12h → mantém (dá tempo do dev retrabalhar)', () => {
+  it('PR aberto rejeitado, sessão terminal há 59min → mantém (margem de leitura duplicada de estado)', () => {
     expect(
       decidirSessaoTerminal({
         ...base,
         situacaoDoPr: 'aberto-rejeitado-parado',
-        horasNoTerminal: 5,
+        horasNoTerminal: 59 / 60,
       })
     ).toEqual({ acao: 'manter' })
   })
 
-  it('PR aberto rejeitado, passou das 12h e o Jules está terminal → fecha e redelega', () => {
+  it('PR aberto rejeitado, sessão terminal há 61min, sem ramo → fecha e redelega (não espera mais 12h)', () => {
+    expect(
+      decidirSessaoTerminal({
+        ...base,
+        situacaoDoPr: 'aberto-rejeitado-parado',
+        horasNoTerminal: 61 / 60,
+      })
+    ).toEqual({ acao: 'fechar-e-redelegar', motivo: 'pr-rejeitado-sem-retomada' })
+  })
+
+  it('a espera é de 1h (HORAS_ATE_DESISTIR_DO_PR_REJEITADO)', () => {
+    expect(HORAS_ATE_DESISTIR_DO_PR_REJEITADO).toBe(1)
+  })
+
+  it('PR aberto rejeitado, passou de 12h e o Jules está terminal → fecha e redelega', () => {
     const d = decidirSessaoTerminal({
       ...base,
       situacaoDoPr: 'aberto-rejeitado-parado',
@@ -99,7 +113,7 @@ describe('decidirSessaoTerminal', () => {
     expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'pr-rejeitado-sem-retomada' })
   })
 
-  it('PR rejeitado + passou das 12h + é a 2ª falha → analisa antes da 3ª', () => {
+  it('PR rejeitado + passou de 12h + é a 2ª falha → analisa antes da 3ª', () => {
     const d = decidirSessaoTerminal({
       ...base,
       situacaoDoPr: 'aberto-rejeitado-parado',
@@ -115,7 +129,7 @@ describe('decidirSessaoTerminal', () => {
   // devolver a issue à fila abre um SEGUNDO pull request do zero; com um ramo
   // retomável a esteira tenta de novo NO MESMO PR em vez disso.
   describe('retomada no mesmo PR (L4-T5)', () => {
-    it('PR rejeitado, passou das 12h, HÁ ramo retomável → retomar-no-mesmo-pr', () => {
+    it('PR rejeitado, passou de 12h, HÁ ramo retomável → retomar-no-mesmo-pr', () => {
       const d = decidirSessaoTerminal({
         ...base,
         situacaoDoPr: 'aberto-rejeitado-parado',
@@ -125,14 +139,24 @@ describe('decidirSessaoTerminal', () => {
       expect(d).toEqual({ acao: 'retomar-no-mesmo-pr', branchDoPr: 'jules-3917-branch' })
     })
 
-    it('ainda dentro das 12h, mesmo com ramo retomável → mantém (dá tempo)', () => {
+    it('terminal há 59min, mesmo com ramo retomável → mantém (margem de 1h)', () => {
       const d = decidirSessaoTerminal({
         ...base,
         situacaoDoPr: 'aberto-rejeitado-parado',
-        horasNoTerminal: 5,
+        horasNoTerminal: 59 / 60,
         branchRetomavel: 'jules-3917-branch',
       })
       expect(d).toEqual({ acao: 'manter' })
+    })
+
+    it('terminal há 61min, HÁ ramo retomável → retomar-no-mesmo-pr', () => {
+      const d = decidirSessaoTerminal({
+        ...base,
+        situacaoDoPr: 'aberto-rejeitado-parado',
+        horasNoTerminal: 61 / 60,
+        branchRetomavel: 'jules-4038-branch',
+      })
+      expect(d).toEqual({ acao: 'retomar-no-mesmo-pr', branchDoPr: 'jules-4038-branch' })
     })
 
     it('SEM ramo retomável (fork, ausente) → cai no comportamento antigo (fecha e redelega)', () => {
@@ -174,7 +198,7 @@ describe('decidirSessaoTerminal', () => {
   // dono, e o `estado` que chega aqui já não é mais AWAITING_USER_FEEDBACK.
   // `ehTerminal(state)` (fix-up 2) não segura nada nesse caso — o único jeito
   // de saber que o dono ainda não decidiu é a marca em `answeredHash`, que é
-  it('marca de escalada em answeredHash → mantém quando PR aberto rejeitado parado (mesmo passado das 12h)', () => {
+  it('marca de escalada em answeredHash → mantém quando PR aberto rejeitado parado (mesmo passada a espera)', () => {
     const d = decidirSessaoTerminal({
       ...base,
       situacaoDoPr: 'aberto-rejeitado-parado',
