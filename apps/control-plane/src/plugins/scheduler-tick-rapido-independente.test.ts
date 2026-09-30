@@ -8,7 +8,7 @@ import { schedulerPlugin } from './scheduler.js'
 // passos sequenciais de I/O de rede e rotineiramente ultrapassa os 60s do
 // intervalo. Consequência real: `varrerPrsOrfaos` (vigia-do-pr) — que decide
 // quem é adiado pelo teto de ações por passada — deixa de rodar em vários
-// ciclos seguidos, e o PR adiado só é reexaminado 6h depois (cadência de
+// ciclos seguidos, e o PR adiado só é reexaminado 3h depois (cadência de
 // `varrerPrsOrfaos`), na MESMA ordem, correndo risco de ser adiado de novo.
 //
 // Este arquivo prova, pelo "real seam" (mesmo padrão de

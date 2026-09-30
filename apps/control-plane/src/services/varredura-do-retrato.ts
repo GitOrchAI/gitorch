@@ -10,7 +10,7 @@ import {
 } from '../routes/github-webhook.js'
 import type { EstadoDoItem, TipoDoItem } from './ficha-do-item.js'
 
-/** Cadência da varredura de retrato — separada da de `vigiarPrsOrfaos` (6h): a
+/** Cadência da varredura de retrato — separada da de `vigiarPrsOrfaos` (3h): a
  *  ficha precisa ficar em dia bem mais rápido que a decisão de agir sobre um
  *  pull request órfão. */
 export const CADENCIA_DO_RETRATO_MS = 30 * 60_000

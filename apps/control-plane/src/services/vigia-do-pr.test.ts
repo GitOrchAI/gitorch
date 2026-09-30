@@ -678,17 +678,25 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
   // seco contra o GitHub e o banco: a PRIMEIRA passada fecharia SEIS pull
   // requests (#314, #324, #330, #331, #335, #341). O teto por passada existe
   // para que a estreia seja visível antes de ser irreversível.
-  const seisParaFechar = [314, 324, 330, 331, 335, 341]
+  // Fila parada medida em 30/09/2026 (padrao-executores: 5 travados, gitorch
+  // idem, só 2 tratados a cada 6h): teto 6 e varredura de 3h. Oito PRs
+  // elegíveis = seis agem, dois ficam adiados para a passada seguinte.
+  const oitoParaFechar = [314, 324, 330, 331, 335, 341, 342, 345]
 
-  it('o teto por passada é MENOR que a população que a primeira passada fecharia', () => {
-    expect(TETO_DE_ACOES_POR_PASSADA).toBeLessThan(seisParaFechar.length)
+  it('o teto é 6 por passada e a varredura roda a cada 3h (fila parada medida em 30/09)', () => {
+    expect(TETO_DE_ACOES_POR_PASSADA).toBe(6)
+    expect(CADENCIA_DA_VARREDURA_MS).toBe(3 * 60 * 60 * 1000)
+  })
+
+  it('o teto por passada é MENOR que a população do teste e maior que zero', () => {
+    expect(TETO_DE_ACOES_POR_PASSADA).toBeLessThan(oitoParaFechar.length)
     expect(TETO_DE_ACOES_POR_PASSADA).toBeGreaterThan(0)
   })
 
-  it('com seis a fechar, só o teto sai — e o resto fica para a próxima passada', async () => {
+  it('com oito a fechar, só o teto (6) sai — e o resto fica para a próxima passada', async () => {
     const fechados: number[] = []
     const resumo = await rodar({
-      prs: seisParaFechar.map((numero) =>
+      prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
       issueDoPr: (n) => n - 10,
@@ -699,16 +707,16 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
       },
     })
     expect(fechados).toHaveLength(TETO_DE_ACOES_POR_PASSADA)
-    expect(fechados).toEqual(seisParaFechar.slice(0, TETO_DE_ACOES_POR_PASSADA))
+    expect(fechados).toEqual(oitoParaFechar.slice(0, TETO_DE_ACOES_POR_PASSADA))
     // O teto DIZ quando morde — teto silencioso é o defeito que ele conserta.
     expect(resumo).toContain('teto desta passada')
-    expect(resumo).toContain(String(seisParaFechar.length - TETO_DE_ACOES_POR_PASSADA))
+    expect(resumo).toContain(String(oitoParaFechar.length - TETO_DE_ACOES_POR_PASSADA))
   })
 
-  it('o teto conta TODA ação, não só o fechamento — seis escaladas não viram enxurrada', async () => {
+  it('o teto conta TODA ação, não só o fechamento — oito escaladas não viram enxurrada', async () => {
     const avisos: string[] = []
     await rodar({
-      prs: seisParaFechar.map((numero) =>
+      prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
       issueDoPr: () => null,
@@ -740,7 +748,7 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
     const fechadosPassada1: number[] = []
     const adiadosPassada1: number[] = []
     await rodar({
-      prs: seisParaFechar.map((numero) =>
+      prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
       issueDoPr: (n) => n - 10,
@@ -753,18 +761,18 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
         adiadosPassada1.push(numero)
       },
     })
-    expect(fechadosPassada1).toEqual([314, 324])
-    expect(adiadosPassada1).toEqual([330, 331, 335, 341])
+    expect(fechadosPassada1).toEqual([314, 324, 330, 331, 335, 341])
+    expect(adiadosPassada1).toEqual([342, 345])
 
     // Passada 2: MESMA lista de PRs (nenhum foi resolvido ainda — é a mesma
     // consulta ao GitHub de antes), mas agora `foiAdiadoAntes` sabe quem
-    // ficou de fora na passada 1. Sem prioridade, o teto fecharia [314, 324]
-    // de novo (mesma ordem do `findMany`/GitHub) — 330/331/335/341 nunca
-    // andariam. Com prioridade, quem foi adiado vai primeiro.
+    // ficou de fora na passada 1. Sem prioridade, o teto fecharia os mesmos
+    // seis da frente de novo (mesma ordem do `findMany`/GitHub) — 342/345
+    // nunca andariam. Com prioridade, quem foi adiado vai primeiro.
     const adiadosDaPassada1 = new Set(adiadosPassada1)
     const fechadosPassada2: number[] = []
     const resumo2 = await rodar({
-      prs: seisParaFechar.map((numero) =>
+      prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
       issueDoPr: (n) => n - 10,
@@ -775,8 +783,8 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
       },
       foiAdiadoAntes: (numero) => adiadosDaPassada1.has(numero),
     })
-    expect(fechadosPassada2).toEqual([330, 331])
-    expect(fechadosPassada2).not.toEqual([314, 324])
+    expect(fechadosPassada2).toEqual([342, 345, 314, 324, 330, 331])
+    expect(fechadosPassada2).not.toEqual(fechadosPassada1)
     expect(resumo2).toContain('teto desta passada')
   })
 })
