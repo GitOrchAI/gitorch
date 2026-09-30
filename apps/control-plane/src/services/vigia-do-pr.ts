@@ -233,20 +233,18 @@ export function montarPedidoDeConsertoDoVigia(args: {
  * (#314, #324, #330, #331, #335, #341). Estrear com uma limpeza em massa é a
  * pior forma de o dono descobrir que o vigia existe.
  *
- * DOIS, e o número tem conta:
- *   · a varredura roda de 6 em 6 horas, então o teto ainda drena 8 por dia — a
- *     dívida medida hoje (6) se resolve em menos de um dia, e o regime normal
- *     do repositório é 1 a 2 órfãos por dia, bem abaixo disso;
- *   · com 2 por passada, as duas primeiras ações chegam ao Telegram e à linha
- *     do tempo do painel ~6h antes das seguintes: há janela para desligar;
- *   · é o mesmo número, pelo mesmo motivo, de `TETO_DE_ANALISES_POR_PASSADA`
- *     (analisar-falhas-pendentes.ts): ação que custa caro e é difícil de
- *     desfazer anda devagar.
+ * SEIS (era 2 até 30/09/2026). Medido em produção nessa data: padrao-executores
+ * com 5 PRs travados e gitorch idem, mas só 2 tratados a cada 6h ("3 além do
+ * teto desta passada (2)") — o teto só atrasava a fila. O freio real são as
+ * vagas da conta do dev (`podeAbrirSessao`, ~12 no plano Pro) e o teto de
+ * tentativas por PR (`MAX_ACOES_DO_VIGIA`); este teto segue existindo para a
+ * estreia não ser uma limpeza em massa, e 6 com varredura de 3h drena até 48
+ * por dia. O que passa do teto é adiado com prioridade (`foiAdiadoAntes`).
  *
  * E ele DIZ quando morde: o resumo da passada conta quantos ficaram para a
  * próxima. Teto silencioso é o mesmo defeito que ele existe para consertar.
  */
-export const TETO_DE_ACOES_POR_PASSADA = 2
+export const TETO_DE_ACOES_POR_PASSADA = 6
 
 /**
  * Quanto tempo um pull request precisa ficar sem avanço antes de o vigia
@@ -263,12 +261,13 @@ export const IDADE_MINIMA_DE_ORFANDADE_MS = 3 * 24 * 60 * 60 * 1000
 /**
  * De quanto em quanto tempo a varredura roda por projeto.
  *
- * Seis horas — o mesmo período do relógio que já varre conflitos
- * (`jules-pr-conflict.yml`). Bem abaixo da idade mínima de órfão de propósito:
+ * Três horas (era 6h até 30/09/2026, quando a fila parada foi medida em
+ * produção). 3h mantém a leitura do GitHub dentro do limite de chamadas da
+ * instalação compartilhada. Bem abaixo da idade mínima de órfão de propósito:
  * assim quem decide se é hora de agir é a IDADE do pull request, não o acaso de
  * quando o relógio bateu.
  */
-export const CADENCIA_DA_VARREDURA_MS = 6 * 60 * 60 * 1000
+export const CADENCIA_DA_VARREDURA_MS = 3 * 60 * 60 * 1000
 
 /** O que a verificação automática do pull request está dizendo agora. */
 export type EstadoDaVerificacao = 'verde' | 'vermelha' | 'pendente' | 'ausente'

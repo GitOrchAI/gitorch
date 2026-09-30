@@ -12013,7 +12013,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // disparos pulados em 19min no journal de 28/09) porque os ~28 passos daqui
     // são sequenciais e vários fazem I/O de rede pesado — e quando isso
     // acontece, `varrerPrsOrfaos` simplesmente não roda naquele ciclo, e o PR
-    // que o teto de ações por passada adiou só é reexaminado 6h depois. Esta
+    // que o teto de ações por passada adiou só é reexaminado 3h depois. Esta
     // função é barata (leituras de Prisma + no máximo 1 chamada de rede por PR
     // órfão) — o problema nunca foi ELA ser lenta, era estar no meio de uma
     // cadeia sequencial que as OUTRAS etapas empurram para além de 60s. Ver
@@ -12324,7 +12324,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // #3953 foi adiado pelo teto de ações por passada de `varrerPrsOrfaos`
   // (`TETO_DE_ACOES_POR_PASSADA`), e como essa varredura simplesmente não
   // rodava em vários ciclos seguidos (presa atrás dos outros ~24 passos), o PR
-  // ficava sem reprocessamento priorizado — a próxima passada só vem 6h
+  // ficava sem reprocessamento priorizado — a próxima passada só vem 3h
   // depois (`CADENCIA_DA_VARREDURA_MS`, vigia-do-pr.ts) e reprocessa os
   // mesmos PRs na mesma ordem.
   //
