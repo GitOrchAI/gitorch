@@ -116,6 +116,8 @@ function fakeFetch(
     changedFiles?: number
     additions?: number
     deletions?: number
+    /** Base (`base.ref`) do PR. Default 'main' — a branch padrão dos testes. */
+    baseRef?: string
   }>,
   issueLabels: string[] = ['jules', 'gitorch:task'],
   /**
@@ -226,6 +228,7 @@ function fakeFetch(
         number: numeroDoPr,
         body: p?.body ?? 'Closes #50',
         head: opts.semShaNaPrIsolada ? {} : { sha: opts.headSha ?? 'abc123' },
+        base: { ref: p?.baseRef ?? 'main' },
         ...(p?.changedFiles !== undefined ? { changed_files: p.changedFiles } : {}),
         ...(p?.additions !== undefined ? { additions: p.additions } : {}),
         ...(p?.deletions !== undefined ? { deletions: p.deletions } : {}),
@@ -1648,6 +1651,35 @@ describe('runQaMissionViaRails', () => {
   // janela — e é exatamente o que o QA pede ao reprovar: "Revise the SAME
   // pull request" — faria o produto mesclar código que ninguém leu nem
   // verificou, furando os três porteiros por dentro.
+  // Só entrega na branch padrão do projeto pode ser mesclada sozinha. Medido em
+  // 30/09: PRs de retomada com BASE num ramo antigo eram "mesclados" nesse ramo
+  // e nunca chegavam na main — o card ia para "entregue" sem entrega.
+  it('approve + CI verde, mas o PR mira um ramo antigo (não a main): NÃO mescla e declara o motivo', async () => {
+    const f = fakeFetch([
+      { number: 7, user: 'jules[bot]', baseRef: 'fix/combo-audit-suggestions-3' },
+    ])
+    const posted = (
+      f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
+    ).posted
+    const aoMesclar = vi.fn()
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      aoMesclar,
+    })
+    expect(posted.merges).toHaveLength(0)
+    expect(aoMesclar).not.toHaveBeenCalled()
+    expect(r.output).toContain('Merge: blocked')
+    expect(r.output).toContain('fix/combo-audit-suggestions-3')
+    expect(r.output).toContain('`main`')
+  })
+
   it('I2: o corpo do PUT .../merge contém o sha do head que foi revisado', async () => {
     const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
     const posted = (

@@ -1029,17 +1029,18 @@ describe('ACHADO 1 — a ponta que nenhum teste de unidade alcança: o relógio'
     return scheduler.slice(j, scheduler.indexOf('onWarn:', j))
   }
 
-  it('a sessão de conserto nasce no ramo do PR — e NÃO na principal', () => {
+  it('a sessão de conserto nasce da principal — e NUNCA do ramo do PR antigo', () => {
     const chamada = corpoDeAbrirSessaoDeConsertoDoPr()
-    expect(chamada).toContain('startingBranch: args.branchDoPr')
-    expect(chamada).not.toContain("'main'")
-    expect(chamada).not.toContain('GITORCH_DEV_BASE_BRANCH')
+    // A base vem da fábrica pura (testada em vigia-do-pr-devolucao.test.ts).
+    expect(chamada).toContain('montarSessaoDeConsertoDoVigia')
+    expect(chamada).not.toContain('startingBranch: args.branchDoPr')
+    expect(chamada).not.toMatch(/startingBranch:\s*args\./)
   })
 
   it('NÃO manda workingBranch (medido: com ele a sessão nunca publicava) e usa o pedido de PR novo', () => {
     const chamada = corpoDeAbrirSessaoDeConsertoDoPr()
     expect(chamada).not.toContain('workingBranch')
-    expect(chamada).toContain('montarPedidoDeConsertoDoVigia')
+    expect(chamada).toContain('montarSessaoDeConsertoDoVigia')
   })
 
   it('o fechamento no relógio passa por `fecharPrDoVigia` — a ordem não é recopiada lá', () => {

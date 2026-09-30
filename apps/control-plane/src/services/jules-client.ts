@@ -31,7 +31,12 @@ export interface CriarSessaoDeps {
   /** Chave da API; ausente = recurso desligado (não é erro). */
   apiKey?: string | undefined
   repository: string
-  /** Branch de onde o trabalho parte (numa retomada, o ramo do PR antigo). */
+  /**
+   * Branch de onde o trabalho parte — e que vira a BASE do PR que o Jules abre.
+   * Sempre a principal do projeto (`baseDoDev`), inclusive nas retomadas: o
+   * ramo do PR antigo só viaja no prompt (medido em 30/09: partir dele fazia o
+   * PR novo mirar o ramo velho e nunca chegar na main).
+   */
   startingBranch: string
   /** Título da sessão — o mesmo título da task, para dar para casar depois. */
   titulo: string
@@ -78,8 +83,9 @@ export async function criarSessaoJules(
           source,
           githubRepoContext: { startingBranch: deps.startingBranch },
           // Sem `workingBranch` de propósito: o Jules escolhe o ramo de saída e
-          // abre PR novo. Medido (62 retomadas, 0 entregas em 14 dias): mandar
-          // o ramo do PR antigo como destino fazia a sessão nunca publicar.
+          // abre PR novo com base em `startingBranch`. Medido (62 retomadas, 0
+          // entregas em 14 dias): mandar o ramo do PR antigo como destino fazia
+          // a sessão nunca publicar.
         },
         // O PR é o entregável que o QA julga: pedir criação automática mantém
         // o ciclo fechado sem depender de ninguém apertar botão.

@@ -22,7 +22,8 @@ import { mintInstallationToken } from '../services/github-app-token.js'
 import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
 import { enderecoPermitido } from '../services/endereco-seguro.js'
 import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/dev-session-store.js'
-import { fecharPrsSubstituidos } from '../services/pr-substituido.js'
+import { fecharPrsSubstituidos, type SinaisDoPrNovo } from '../services/pr-substituido.js'
+import { baseDoPrDe, branchPadraoDoRepositorio, campoNumero } from '../services/base-do-dev.js'
 import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
 import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
@@ -274,6 +275,9 @@ export async function fecharPrsSubstituidosDaEntrega(deps: {
   /** A sessão do PR que ACABOU de nascer (o resultado de `ligarPrDaEntrega`). */
   sessionName: string
   numeroDoNovoPr: number
+  /** A branch padrão do projeto — o PR novo precisa mirar nela para substituir. */
+  branchPadrao: string
+  lerPrNovo: () => Promise<SinaisDoPrNovo | null>
   lerPr: (numeroDoPr: number) => Promise<{ aberto: boolean; ehDoDev: boolean } | null>
   comentariosDoPr: (numeroDoPr: number) => Promise<string[]>
   comentarEFechar: (args: { numeroDoPr: number; comentario: string }) => Promise<void>
@@ -289,8 +293,13 @@ export async function fecharPrsSubstituidosDaEntrega(deps: {
   if (!sessaoNova) return []
 
   return fecharPrsSubstituidos(
-    { issueNumber: sessaoNova.issueNumber, numeroDoNovoPr: deps.numeroDoNovoPr },
     {
+      issueNumber: sessaoNova.issueNumber,
+      numeroDoNovoPr: deps.numeroDoNovoPr,
+      branchPadrao: deps.branchPadrao,
+    },
+    {
+      lerPrNovo: deps.lerPrNovo,
       candidatosDaMesmaIssue: async ({ issueNumber, numeroDoNovoPr }) => {
         const linhas = (await deps.prisma.devSession.findMany({
           where: {
@@ -756,11 +765,32 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
                         'user-agent': 'gitorch',
                       },
                     })
+                  // O PR novo só substitui os antigos se ENTREGA: base = a branch
+                  // padrão do repositório e diff não vazio (pr-substituido.ts).
+                  const branchPadrao = await branchPadraoDoRepositorio(
+                    async () => {
+                      const resp = await ghSubstituicao(`repos/${project.wingId}`)
+                      return resp.ok ? await resp.json() : null
+                    },
+                    (m) => app.log.warn(m)
+                  )
                   const fechados = await fecharPrsSubstituidosDaEntrega({
                     prisma: app.prisma as unknown as PrismaDevSession,
                     projectId: project.id,
                     sessionName: ligado.sessionName,
                     numeroDoNovoPr: ligado.numeroDoPr,
+                    branchPadrao,
+                    lerPrNovo: async () => {
+                      const resp = await ghSubstituicao(
+                        `repos/${project.wingId}/pulls/${ligado.numeroDoPr}`
+                      )
+                      if (!resp.ok) return null
+                      const pr: unknown = await resp.json()
+                      return {
+                        baseRef: baseDoPrDe(pr),
+                        arquivosAlterados: campoNumero(pr, 'changed_files'),
+                      }
+                    },
                     lerPr: async (numeroDoPr) => {
                       const resp = await ghSubstituicao(
                         `repos/${project.wingId}/pulls/${numeroDoPr}`

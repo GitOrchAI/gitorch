@@ -95,6 +95,8 @@ describe('retomada com PR novo: o PR antigo é fechado como substituído', () =>
       projectId: 'p1',
       sessionName: ligado!.sessionName,
       numeroDoNovoPr: ligado!.numeroDoPr,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'main', arquivosAlterados: 3 }),
       lerPr: async (n) => ({ aberto: n === 3995, ehDoDev: true }),
       comentariosDoPr: async () => [],
       comentarEFechar: async (a) => {
@@ -132,6 +134,8 @@ describe('retomada com PR novo: o PR antigo é fechado como substituído', () =>
       projectId: 'p1',
       sessionName: `sessions/${ID_DA_RETOMADA}`,
       numeroDoNovoPr: 4100,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'main', arquivosAlterados: 3 }),
       lerPr: async () => ({ aberto: true, ehDoDev: false }),
       comentariosDoPr: async () => [],
       comentarEFechar: async (a) => {

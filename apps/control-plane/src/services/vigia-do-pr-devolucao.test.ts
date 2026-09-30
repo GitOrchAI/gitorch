@@ -6,6 +6,7 @@ import {
   contarAcoesDoVigia,
   decidirAcaoNoPrOrfao,
   montarPedidoDeConsertoDoVigia,
+  montarSessaoDeConsertoDoVigia,
   tarefaJaFoiDevolvidaAFila,
   vigiarPrsOrfaos,
   type ContadorDeEventos,
@@ -342,7 +343,7 @@ describe('devolução da tarefa à fila depois do limite', () => {
 })
 
 describe('pedido da sessão de conserto do vigia', () => {
-  it('mantém o pedido original e manda partir do ramo e publicar PR novo contra a main', () => {
+  it('mantém o pedido original e manda buscar o ramo antigo e publicar PR contra a main', () => {
     const pedido = montarPedidoDeConsertoDoVigia({
       numeroDoPr: 3995,
       ramoDoPr: 'jules-123-abc',
@@ -351,7 +352,25 @@ describe('pedido da sessão de conserto do vigia', () => {
     expect(pedido.startsWith('Resolva o conflito.')).toBe(true)
     expect(pedido).toContain('`jules-123-abc`')
     expect(pedido).toContain('#3995')
-    expect(pedido).toMatch(/pull request NOVO contra a `main`/)
+    expect(pedido).toContain('git fetch origin jules-123-abc')
+    expect(pedido).toMatch(/pull request contra a `main`/)
+  })
+})
+
+describe('sessão de conserto do vigia — base da sessão', () => {
+  it('nasce a partir da main; o ramo antigo só aparece no prompt', () => {
+    const sessao = montarSessaoDeConsertoDoVigia({
+      numeroDoPr: 3995,
+      issueNumber: 3884,
+      ramoDoPr: 'jules-123-abc',
+      pedido: 'Resolva o conflito.',
+    })
+    // Base errada medida em produção (30/09): com o ramo antigo como
+    // startingBranch, o PR novo mirava o ramo antigo e nunca chegava na main.
+    expect(sessao.startingBranch).toBe('main')
+    expect(sessao.titulo).toBe('Destravar o pull request #3995 (tarefa #3884)')
+    expect(sessao.prompt).toContain('git fetch origin jules-123-abc')
+    expect(sessao.prompt.startsWith('Resolva o conflito.')).toBe(true)
   })
 })
 
