@@ -7,7 +7,7 @@ import { schedulerPlugin } from './scheduler.js'
 // a task original ebf7e69e) — os testes unitários de `executarCicloTerminal`
 // e `retomarPrReprovado` já provam a DECISÃO com deps falsos; nenhum arquivo
 // provava, pelo seam real do `schedulerPlugin`, que uma sessão COMPLETED com
-// pull request aberto-e-reprovado além das 12h de fato vira uma sessão NOVA
+// pull request aberto-e-reprovado além da espera (1h) de fato vira uma sessão NOVA
 // no MESMO PR — não uma linha morta esperando o vigia de PR órfão (3 dias
 // depois) ou uma redelegação que abriria um PR SEGUNDO do zero.
 //
@@ -42,7 +42,7 @@ function sessaoTerminalComPrRejeitado() {
     pullRequestNumber: PR_NUMBER,
     attempts: 1,
     nudges: 0,
-    // 13h sem avançar: passou das 12h de espera (HORAS_ATE_DESISTIR_DO_PR_REJEITADO).
+    // 13h sem avançar: muito além da espera de 1h (HORAS_ATE_DESISTIR_DO_PR_REJEITADO).
     lastProgressAt: new Date(Date.now() - 13 * 60 * 60 * 1000),
     stateCheckedAt: null,
     reworkNoticePending: null,

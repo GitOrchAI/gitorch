@@ -45,7 +45,7 @@ export interface CicloTerminalDeps {
   /**
    * L4-T5: o ramo do pull request reprovado, quando dá para retomar nele
    * (`branchParaRetomar`, vigia-do-pr.ts) — só chamado quando a situação é
-   * `aberto-rejeitado-parado` e as 12h já passaram. Devolve `null` quando não
+   * `aberto-rejeitado-parado` e a espera já passou. Devolve `null` quando não
    * há ramo utilizável (fork, ausente); ausente o dep inteiro (chamador
    * antigo), o ciclo preserva o comportamento anterior a esta tarefa (fecha e
    * redelega, nunca tenta retomar no mesmo PR).
@@ -164,7 +164,7 @@ export async function executarCicloTerminal(
     }
 
     // L4-T5: só busca o ramo retomável quando PODE fazer diferença — PR
-    // reprovado, 12h já passadas, o dep injetado (chamador antigo não paga
+    // reprovado, espera já passada, o dep injetado (chamador antigo não paga
     // esta chamada) e há de fato um PR para olhar. Custa uma chamada; gastá-la
     // fora deste caso específico seria à toa.
     let branchRetomavel: string | null = null
