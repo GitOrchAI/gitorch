@@ -15,6 +15,7 @@ function linha(over: Partial<LinhaParaCicloTerminal>): LinhaParaCicloTerminal {
     analysisDoneAt: null,
     devAccountId: null,
     answeredHash: null,
+    mergeCommitSha: null,
     ...over,
   }
 }
@@ -51,6 +52,55 @@ describe('executarCicloTerminal', () => {
     const r = await executarCicloTerminal(d)
     expect(fechadas).toEqual([])
     expect(r).toMatchObject({ fechadasConcluidas: 0, issuesRedelegadas: [], mantidas: 0 })
+  })
+
+  // Achado real 30/09 (Jardim #4000/PR 4044 e #3718/PR 4045): a mescla gravou
+  // mergeCommitSha, a vigia pré-merge parou de olhar a linha e o estado ficou
+  // IN_PROGRESS para sempre — o ciclo só olhava estado terminal.
+  it('IN_PROGRESS com mescla registrada e PR mesclado no GitHub → fecha como merged', async () => {
+    const lidos: number[] = []
+    const { d, fechadas } = deps({
+      linhas: [
+        linha({
+          sessionName: 'sessions/4000',
+          issueNumber: 4000,
+          state: 'IN_PROGRESS',
+          pullRequestNumber: 4044,
+          mergeCommitSha: '85ce2fb',
+        }),
+      ],
+    })
+    d.situacaoDoPr = async ({ numeroDoPr }) => {
+      lidos.push(numeroDoPr as number)
+      return 'mesclado'
+    }
+    const r = await executarCicloTerminal(d)
+    expect(lidos).toEqual([4044])
+    expect(fechadas).toEqual([{ sessionName: 'sessions/4000', motivo: 'merged' }])
+    expect(r.fechadasConcluidas).toBe(1)
+    expect(r.issuesRedelegadas).toEqual([])
+    expect(r.projetosComVagaLiberada).toEqual(['p1'])
+  })
+
+  it('IN_PROGRESS com mescla registrada mas o GitHub diz aberto → mantém e NÃO fecha', async () => {
+    const { d, fechadas } = deps({
+      linhas: [linha({ state: 'IN_PROGRESS', pullRequestNumber: 7, mergeCommitSha: 'abc' })],
+      pr: 'aberto-vivo',
+    })
+    const r = await executarCicloTerminal(d)
+    expect(fechadas).toEqual([])
+    expect(r.mantidas).toBe(1)
+  })
+
+  it('IN_PROGRESS SEM mescla registrada não gasta leitura no GitHub (custo por tique)', async () => {
+    const situacaoDoPr = vi.fn(async () => 'mesclado' as const)
+    const { d, fechadas } = deps({
+      linhas: [linha({ state: 'IN_PROGRESS', pullRequestNumber: 7, mergeCommitSha: null })],
+    })
+    d.situacaoDoPr = situacaoDoPr
+    await executarCicloTerminal(d)
+    expect(situacaoDoPr).not.toHaveBeenCalled()
+    expect(fechadas).toEqual([])
   })
 
   it('COMPLETED sem PR → fecha (dev-concluiu-sem-entrega), a issue volta à fila', async () => {

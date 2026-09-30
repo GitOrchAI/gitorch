@@ -270,6 +270,7 @@ import {
 import { TASK_LABEL } from '../services/sm-delegation.js'
 import { diagnosticarIssues } from '../services/diagnostico-de-issues.js'
 import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
+import { carregarIssuePorPr } from '../services/issue-por-pr-do-vigia.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
 import {
   ambientesDeclaradosPeloProjeto,
@@ -923,6 +924,24 @@ export function devPlanParaDelegacao(
   const proprio = (devPlanDoProjeto ?? '').trim()
   if (proprio !== '') return proprio
   return planoEfetivoDaConta(devPlansDaConta)
+}
+
+/**
+ * Vagas livres que o vigia do PR enxerga na conta do dev. O teto é da CONTA:
+ * mesma regra da delegação (`devPlanParaDelegacao`) — projeto sem plano
+ * declarado herda o efetivo da conta em vez de virar 'free' (3). Achado
+ * 30/09: padrao-executores (dev_plan nulo) dizia "sem vaga" com 3 linhas
+ * abertas numa conta Pro (15).
+ */
+export function vagasLivresDoVigia(args: {
+  devPlanDoProjeto: string | null | undefined
+  devPlansDaConta: ReadonlyArray<string | null | undefined>
+  ocupadasNaConta: number
+}): number {
+  const teto = tetosDoPlanoDoDev(
+    devPlanParaDelegacao(args.devPlanDoProjeto, args.devPlansDaConta)
+  ).tetoConcorrentes
+  return Math.max(0, teto - args.ocupadasNaConta)
 }
 
 export function montarOpcoesDeDelegacao(args: {
@@ -7264,21 +7283,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         const runtimeConfig = config?.runtimeConfig
 
-        // As linhas do projeto: a viva diz de quem é o pull request AGORA, e as
-        // fechadas dizem qual tarefa originou cada pull request.
-        const linhas = await app.prisma.devSession.findMany({
-          where: { projectId: projeto.id, pullRequestNumber: { not: null } },
-          select: { pullRequestNumber: true, issueNumber: true, closedAt: true },
-          orderBy: { id: 'desc' },
-        })
-        const prsComSessaoViva = new Set<number>(
-          linhas.filter((l) => l.closedAt === null).map((l) => l.pullRequestNumber as number)
-        )
-        const issuePorPr = new Map<number, number>()
-        for (const l of linhas) {
-          const n = l.pullRequestNumber as number
-          if (!issuePorPr.has(n)) issuePorPr.set(n, l.issueNumber)
-        }
+        // A tarefa de origem de cada PR: a sessão do dev primeiro, a ficha do
+        // item (`repo_items`) quando a sessão não conhece o PR — uma leitura
+        // de fichas por projeto, não uma por PR.
+        const { prsComSessaoViva, issuePorPr } = await carregarIssuePorPr(app.prisma, projeto.id)
 
         const resumo = await vigiarPrsOrfaos({
           listarPrsAbertos: () =>
@@ -7314,17 +7322,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // O teto de sessões simultâneas é da CONTA do dev, não deste
           // caminho. Estourá-lo por fora faria a delegação normal — a que tira
           // tarefa da fila — passar a ser recusada por culpa do vigia.
-          vagasLivres: Math.max(
-            0,
-            tetosDoPlanoDoDev(projeto.devPlan).tetoConcorrentes -
-              (await app.prisma.devSession.count({
-                where: {
-                  devAccountId: projeto.devAccountId ?? null,
-                  closedAt: null,
-                  state: { notIn: [...ESTADOS_TERMINAIS] },
-                },
-              }))
-          ),
+          vagasLivres: vagasLivresDoVigia({
+            devPlanDoProjeto: projeto.devPlan,
+            // Só busca os planos da conta quando o projeto não declarou o dele
+            // (mesma leitura enxuta da delegação, `devPlanParaDelegacao`).
+            devPlansDaConta:
+              (projeto.devPlan ?? '').trim() !== ''
+                ? []
+                : (
+                    await app.prisma.project.findMany({
+                      where: { devAccountId: projeto.devAccountId ?? null, isActive: true },
+                      select: { devPlan: true },
+                    })
+                  ).map((p) => p.devPlan),
+            ocupadasNaConta: await app.prisma.devSession.count({
+              where: {
+                devAccountId: projeto.devAccountId ?? null,
+                closedAt: null,
+                state: { notIn: [...ESTADOS_TERMINAIS] },
+              },
+            }),
+          }),
           decidirAcaoNoPrOrfao: async (depsVigia) =>
             decidirAcaoNoPrOrfaoIntegrado({
               runtimeConfig,

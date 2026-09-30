@@ -100,3 +100,29 @@ export function origemPrecisaDeReclassificacao(ficha: {
 }): boolean {
   return ficha.origem === 'jules_fora' && ficha.issueNumber === null
 }
+
+/** As origens que `classificarOrigem` sabe devolver. */
+const ORIGENS_CONHECIDAS: readonly OrigemDoItem[] = [
+  'jules_gitorch',
+  'jules_fora',
+  'assistente',
+  'pessoa',
+  'dependabot',
+  'outro_bot',
+]
+
+/**
+ * A issue de origem gravada na ficha, só quando dá para confiar nela — a
+ * mesma régua de `origemPrecisaDeReclassificacao`: `jules_fora` e origem
+ * nula/desconhecida são o estado de baixa confiança e não valem como vínculo.
+ * Lida pelo vigia do PR quando a sessão do dev não conhece o PR (#583/#690).
+ */
+export function issueConfiavelDaFicha(ficha: {
+  origem: string | null
+  issueNumber: number | null
+}): number | null {
+  if (ficha.issueNumber === null) return null
+  if (ficha.origem === null || ficha.origem === 'jules_fora') return null
+  if (!ORIGENS_CONHECIDAS.some((o) => o === ficha.origem)) return null
+  return ficha.issueNumber
+}

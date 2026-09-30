@@ -43,6 +43,7 @@ describe('executarCicloTerminal — C4: retomar-no-mesmo-pr sem pullRequestNumbe
       analysisDoneAt: null,
       devAccountId: null,
       answeredHash: null,
+      mergeCommitSha: null,
     }
 
     const avisos: string[] = []

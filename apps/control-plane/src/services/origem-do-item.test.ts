@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { classificarOrigem, origemPrecisaDeReclassificacao } from './origem-do-item.js'
+import {
+  classificarOrigem,
+  issueConfiavelDaFicha,
+  origemPrecisaDeReclassificacao,
+} from './origem-do-item.js'
 
 describe('classificarOrigem', () => {
   it('dependabot[bot] como autor → dependabot', () => {
@@ -105,5 +109,30 @@ describe('origemPrecisaDeReclassificacao', () => {
 
   it('ficha ainda sem origem nenhuma (null) → não é o sinal de jules_fora, não reprocessa aqui', () => {
     expect(origemPrecisaDeReclassificacao({ origem: null, issueNumber: null })).toBe(false)
+  })
+})
+
+describe('issueConfiavelDaFicha', () => {
+  it('PR #583: jules_gitorch com issue 580 → 580', () => {
+    expect(issueConfiavelDaFicha({ origem: 'jules_gitorch', issueNumber: 580 })).toBe(580)
+  })
+
+  it('origem conhecida e não-Jules-fora com issue preenchida → usa a issue', () => {
+    for (const origem of ['assistente', 'pessoa', 'dependabot', 'outro_bot']) {
+      expect(issueConfiavelDaFicha({ origem, issueNumber: 12 })).toBe(12)
+    }
+  })
+
+  it('jules_fora → nunca confiável, mesmo com issue (é o estado de baixa confiança)', () => {
+    expect(issueConfiavelDaFicha({ origem: 'jules_fora', issueNumber: 580 })).toBeNull()
+  })
+
+  it('origem nula ou desconhecida → não confiável', () => {
+    expect(issueConfiavelDaFicha({ origem: null, issueNumber: 580 })).toBeNull()
+    expect(issueConfiavelDaFicha({ origem: 'inventada', issueNumber: 580 })).toBeNull()
+  })
+
+  it('issue nula → null, qualquer que seja a origem', () => {
+    expect(issueConfiavelDaFicha({ origem: 'jules_gitorch', issueNumber: null })).toBeNull()
   })
 })

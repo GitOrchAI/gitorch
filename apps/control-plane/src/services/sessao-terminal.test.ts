@@ -17,6 +17,32 @@ describe('decidirSessaoTerminal', () => {
     })
   })
 
+  // Achado real 30/09: sessões do Jardim (#4000/PR 4044, #3718/PR 4045) ficaram
+  // 10h como IN_PROGRESS com o PR já mesclado, ocupando vaga.
+  it('IN_PROGRESS gravado + PR mesclado → fecha como concluído (o estado gravado está velho)', () => {
+    expect(
+      decidirSessaoTerminal({ ...base, estado: 'IN_PROGRESS', situacaoDoPr: 'mesclado' })
+    ).toEqual({
+      acao: 'fechar-concluido',
+      motivo: 'merged',
+    })
+  })
+
+  it('IN_PROGRESS + PR aberto ou fechado sem merge → mantém (só o merge fecha sessão viva)', () => {
+    for (const situacaoDoPr of [
+      'aberto-vivo',
+      'aberto-rejeitado-parado',
+      'fechado-sem-merge',
+      'sem-pr',
+    ] as const) {
+      expect(
+        decidirSessaoTerminal({ ...base, estado: 'IN_PROGRESS', situacaoDoPr, horasNoTerminal: 48 })
+      ).toEqual({
+        acao: 'manter',
+      })
+    }
+  })
+
   it('COMPLETED + PR mesclado → fecha como concluído', () => {
     expect(decidirSessaoTerminal({ ...base, situacaoDoPr: 'mesclado' })).toEqual({
       acao: 'fechar-concluido',
