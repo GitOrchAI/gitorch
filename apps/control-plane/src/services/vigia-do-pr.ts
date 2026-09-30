@@ -62,7 +62,7 @@ const AUTORES_DA_AUTOMACAO = ['dependabot[bot]', 'dependabot-preview[bot]']
  * origem registrada"), ou seja: ESCALAR ao dono. Medido no repositório do
  * produto em 31/08/2026, os dois pull requests do Dependabot abertos (#403 e
  * #404) não têm linha de sessão — cada um viraria duas escaladas assim que
- * passasse dos três dias, sobre algo que o próprio Dependabot resolve: o #360
+ * passasse da idade mínima de órfão, sobre algo que o próprio Dependabot resolve: o #360
  * foi fechado por ele mesmo, com "Looks like these dependencies are updatable
  * in another way, so this is no longer needed".
  *
@@ -270,25 +270,36 @@ export function montarSessaoDeConsertoDoVigia(args: {
 export const TETO_DE_ACOES_POR_PASSADA = 6
 
 /**
- * Quanto tempo um pull request precisa ficar sem avanço antes de o vigia
+ * Quanto tempo um pull request precisa ficar sem commit novo antes de o vigia
  * considerá-lo órfão.
  *
- * Três dias, e não algumas horas: o dev assíncrono trabalha em rajadas, e um
- * pull request que recebeu commit ontem pode muito bem receber outro hoje.
- * Agir cedo demais abriria sessão nova contra trabalho que ainda está andando —
- * o mesmo desperdício que a cadência de `session-watch` evita, numa escala
- * maior.
+ * Três horas (eram 3 dias até 30/09/2026): sem sessão viva e sem commit há 3h,
+ * ninguém está atrás do pull request. A varredura roda a cada 3h, e o teto de
+ * tentativas por PR + as vagas da conta seguem como freio.
  */
-export const IDADE_MINIMA_DE_ORFANDADE_MS = 3 * 24 * 60 * 60 * 1000
+export const IDADE_MINIMA_DE_ORFANDADE_MS = 3 * 60 * 60 * 1000
+
+const UMA_HORA_MS = 60 * 60 * 1000
+const UM_DIA_MS = 24 * UMA_HORA_MS
+
+/** O tempo parado em português: horas abaixo de 2 dias, dias a partir daí. */
+export function descreverTempoParado(ms: number): string {
+  if (ms < 2 * UM_DIA_MS) {
+    const horas = Math.floor(ms / UMA_HORA_MS)
+    if (horas < 1) return 'menos de 1 hora'
+    return horas === 1 ? '1 hora' : `${horas} horas`
+  }
+  return `${Math.floor(ms / UM_DIA_MS)} dias`
+}
 
 /**
  * De quanto em quanto tempo a varredura roda por projeto.
  *
  * Três horas (era 6h até 30/09/2026, quando a fila parada foi medida em
  * produção). 3h mantém a leitura do GitHub dentro do limite de chamadas da
- * instalação compartilhada. Bem abaixo da idade mínima de órfão de propósito:
- * assim quem decide se é hora de agir é a IDADE do pull request, não o acaso de
- * quando o relógio bateu.
+ * instalação compartilhada. Igual à idade mínima de órfão de propósito: quem
+ * decide se é hora de agir é a IDADE do pull request, não o acaso de quando o
+ * relógio bateu — e um PR órfão espera no máximo uma passada além das 3h.
  */
 export const CADENCIA_DA_VARREDURA_MS = 3 * 60 * 60 * 1000
 
@@ -448,10 +459,9 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
 
   // 4) CEDO DEMAIS.
   if (pr.paradoHaMs < IDADE_MINIMA_DE_ORFANDADE_MS) {
-    const dias = Math.floor(IDADE_MINIMA_DE_ORFANDADE_MS / (24 * 60 * 60 * 1000))
     return {
       acao: 'ignorar',
-      motivo: `#${pr.numero} recebeu novidade há menos de ${dias} dias — ainda pode andar sozinho`,
+      motivo: `#${pr.numero} recebeu novidade há menos de ${descreverTempoParado(IDADE_MINIMA_DE_ORFANDADE_MS)} — ainda pode andar sozinho`,
     }
   }
 
@@ -529,12 +539,11 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
   // nada — o dev entregaria de novo o que já está entregue. O que falta é
   // julgamento, e isso é notícia para o dono.
   if (causa === null) {
-    const dias = Math.floor(pr.paradoHaMs / (24 * 60 * 60 * 1000))
     return {
       acao: 'escalar',
       motivo:
         `O pull request #${pr.numero} (tarefa #${pr.issueNumber}) está mesclável e sem verificação ` +
-        `reprovada há ${dias} dias, e ninguém o mesclou. A entrega está pronta e parada.`,
+        `reprovada há ${descreverTempoParado(pr.paradoHaMs)}, e ninguém o mesclou. A entrega está pronta e parada.`,
     }
   }
 

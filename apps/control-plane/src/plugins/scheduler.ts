@@ -7128,7 +7128,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         if (resultadoDaRetomada.acao === 'nao-retomou') {
           // NUNCA finge sucesso: a linha antiga já fechou, e sem uma sessão
           // nova de pé a issue fica sem ninguém trabalhando nela até a
-          // próxima passada (ou até a vigia de PR órfão, 3 dias depois,
+          // próxima passada (ou até a vigia de PR órfão, 3 horas depois,
           // escalar por outro caminho). Ver nota de escopo no relato da
           // task L4-T5.
           throw new Error(

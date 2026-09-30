@@ -11,6 +11,7 @@ import {
   TETO_DE_ACOES_POR_PASSADA,
   branchParaRetomar,
   decidirAcaoNoPrOrfao,
+  descreverTempoParado,
   ehPRDaAutomacao,
   fecharPrDoVigia,
   listarPrsAbertosParaOVigia,
@@ -36,7 +37,8 @@ import {
   LABELS_PR_408,
 } from './__fixtures__/corpos-reais-de-pr.js'
 
-const DIA = 24 * 60 * 60 * 1000
+const HORA = 60 * 60 * 1000
+const DIA = 24 * HORA
 
 function situacao(over: Partial<PrOrfaoObservado> = {}): PrOrfaoObservado {
   return {
@@ -416,8 +418,88 @@ describe('a regra do rodapé não pode divergir da automação de conflito', () 
     ).toBe(false)
   })
 
-  it('a cadência da varredura é bem menor que a idade mínima de órfão', () => {
-    expect(CADENCIA_DA_VARREDURA_MS).toBeLessThan(IDADE_MINIMA_DE_ORFANDADE_MS)
+  it('a cadência da varredura não passa da idade mínima de órfão', () => {
+    expect(CADENCIA_DA_VARREDURA_MS).toBeLessThanOrEqual(IDADE_MINIMA_DE_ORFANDADE_MS)
+  })
+})
+
+describe('PR sem ninguém atrás é retomado após 3 horas, não 3 dias', () => {
+  it('a idade mínima de órfão é de 3 horas', () => {
+    expect(IDADE_MINIMA_DE_ORFANDADE_MS).toBe(3 * HORA)
+  })
+
+  it('(a) automação parada há 4h, sem sessão viva, com CI vermelha: retoma', () => {
+    const d = decidirAcaoNoPrOrfao(
+      situacao({ paradoHaMs: 4 * HORA, mergeable: true, verificacao: 'vermelha' })
+    )
+    expect(d.acao).toBe('retomar')
+    if (d.acao !== 'retomar') throw new Error('esperava retomar')
+    expect(d.causa).toBe('ci-vermelha')
+    expect(d.pedido).toContain('#356')
+  })
+
+  it('(b) parada há 2h continua ignorada, dizendo o limite em horas', () => {
+    const d = decidirAcaoNoPrOrfao(
+      situacao({ paradoHaMs: 2 * HORA, mergeable: true, verificacao: 'vermelha' })
+    )
+    expect(d.acao).toBe('ignorar')
+    expect(d.motivo).toContain('menos de 3 horas')
+  })
+
+  it('(c) sessão viva, PR de gente e Dependabot nunca são tocados aos 4h', () => {
+    const doDependabot = { autor: 'dependabot[bot]', labels: ['dependencies'], corpo: 'Bumps x.' }
+    const casos: PrOrfaoObservado[] = [
+      situacao({ paradoHaMs: 4 * HORA, verificacao: 'vermelha', temSessaoViva: true }),
+      situacao({
+        numero: 347,
+        paradoHaMs: 4 * HORA,
+        verificacao: 'vermelha',
+        sinais: { autor: AUTOR_PR_347, labels: LABELS_PR_347, corpo: CORPO_PR_347_DONO },
+      }),
+      situacao({
+        numero: 403,
+        paradoHaMs: 4 * HORA,
+        verificacao: 'vermelha',
+        sinais: doDependabot,
+      }),
+    ]
+    for (const caso of casos) {
+      expect(decidirAcaoNoPrOrfao(caso).acao).toBe('ignorar')
+    }
+  })
+
+  it('na varredura, o de 4h é retomado e o de 2h fica quieto', async () => {
+    const abertas: number[] = []
+    await rodar({
+      prs: [
+        prAberto({ numero: 356, paradoHaMs: 4 * HORA, verificacao: 'vermelha' }),
+        prAberto({ numero: 357, paradoHaMs: 2 * HORA, verificacao: 'vermelha' }),
+      ],
+      issueDoPr: () => 329,
+      abrirSessaoDeConserto: async ({ numeroDoPr }) => {
+        abertas.push(numeroDoPr)
+        return true
+      },
+    })
+    expect(abertas).toEqual([356])
+  })
+
+  it('o tempo parado é dito em horas abaixo de 2 dias e em dias a partir daí', () => {
+    expect(descreverTempoParado(3 * HORA)).toBe('3 horas')
+    expect(descreverTempoParado(HORA)).toBe('1 hora')
+    expect(descreverTempoParado(47 * HORA)).toBe('47 horas')
+    expect(descreverTempoParado(2 * DIA)).toBe('2 dias')
+    expect(descreverTempoParado(7 * DIA + 5 * HORA)).toBe('7 dias')
+    expect(descreverTempoParado(10 * 60 * 1000)).toBe('menos de 1 hora')
+  })
+
+  it('mesclável e sem reprovação: a escalada ao dono diz "há 5 horas", não "há 0 dias"', () => {
+    const d = decidirAcaoNoPrOrfao(
+      situacao({ paradoHaMs: 5 * HORA, mergeable: true, verificacao: 'verde' })
+    )
+    expect(d.acao).toBe('escalar')
+    expect(d.motivo).toContain('há 5 horas')
+    expect(d.motivo).not.toContain('0 dias')
   })
 })
 
