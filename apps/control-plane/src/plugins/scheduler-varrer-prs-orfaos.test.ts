@@ -42,7 +42,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       mergeable: true,
       verificacao: 'verde',
       paradoHaMs: 8 * 24 * 60 * 60 * 1000,
-      acoesAnteriores: 2, // MAX_ACOES_DO_VIGIA (normally would trigger escalation)
+      acoesAnteriores: 1, // MAX_ACOES_DO_VIGIA (normally would trigger escalation)
       tarefaJaDevolvidaAFila: false,
       podeAbrirSessao: true,
       origem: 'desconhecido',

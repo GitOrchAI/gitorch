@@ -74,8 +74,25 @@ function acaoGravada(
 }
 
 describe('corte da contagem: retomadas do período com defeito não contam', () => {
-  it('a data de corte é 30/09/2026 00:00 UTC', () => {
-    expect(CORTE_DAS_RETOMADAS_COM_DEFEITO.toISOString()).toBe('2026-09-30T00:00:00.000Z')
+  it('a data de corte é o instante em que o código corrigido entrou em produção', () => {
+    expect(CORTE_DAS_RETOMADAS_COM_DEFEITO.toISOString()).toBe('2026-09-29T21:58:00.000Z')
+  })
+
+  it('o limite é UMA retomada corrigida', () => {
+    expect(MAX_ACOES_DO_VIGIA).toBe(1)
+  })
+
+  it('retomada às 21:57 (antes do corte) não conta; às 21:58 e depois contam', async () => {
+    const banco = bancoComEventos([
+      acaoGravada(3995, '2026-09-29T21:57:00Z'),
+      acaoGravada(3995, '2026-09-29T21:57:59Z'),
+    ])
+    expect(await contarAcoesDoVigia(banco, { projectId: 'p1', numeroDoPr: 3995 })).toBe(0)
+    const depois = bancoComEventos([
+      acaoGravada(3995, '2026-09-29T21:57:00Z'),
+      acaoGravada(3995, '2026-09-29T21:58:00Z'),
+    ])
+    expect(await contarAcoesDoVigia(depois, { projectId: 'p1', numeroDoPr: 3995 })).toBe(1)
   })
 
   it('PR com 2 retomadas e 1 escalada ANTES do corte conta zero', async () => {
@@ -89,8 +106,8 @@ describe('corte da contagem: retomadas do período com defeito não contam', () 
 
   it('só as ações a partir do corte entram, e só as do PR pedido', async () => {
     const banco = bancoComEventos([
-      acaoGravada(3995, '2026-09-29T23:59:59Z'),
-      acaoGravada(3995, '2026-09-30T00:00:00Z'),
+      acaoGravada(3995, '2026-09-29T21:57:59Z'),
+      acaoGravada(3995, '2026-09-29T21:58:00Z'),
       acaoGravada(3995, '2026-10-02T10:00:00Z'),
       acaoGravada(4001, '2026-10-02T10:00:00Z'),
     ])
@@ -184,6 +201,21 @@ describe('devolução da tarefa à fila depois do limite', () => {
   it('abaixo do limite continua retomando', () => {
     const d = decidirAcaoNoPrOrfao(situacao({ acoesAnteriores: MAX_ACOES_DO_VIGIA - 1 }))
     expect(d.acao).toBe('retomar')
+  })
+
+  it('1 retomada pós-corte e o PR continua parado: devolve à fila (fecha o antigo, tarefa volta)', () => {
+    const d = decidirAcaoNoPrOrfao(situacao({ acoesAnteriores: 1 }))
+    expect(d).toMatchObject({ acao: 'devolver-a-fila', issueNumber: 3987 })
+  })
+
+  it('1 retomada pós-corte com a tarefa já devolvida: escala ao dono', () => {
+    const d = decidirAcaoNoPrOrfao(situacao({ acoesAnteriores: 1, tarefaJaDevolvidaAFila: true }))
+    expect(d.acao).toBe('escalar')
+    expect(d.motivo).toContain('1 vez')
+  })
+
+  it('sem nenhuma retomada ainda: retoma uma vez', () => {
+    expect(decidirAcaoNoPrOrfao(situacao({ acoesAnteriores: 0 })).acao).toBe('retomar')
   })
 
   it('tarefa já fechada não é devolvida à fila (o portão de tarefa fechada fecha o PR)', () => {
