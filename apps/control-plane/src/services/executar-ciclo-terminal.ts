@@ -133,7 +133,12 @@ export async function executarCicloTerminal(
     r.projetosComVagaLiberada.push(projectId)
   }
 
-  const linhas = (await deps.listarLinhas()).filter((l) => ehTerminal(l.state))
+  // Terminal, ou já mesclada pela esteira: a mescla tira a linha da vigia
+  // pré-merge e o estado gravado pode ficar velho (IN_PROGRESS). Sem mescla
+  // registrada e sem estado terminal, não vale gastar leitura no GitHub.
+  const linhas = (await deps.listarLinhas()).filter(
+    (l) => ehTerminal(l.state) || l.mergeCommitSha !== null
+  )
   // Mais paradas primeiro: fechar as mais antigas devolve as vagas mais seguras.
   linhas.sort(
     (a, b) => horasEntre(deps.agora, b.lastProgressAt) - horasEntre(deps.agora, a.lastProgressAt)

@@ -86,7 +86,15 @@ export function decidirSessaoTerminal(args: {
    */
   answeredHash?: string | null
 }): DecisaoTerminal {
-  if (!ehTerminal(args.estado)) return { acao: 'manter' }
+  // Estado gravado velho não segura sessão de PR mesclado: a mescla registrada
+  // pela esteira tira a linha da vigia pré-merge, e o estado fica parado em
+  // IN_PROGRESS (achado 30/09: Jardim #4000/#3718, 10h ocupando vaga). Só o
+  // merge fecha uma sessão que o Jules ainda não deu como terminada.
+  if (!ehTerminal(args.estado)) {
+    return args.situacaoDoPr === 'mesclado'
+      ? { acao: 'fechar-concluido', motivo: 'merged' }
+      : { acao: 'manter' }
+  }
 
   // Caminho feliz e caminho "ainda no QA": nada a fazer aqui.
   if (args.situacaoDoPr === 'mesclado') return { acao: 'fechar-concluido', motivo: 'merged' }
