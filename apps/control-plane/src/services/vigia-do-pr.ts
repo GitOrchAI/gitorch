@@ -127,7 +127,9 @@ export function ehPRDaAutomacao(pr: SinaisDePR): boolean {
  * Quantas vezes o vigia age sobre o MESMO pull request antes de parar e chamar
  * gente.
  *
- * DOIS, o mesmo número (e o mesmo motivo) de `MAX_PEDIDOS_DE_REBASE` em
+ * UM: uma retomada com o código corrigido. Se o PR continua parado na varredura
+ * seguinte, o vigia fecha o antigo e devolve a tarefa à fila (uma vez por tarefa);
+ * só se isso falhar escala ao dono. Antes era DOIS, como `MAX_PEDIDOS_DE_REBASE` em
  * `conflito-de-merge.ts`: se o dev não resolveu na segunda, ou o conflito é
  * maior do que ele alcança, ou há algo que ele não entende. Cada ação aqui
  * custa uma SESSÃO NOVA na conta do dev — insistir a terceira vez queima cota
@@ -137,16 +139,17 @@ export function ehPRDaAutomacao(pr: SinaisDePR): boolean {
  * número de tentativas escrito no recado. Teto silencioso é o mesmo defeito
  * que ele deveria consertar.
  */
-export const MAX_ACOES_DO_VIGIA = 2
+export const MAX_ACOES_DO_VIGIA = 1
 
 /**
  * Data de corte da contagem de ações do vigia por pull request.
  *
- * Retomadas anteriores publicavam no ramo antigo e nunca entregavam (62
- * tentativas, 0 entregas em 14 dias); não contam para o limite.
- * Só ações gravadas a partir daqui contam para `MAX_ACOES_DO_VIGIA`.
+ * Instante em que o código corrigido (PR #982: a retomada abre PR novo) entrou
+ * em produção. Retomadas gravadas ANTES disso publicavam no ramo antigo e nunca
+ * entregavam (62 tentativas, 0 entregas em 14 dias): não contam para o limite.
+ * As feitas DEPOIS contam para `MAX_ACOES_DO_VIGIA`.
  */
-export const CORTE_DAS_RETOMADAS_COM_DEFEITO = new Date('2026-09-30T00:00:00Z')
+export const CORTE_DAS_RETOMADAS_COM_DEFEITO = new Date('2026-09-29T21:58:00Z')
 
 /**
  * Filtro dos eventos que contam como ação do vigia sobre UM pull request:
@@ -454,7 +457,7 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
     return {
       acao: 'escalar',
       motivo:
-        `Tentei ${MAX_ACOES_DO_VIGIA} vezes destravar o pull request #${pr.numero} e ele continua ` +
+        `Tentei ${MAX_ACOES_DO_VIGIA} ${MAX_ACOES_DO_VIGIA === 1 ? 'vez' : 'vezes'} destravar o pull request #${pr.numero} e ele continua ` +
         'parado. Não vou tentar de novo: alguém precisa olhar, ou a entrega fica onde está.',
     }
   }
