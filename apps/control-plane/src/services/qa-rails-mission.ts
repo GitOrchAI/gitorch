@@ -91,6 +91,17 @@ const JULES_MARKER = MARCA_DO_PARECER
 export const MAX_TENTATIVAS_DE_MERGE = 3
 
 /**
+ * Teto de candidatos cuja verificação (check-runs) é lida por missão.
+ *
+ * O laço pula PR com verificação pendente e segue para o próximo pronto, mas
+ * cada candidato lido custa chamadas ao GitHub (o PR isolado e os check-runs).
+ * Sem teto, um repositório com dezenas de PRs pendentes gastaria a cota toda
+ * num único tique. Com 6, o pior caso é ~12 chamadas a mais — e quem ficou de
+ * fora entra na próxima acordada, já que o QA acorda várias vezes por hora.
+ */
+export const MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS = 6
+
+/**
  * Família de opções que só faz sentido ligada ao Prisma/notificador real do
  * dono — em produção, SEMPRE montada por `montarOpcoesDoJulgamento`
  * (scheduler.ts), nunca escrita à mão em outro call site.
@@ -498,6 +509,116 @@ export async function runQaMissionViaRails(
     headAtual: string | null
   }> = []
 
+  type PrLido = {
+    body?: string
+    head?: { sha?: string }
+    // L5-T1: os três campos que o GitHub já devolve neste MESMO GET — usados
+    // por `ehEntregaSemConteudo` (entrega-sem-conteudo.ts) SEM nenhuma
+    // chamada nova.
+    changed_files?: number
+    additions?: number
+    deletions?: number
+  }
+  type VerificacaoLida = { estado: EstadoDaVerificacao; culpado: ResultadoDoCulpado | undefined }
+
+  // L4-T17 — medido AO VIVO em loureng/patinhas-3d-crafts (run 33943490885,
+  // PR #3945): quando a verificação está vermelha COM cancelamento no meio
+  // — ou quando ela É `cancelado` (fix-up L4-T17, achado 1 da revisão: ver
+  // o comentário de `investigarEstadoDoCi`, estado-da-verificacao-do-github.ts)
+  // —, o job/passo que causou tudo pode estar escondido atrás de um job que o
+  // próprio GitHub marcou "cancelled". A API de check-runs não mostra passo
+  // nenhum; só a API de jobs do Actions mostra — e `investigarEstadoDoCi`
+  // decide SOZINHA quando vale a pena chamá-la. `culpado: { encontrado: false }`
+  // significa "sem passo que prove culpa", não "nada cancelou".
+  //
+  // Sem o sha do head não dá para ler check-runs: `unknown` (não é veredito).
+  const lerVerificacao = async (sha: string | undefined): Promise<VerificacaoLida> => {
+    if (!sha) return { estado: 'unknown', culpado: undefined }
+    const checks = (await gh('GET', `/repos/${options.repository}/commits/${sha}/check-runs`)) as {
+      check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
+    }
+    const checkRuns = checks.check_runs ?? []
+    const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
+      const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
+        steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
+      }
+      return (job.steps ?? []).map((s) => ({
+        name: s.name ?? '',
+        conclusion: s.conclusion ?? null,
+        completedAt: s.completed_at ?? null,
+      }))
+    })
+      // Crash inesperado (não a falha best-effort de UM job — essa,
+      // `investigarCancelamentoEmCadeia` já absorve sozinha): recua para a
+      // resposta PURA (sem rede) — nunca trava a missão, nunca inventa
+      // culpado sem prova.
+      .catch(() => ({ estado: estadoDoCi(checkRuns), culpado: { encontrado: false as const } }))
+    return { estado: investigado.estado, culpado: investigado.culpado }
+  }
+
+  // O que fazer com uma entrega cuja verificação ainda NÃO dá veredito
+  // (`esperar` / `avisar-demora`). Vale tanto para o candidato pulado no laço
+  // quanto para o alvo — um lugar só, para a marca de pendência e o aviso de
+  // demora nunca divergirem entre os dois caminhos.
+  const agirSobreVerificacaoPendente = async (args: {
+    numeroDoPr: number
+    headSha: string | undefined
+    linha: LinhaDeSessao | undefined
+    decisao: ReturnType<typeof decidirSobreVerificacao>
+    agora: Date
+  }): Promise<void> => {
+    const { numeroDoPr, headSha, linha, decisao, agora } = args
+    // `esperar`: grava a PRIMEIRA vez que esta entrega foi vista pendente —
+    // sem isso o teto não tem de onde contar. Quem garante "só a primeira
+    // vez" é `registrarPendencia` (dev-session-store.ts): chamar de novo a
+    // cada ciclo, enquanto a pendência continua, não regrava nada.
+    if (decisao.acao === 'esperar' && linha && options.registrarPendencia) {
+      await options.registrarPendencia({ sessionName: linha.sessionName, agora })
+    }
+    // `avisar-demora`: o MESMO aviso que `session-watch.ts` usa para o dono —
+    // não uma segunda campainha. Best-effort: um aviso que falha não pode
+    // travar a missão, mesmo espírito do aviso à sessão do dev mais abaixo.
+    //
+    // Achado 2 da revisão da Tarefa 7: o scheduler acorda a cada tick
+    // (~1min), e sem uma marca de idempotência este aviso dispararia todo
+    // tick, para sempre, depois do teto — SPAM apaga sinal tanto quanto
+    // silêncio (mesma disciplina de `session-watch.ts`, ramo `investigar`).
+    // O hash amarra o aviso ao COMMIT que está parado (`headSha`): se um push
+    // novo mudar o head enquanto a verificação segue pendente, o hash muda e
+    // o dono é avisado de novo — a situação mudou de verdade.
+    if (decisao.acao === 'avisar-demora') {
+      const hashDoAviso = hashDaMensagem(`avisar-demora:${headSha ?? ''}`)
+      const jaAvisado = linha?.answeredHash === hashDoAviso
+      if (!jaAvisado && options.avisarDono) {
+        // fix/telegram-notifier-propaga-falha: só marca o hash (idempotência)
+        // se a entrega REALMENTE chegou — marcar numa falha de Telegram
+        // emudecia o dono até o próximo push mudar o head, o mesmo defeito
+        // que este aviso existe para evitar.
+        const entregue = await options
+          .avisarDono(
+            `GitOrch: a verificação automática do PR #${numeroDoPr} (${options.repository}) ` +
+              `está parada — ${decisao.motivo}.`
+          )
+          .catch(() => false)
+        if (entregue && linha && options.registrarAvisoDeDemora) {
+          await options.registrarAvisoDeDemora({
+            sessionName: linha.sessionName,
+            hash: hashDoAviso,
+          })
+        }
+      }
+    }
+  }
+
+  // O PR e a verificação já lidos do ALVO escolhido no laço — o restante da
+  // missão os reaproveita em vez de pedir ao GitHub de novo.
+  let prDoAlvo: PrLido | undefined
+  let verificacaoDoAlvo: VerificacaoLida | undefined
+  // Fila andando: o PRIMEIRO candidato pulado por verificação pendente. Só vira
+  // o resultado ("não julgado") quando NENHUM candidato ficou pronto.
+  let primeiroPendente: { numeroDoPr: number; motivo: string } | undefined
+  let candidatosLidos = 0
+
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
 
@@ -858,6 +979,44 @@ export async function runQaMissionViaRails(
 
     if (reviewMarcadaNesteHead && !deveRejulgar) continue
 
+    // A VERIFICAÇÃO decide se este candidato pode ser julgado AGORA — e é lida
+    // aqui, antes de comprometer a escolha, por um defeito medido em produção
+    // (30/09/2026, Jardim): ela era lida só depois de o laço escolher o
+    // PRIMEIRO candidato, e pendente encerrava a missão inteira. Os PRs
+    // #4041, #4052 e #4055, com CI pendente, ficavam à frente na ordem e o
+    // #4046 — 14/14 verde — passou mais de 10 min sem parecer, porque o QA
+    // batia nos mesmos pendentes a cada acordada.
+    //
+    // Pendente (ou desconhecido) PULA para o próximo; a pendência continua
+    // registrada e o aviso de demora continua saindo (uma vez por head).
+    // Teto de candidatos lidos: custo de chamadas ao GitHub por missão.
+    if (candidatosLidos >= MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS) break
+    candidatosLidos++
+    const prLido = (await gh('GET', `/repos/${options.repository}/pulls/${p.number}`)) as PrLido
+    let verificacaoLida: VerificacaoLida | undefined
+    // Entrega delegada de diff vazio não espera verificação: o corte mais
+    // abaixo (L5-T1) a reprova antes de olhar o CI, como sempre foi.
+    if (!(veredito.delegado && ehEntregaSemConteudo(prLido))) {
+      verificacaoLida = await lerVerificacao(prLido.head?.sha)
+      const agoraDaLeitura = new Date()
+      const decisaoDaLeitura = decidirSobreVerificacao({
+        estado: verificacaoLida.estado,
+        primeiraVezVistoPendenteEm: linhaCandidata?.pendingSince ?? null,
+        agora: agoraDaLeitura,
+      })
+      if (decisaoDaLeitura.acao !== 'julgar') {
+        await agirSobreVerificacaoPendente({
+          numeroDoPr: p.number,
+          headSha: prLido.head?.sha,
+          linha: linhaCandidata,
+          decisao: decisaoDaLeitura,
+          agora: agoraDaLeitura,
+        })
+        primeiroPendente ??= { numeroDoPr: p.number, motivo: decisaoDaLeitura.motivo }
+        continue
+      }
+    }
+
     if (deveRejulgar && reviewMarcadaNesteHead?.id !== undefined) {
       await dispensarParecerAntigo(
         gh,
@@ -869,6 +1028,8 @@ export async function runQaMissionViaRails(
     }
 
     target = p
+    prDoAlvo = prLido
+    verificacaoDoAlvo = verificacaoLida
     issueDaEntrega = veredito.issueNumber
     delegado = veredito.delegado
     // Inclui a entrada pela reprovação do portão. Hoje `mergeFailures` está
@@ -977,6 +1138,16 @@ export async function runQaMissionViaRails(
   }
 
   if (!target) {
+    // Ninguém ficou pronto, mas havia entrega esperando a verificação: o motivo
+    // é ela (o PRIMEIRO pendente da fila), não "não há PR".
+    if (primeiroPendente) {
+      return {
+        exitCode: 0,
+        output: `QA: PR #${primeiroPendente.numeroDoPr} não julgado — ${primeiroPendente.motivo}.`,
+        stderr: '',
+        noOp: true,
+      }
+    }
     // Fase 1 — Reconhecimento: projeto novo, sem PR aberta ainda. Sem este
     // modo, a esteira de onboarding terminaria num no-op ("QA: no delegated
     // PR awaiting judgment.") sem aprender nada do repositório. Aqui o QA
@@ -1020,16 +1191,9 @@ export async function runQaMissionViaRails(
   }
 
   // 2) Snapshot curado pelo SISTEMA: PR + issue vinculada + critérios + diff + CI.
-  const pr = (await gh('GET', `/repos/${options.repository}/pulls/${target.number}`)) as {
-    body?: string
-    head?: { sha?: string }
-    // L5-T1: os três campos que o GitHub já devolve neste MESMO GET — usados
-    // logo abaixo por `ehEntregaSemConteudo` (entrega-sem-conteudo.ts) SEM
-    // nenhuma chamada nova.
-    changed_files?: number
-    additions?: number
-    deletions?: number
-  }
+  // O PR já foi lido no laço (mesmo GET) — só recai na chamada se o laço não a fez.
+  const pr =
+    prDoAlvo ?? ((await gh('GET', `/repos/${options.repository}/pulls/${target.number}`)) as PrLido)
 
   // A linha da sessão desta entrega — usada AQUI (pelo corte de entrega sem
   // conteúdo, logo abaixo, e pela decisão da verificação, mais abaixo ainda:
@@ -1208,47 +1372,12 @@ export async function runQaMissionViaRails(
   // issue vinculada e o diff — porque a decisão da Tarefa 6
   // (`decidirSobreVerificacao`, logo abaixo) pode mandar esperar; não há por
   // que buscar critérios e diff de um PR que não vai ser julgado agora.
-  let ciState: EstadoDaVerificacao = 'unknown'
-  // L4-T17 — medido AO VIVO em loureng/patinhas-3d-crafts (run 33943490885,
-  // PR #3945): quando a verificação está vermelha COM cancelamento no meio
-  // — ou quando ela É `cancelado` (fix-up L4-T17, achado 1 da revisão: ver
-  // o comentário de `investigarEstadoDoCi`, estado-da-verificacao-do-
-  // github.ts, para a regressão que isto conserta) —, o job/passo que
-  // causou tudo pode estar escondido atrás de um job que o próprio GitHub
-  // marcou "cancelled": o pedido de `gh run cancel` alcança aquele job
-  // antes de o GitHub fechar a conclusão dele como falha. A API de
-  // check-runs não mostra passo nenhum; só a API de jobs do Actions mostra
-  // — e `investigarEstadoDoCi` decide SOZINHA quando vale a pena chamá-la,
-  // promovendo `cancelado` para `red` quando acha uma falha real.
-  // `{ encontrado: false }` não significa "nada cancelou" — significa "sem
-  // passo que prove culpa" (ou não havia nada para investigar).
-  let culpadoDoCancelamento: ResultadoDoCulpado | undefined
-  if (pr.head?.sha) {
-    const checks = (await gh(
-      'GET',
-      `/repos/${options.repository}/commits/${pr.head.sha}/check-runs`
-    )) as {
-      check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
-    }
-    const checkRuns = checks.check_runs ?? []
-    const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
-      const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
-        steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
-      }
-      return (job.steps ?? []).map((s) => ({
-        name: s.name ?? '',
-        conclusion: s.conclusion ?? null,
-        completedAt: s.completed_at ?? null,
-      }))
-    })
-      // Crash inesperado (não a falha best-effort de UM job — essa,
-      // `investigarCancelamentoEmCadeia` já absorve sozinha): recua para a
-      // resposta PURA (sem rede) — nunca trava a missão, nunca inventa
-      // culpado sem prova.
-      .catch(() => ({ estado: estadoDoCi(checkRuns), culpado: { encontrado: false as const } }))
-    ciState = investigado.estado
-    culpadoDoCancelamento = investigado.culpado
-  }
+  //
+  // A leitura (`lerVerificacao`) acontece no laço de descoberta, que já pulou
+  // quem estava pendente; aqui só se reaproveita o resultado do alvo.
+  const verificacao = verificacaoDoAlvo ?? (await lerVerificacao(pr.head?.sha))
+  const ciState = verificacao.estado
+  const culpadoDoCancelamento = verificacao.culpado
 
   // Defeito real de produção (PR #97): o QA julgou este PR ENQUANTO a
   // verificação ainda rodava (`ciState === 'pending'`), reprovou com "CI
@@ -1277,46 +1406,13 @@ export async function runQaMissionViaRails(
   })
 
   if (decisao.acao !== 'julgar') {
-    // `esperar`: grava a PRIMEIRA vez que esta entrega foi vista pendente —
-    // sem isso o teto não tem de onde contar. Quem garante "só a primeira
-    // vez" é `registrarPendencia` (dev-session-store.ts): chamar de novo a
-    // cada ciclo, enquanto a pendência continua, não regrava nada.
-    if (decisao.acao === 'esperar' && linhaDaEntrega && options.registrarPendencia) {
-      await options.registrarPendencia({ sessionName: linhaDaEntrega.sessionName, agora })
-    }
-    // `avisar-demora`: o MESMO aviso que `session-watch.ts` usa para o dono —
-    // não uma segunda campainha. Best-effort: um aviso que falha não pode
-    // travar a missão, mesmo espírito do aviso à sessão do dev mais abaixo.
-    //
-    // Achado 2 da revisão da Tarefa 7: o scheduler acorda a cada tick
-    // (~1min), e sem uma marca de idempotência este `if` dispararia todo
-    // tick, para sempre, depois do teto — SPAM apaga sinal tanto quanto
-    // silêncio (mesma disciplina de `session-watch.ts`, ramo `investigar`).
-    // O hash amarra o aviso ao COMMIT que está parado (`pr.head.sha`): se um
-    // push novo mudar o head enquanto a verificação segue pendente, o hash
-    // muda e o dono é avisado de novo — a situação mudou de verdade.
-    if (decisao.acao === 'avisar-demora') {
-      const hashDoAviso = hashDaMensagem(`avisar-demora:${pr.head?.sha ?? ''}`)
-      const jaAvisado = linhaDaEntrega?.answeredHash === hashDoAviso
-      if (!jaAvisado && options.avisarDono) {
-        // fix/telegram-notifier-propaga-falha: só marca o hash (idempotência)
-        // se a entrega REALMENTE chegou — marcar numa falha de Telegram
-        // emudecia o dono até o próximo push mudar o head, o mesmo defeito
-        // que este aviso existe para evitar.
-        const entregue = await options
-          .avisarDono(
-            `GitOrch: a verificação automática do PR #${target.number} (${options.repository}) ` +
-              `está parada — ${decisao.motivo}.`
-          )
-          .catch(() => false)
-        if (entregue && linhaDaEntrega && options.registrarAvisoDeDemora) {
-          await options.registrarAvisoDeDemora({
-            sessionName: linhaDaEntrega.sessionName,
-            hash: hashDoAviso,
-          })
-        }
-      }
-    }
+    await agirSobreVerificacaoPendente({
+      numeroDoPr: target.number,
+      headSha: pr.head?.sha,
+      linha: linhaDaEntrega,
+      decisao,
+      agora,
+    })
     return {
       exitCode: 0,
       output: `QA: PR #${target.number} não julgado — ${decisao.motivo}.`,

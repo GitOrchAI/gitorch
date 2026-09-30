@@ -1,10 +1,11 @@
 import * as TravaModule from './trava-de-parecer.js'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   runQaMissionViaRails,
   buildJulesReworkComment,
   buildEntendimentoSection,
   MAX_TENTATIVAS_DE_MERGE,
+  MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS,
   dispensarParecerAntigo,
 } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
@@ -118,6 +119,14 @@ function fakeFetch(
     deletions?: number
     /** Base (`base.ref`) do PR. Default 'main' — a branch padrão dos testes. */
     baseRef?: string
+    /**
+     * Head e verificação PRÓPRIOS deste PR. Sem eles vale o `opts.headSha` e o
+     * `opts.checkRuns` globais (todos os PRs iguais) — comportamento antigo.
+     * Só o teste da fila com PR pendente precisa de PRs com verificações
+     * diferentes entre si.
+     */
+    headSha?: string
+    checkRuns?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
   }>,
   issueLabels: string[] = ['jules', 'gitorch:task'],
   /**
@@ -195,7 +204,9 @@ function fakeFetch(
      * que corpo, ou para qual PR.
      */
     merges: Array<{ number: number; body: unknown }>
-  } = { reviews: [], comments: [], labels: [], merges: [] }
+    /** Um item por leitura de check-runs (o sha lido) — mede o custo em chamadas. */
+    checkRunReads: string[]
+  } = { reviews: [], comments: [], labels: [], merges: [], checkRunReads: [] }
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
     const method = init?.method ?? 'GET'
@@ -209,7 +220,7 @@ function fakeFetch(
           user: { login: p.user },
           draft: false,
           body: p.body ?? 'Closes #50',
-          head: { sha: opts.headSha ?? 'abc123' },
+          head: { sha: p.headSha ?? opts.headSha ?? 'abc123' },
         }))
       )
     }
@@ -227,7 +238,7 @@ function fakeFetch(
       return json({
         number: numeroDoPr,
         body: p?.body ?? 'Closes #50',
-        head: opts.semShaNaPrIsolada ? {} : { sha: opts.headSha ?? 'abc123' },
+        head: opts.semShaNaPrIsolada ? {} : { sha: p?.headSha ?? opts.headSha ?? 'abc123' },
         base: { ref: p?.baseRef ?? 'main' },
         ...(p?.changedFiles !== undefined ? { changed_files: p.changedFiles } : {}),
         ...(p?.additions !== undefined ? { additions: p.additions } : {}),
@@ -256,8 +267,12 @@ function fakeFetch(
       })
     }
     if (u.includes('/commits/') && u.includes('/check-runs')) {
+      const shaLido = u.match(/\/commits\/([^/]+)\/check-runs/)?.[1] ?? ''
+      posted.checkRunReads.push(shaLido)
+      const doPr = prs.find((x) => x.headSha === shaLido)
       return json({
-        check_runs: opts.checkRuns ?? [{ name: 'ci', conclusion: 'success', status: 'completed' }],
+        check_runs: doPr?.checkRuns ??
+          opts.checkRuns ?? [{ name: 'ci', conclusion: 'success', status: 'completed' }],
       })
     }
     // L4-T17: API de jobs do Actions — o id do job é o MESMO id do
@@ -4528,5 +4543,227 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
         expect.stringContaining('already publishing a review for head')
       )
     })
+  })
+})
+
+// PR com verificação pendente NÃO pode travar a fila inteira do QA.
+//
+// Medido em produção (30/09/2026, Jardim): o laço escolhia o PRIMEIRO PR que
+// precisava de parecer e, só depois, lia a verificação — pendente → missão
+// encerrada ("não julgado"). Três PRs pendentes à frente (#4041, #4052, #4055)
+// impediam julgar QUALQUER outro; o #4046, 14/14 verde, ficou 10+ min sem
+// parecer porque o QA batia sempre nos mesmos pendentes.
+describe('runQaMissionViaRails: a fila anda quando o primeiro PR está pendente', () => {
+  const PENDENTE = [{ name: 'ci', status: 'in_progress' }]
+  const VERDE = [{ name: 'ci', conclusion: 'success', status: 'completed' }]
+  // Uma instância por chamada: o vitest zera os mocks entre testes, e a trava
+  // do parecer precisa do `updateMany` devolvendo `{ count: 1 }` de verdade.
+  const novoPrisma = () =>
+    ({
+      repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    }) as unknown as import('@prisma/client').PrismaClient
+
+  // `ordemDoJulgamento` alterna a ponta da fila pelo minuto do relógio. Minuto
+  // par = do mais antigo ao mais novo — fixa o relógio para o teste ser
+  // determinístico (só `Date`, os timers reais seguem).
+  beforeEach(() => {
+    // Um teste anterior do arquivo espiona a trava do parecer; sem restaurar,
+    // ela vazaria para cá e nenhuma review seria publicada.
+    vi.restoreAllMocks()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-30T12:00:30Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('(a) [A pendente, B verde sem parecer]: julga B, não encerra por causa de A', async () => {
+    const f = fakeFetch([
+      { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+      { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: VERDE },
+    ])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const registradas: string[] = []
+    const execute = vi.fn(async () => APPROVE)
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute,
+      sessoes: [
+        linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' }),
+        linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+      ],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBeUndefined()
+    expect(r.output).toContain('PR #11')
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(execute).toHaveBeenCalledTimes(1)
+    // A continua com a marca de "visto pendente" — pular não apaga a contagem.
+    expect(registradas).toEqual(['sessions/a'])
+  })
+
+  it('(b) só A pendente: noOp citando A, e a primeira vez pendente é registrada', async () => {
+    const f = fakeFetch([{ number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+    const registradas: string[] = []
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('não deveria julgar com verificação pendente')
+      },
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' })],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #10 não julgado')
+    expect(r.output).toContain('verificação em pending')
+    expect(posted.reviews).toHaveLength(0)
+    expect(registradas).toEqual(['sessions/a'])
+  })
+
+  it('(c) A pendente além do teto, B verde: avisa a demora de A (uma vez) E julga B', async () => {
+    const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
+    const avisos: string[] = []
+    const marcas: Array<{ sessionName: string; hash: string }> = []
+    const rodar = async (answeredHash: string | null) => {
+      const f = fakeFetch([
+        { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+        { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: VERDE },
+      ])
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+      const r = await runQaMissionViaRails({
+        prisma: novoPrisma(),
+        projectId: 'proj',
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [
+          linha({
+            issueNumber: 50,
+            pullRequestNumber: 10,
+            sessionName: 'sessions/a',
+            pendingSince,
+            answeredHash,
+          }),
+          linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+        ],
+        avisarDono: async (mensagem) => {
+          avisos.push(mensagem)
+          return true
+        },
+        registrarAvisoDeDemora: async (args) => {
+          marcas.push(args)
+        },
+        fetchImpl: f,
+      })
+      return { r, posted }
+    }
+
+    const primeira = await rodar(null)
+    expect(primeira.r.noOp).toBeUndefined()
+    expect(primeira.r.output).toContain('PR #11')
+    expect(primeira.posted.reviews).toHaveLength(1)
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('#10')
+    expect(marcas).toHaveLength(1)
+    expect(marcas[0]!.sessionName).toBe('sessions/a')
+
+    // Próxima acordada, mesmo head de A já avisado: NÃO repete o aviso, e B
+    // (agora sem parecer de novo no mock) continua sendo julgado.
+    const segunda = await rodar(marcas[0]!.hash)
+    expect(segunda.r.output).toContain('PR #11')
+    expect(avisos).toHaveLength(1)
+  })
+
+  it('(d) [A verde já julgado neste head, B pendente]: A segue pulado e o noOp cita B', async () => {
+    const f = fakeFetch([
+      {
+        number: 10,
+        user: 'jules[bot]',
+        headSha: 'sha-a',
+        checkRuns: VERDE,
+        existingReviews: [{ body: '<!-- gitorch:qa -->\nparecer', commit_id: 'sha-a' }],
+      },
+      { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: PENDENTE },
+    ])
+    const posted = (f as unknown as { posted: { reviews: unknown[]; checkRunReads: string[] } })
+      .posted
+    const registradas: string[] = []
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('A já foi julgado e B está pendente: ninguém a julgar')
+      },
+      sessoes: [
+        linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' }),
+        linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+      ],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #11 não julgado')
+    expect(posted.reviews).toHaveLength(0)
+    expect(registradas).toEqual(['sessions/b'])
+    // B foi lido e virou a razão do noOp (A, já julgado, segue pelo caminho
+    // de antes — inclusive a leitura única do legado).
+    expect(posted.checkRunReads).toContain('sha-b')
+  })
+
+  it('(e) o teto de candidatos lidos é respeitado: só MAX leituras de verificação por missão', async () => {
+    const total = MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS + 3
+    const numeros = Array.from({ length: total }, (_, i) => 10 + i)
+    const f = fakeFetch(
+      numeros.map((n) => ({
+        number: n,
+        user: 'jules[bot]',
+        headSha: `sha-${n}`,
+        checkRuns: PENDENTE,
+      }))
+    )
+    const posted = (f as unknown as { posted: { checkRunReads: string[] } }).posted
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('todos pendentes: ninguém a julgar')
+      },
+      sessoes: numeros.map((n) =>
+        linha({ issueNumber: 50, pullRequestNumber: n, sessionName: `sessions/${n}` })
+      ),
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(posted.checkRunReads).toHaveLength(MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS)
+    // A ordem da fila (mais antigo primeiro) manda: os lidos são os primeiros.
+    expect(posted.checkRunReads).toEqual(
+      numeros.slice(0, MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS).map((n) => `sha-${n}`)
+    )
+    // O motivo cita o PRIMEIRO pendente da fila.
+    expect(r.output).toContain('PR #10 não julgado')
+  })
+
+  it('o teto é 6 (limite de chamadas ao GitHub por missão)', () => {
+    expect(MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS).toBe(6)
   })
 })
