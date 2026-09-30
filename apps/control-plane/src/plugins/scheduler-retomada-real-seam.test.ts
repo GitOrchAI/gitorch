@@ -8,7 +8,7 @@ import { schedulerPlugin } from './scheduler.js'
 // e `retomarPrReprovado` já provam a DECISÃO com deps falsos; nenhum arquivo
 // provava, pelo seam real do `schedulerPlugin`, que uma sessão COMPLETED com
 // pull request aberto-e-reprovado além da espera (1h) de fato vira uma sessão NOVA
-// no MESMO PR — não uma linha morta esperando o vigia de PR órfão (3 dias
+// no MESMO PR — não uma linha morta esperando o vigia de PR órfão (3 horas
 // depois) ou uma redelegação que abriria um PR SEGUNDO do zero.
 //
 // Mesmo "real seam" dos irmãos: registra o `schedulerPlugin` de VERDADE,

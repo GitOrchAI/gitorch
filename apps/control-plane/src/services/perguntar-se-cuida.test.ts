@@ -46,6 +46,24 @@ describe('perguntar-se-cuida', () => {
     )
   })
 
+  it('a idade em texto (horas) tem precedência sobre "N dias" na mensagem ao dono', () => {
+    const msg = montarMensagemDeFatosBrutos({
+      numeroDoPr: 42,
+      repository: 'dono/repo',
+      origem: 'dependabot' as OrigemDoItem,
+      contexto: { entrega: 'a', ciclo: 'b', decisoes: [], lacunas: [] },
+      contextoPr: {
+        titulo: 'Fix it',
+        idadeDias: 0,
+        idadeTexto: '5 horas',
+        estadoCi: 'success',
+        conflitos: false,
+      },
+    })
+    expect(msg.text).toContain('Idade: 5 horas')
+    expect(msg.text).not.toContain('0 dias')
+  })
+
   it('issue #877: raw fallback (montarMensagemDeFatosBrutos) inclui o grafo de vínculos quando historicoGitorch está presente', () => {
     const msg = montarMensagemDeFatosBrutos({
       numeroDoPr: 42,

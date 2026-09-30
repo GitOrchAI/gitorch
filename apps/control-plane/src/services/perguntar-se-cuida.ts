@@ -41,7 +41,7 @@ export function montarMensagemDeFatosBrutos(args: {
   partes.push(`Pull Request #${args.numeroDoPr} (${args.repository})`)
   partes.push(`Título: ${args.contextoPr?.titulo}`)
   partes.push(`Origem: ${args.origem}`)
-  partes.push(`Idade: ${args.contextoPr?.idadeDias} dias`)
+  partes.push(`Idade: ${args.contextoPr?.idadeTexto ?? `${args.contextoPr?.idadeDias} dias`}`)
   partes.push(`CI: ${args.contextoPr?.estadoCi}`)
   partes.push(`Conflitos: ${args.contextoPr?.conflitos ? 'Sim' : 'Não'}`)
 

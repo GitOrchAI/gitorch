@@ -16,7 +16,7 @@ import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.j
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
-import { contarAcoesDoVigia, type VigiaDoPrDeps } from './vigia-do-pr.js'
+import { contarAcoesDoVigia, descreverTempoParado, type VigiaDoPrDeps } from './vigia-do-pr.js'
 import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
 import type {
   montarContextoExecutivoDaPergunta,
@@ -433,6 +433,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
             idadeDias: depsVigia.paradoHaMs
               ? Math.floor(depsVigia.paradoHaMs / (1000 * 60 * 60 * 24))
               : 0,
+            idadeTexto: descreverTempoParado(depsVigia.paradoHaMs),
             estadoCi: fallbackCiState,
             conflitos: depsVigia.mergeable === false,
             ...(historicoGitorch ? { historicoGitorch } : {}),
