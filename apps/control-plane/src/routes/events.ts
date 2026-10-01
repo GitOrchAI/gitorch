@@ -56,7 +56,7 @@ export const eventRoutes = async (app: FastifyInstance): Promise<void> => {
       }, 30000)
 
       // Cleanup on close
-      request.raw.on('close', () => {
+      ;(request.raw as NodeJS.EventEmitter).on('close', () => {
         clearInterval(heartbeatInterval)
         app.sseClients.delete(clientId)
         app.broadcastEvent(wingId, 'client.disconnected', {
@@ -70,8 +70,7 @@ export const eventRoutes = async (app: FastifyInstance): Promise<void> => {
           sseContext.source.end()
         }
       })
-
-      request.raw.on('error', () => {
+      ;(request.raw as NodeJS.EventEmitter).on('error', () => {
         clearInterval(heartbeatInterval)
         app.sseClients.delete(clientId)
         const sseContext = (reply as unknown as { sseContext?: { source?: { end: () => void } } })

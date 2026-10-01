@@ -274,7 +274,7 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
       return reply.code(404).send({ error: 'sessão de login não encontrada' })
     }
 
-    request.raw.on('close', unsubscribe)
+    ;(request.raw as NodeJS.EventEmitter).on('close', unsubscribe)
     await new Promise(() => {})
   })
 }
