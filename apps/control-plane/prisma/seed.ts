@@ -148,7 +148,57 @@ async function main(): Promise<void> {
     where: { userId: null },
     data: { userId: owner.id },
   })
+
   console.log(`[seed] projetos vinculados ao dono: ${orphans.count}`)
+
+  // --- ADDED LOGIC FOR WISH ATTACHMENTS MOCK ---
+  let dummyWish = await prisma.wishlistItem.findFirst({
+    where: { userId: owner.id, source: 'seed-dummy' },
+  })
+  if (!dummyWish) {
+    dummyWish = await prisma.wishlistItem.create({
+      data: {
+        userId: owner.id,
+        source: 'seed-dummy',
+        payload: JSON.stringify({ message: 'Dummy wish for attachments seed' }),
+        targetRepositoryIds: [],
+      },
+    })
+  }
+
+  // Idempotent upsert via raw SQL for WishAttachment (since it has no unique constraint combination except id, we'll just check if it exists by querying by wishId and fileName)
+  const existingPdf = await prisma.wishAttachment.findFirst({
+    where: { wishId: dummyWish.id, fileName: 'mock.pdf' },
+  })
+  if (!existingPdf) {
+    await prisma.wishAttachment.create({
+      data: {
+        wishId: dummyWish.id,
+        fileName: 'mock.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 10240,
+        fileHash: 'mock-pdf-hash',
+      },
+    })
+  }
+
+  const existingMd = await prisma.wishAttachment.findFirst({
+    where: { wishId: dummyWish.id, fileName: 'mock.md' },
+  })
+  if (!existingMd) {
+    await prisma.wishAttachment.create({
+      data: {
+        wishId: dummyWish.id,
+        fileName: 'mock.md',
+        mimeType: 'text/markdown',
+        sizeBytes: 2048,
+        fileHash: 'mock-md-hash',
+        textContent: '# Mock Markdown Content',
+      },
+    })
+  }
+  console.log(`[seed] anexo de mock criado (PDF e MD) para pedido-dummy`)
+  // ---------------------------------------------
 
   // Projetos ativos ganham a agenda padrão que faltar (idempotente por papel).
   const projects = await prisma.project.findMany({ where: { isActive: true } })
