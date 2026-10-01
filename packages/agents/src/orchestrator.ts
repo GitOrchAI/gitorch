@@ -22,6 +22,7 @@ import type {
   AgentMission,
   MissionPlan,
   MissionPlanItem,
+  RuntimeOverrides,
 } from './types'
 import { primeWorkspace } from './workspace-priming'
 import { checkMissionLimits } from './execution-limits'
@@ -207,6 +208,7 @@ export class AgentOrchestrator {
             cwd: workspacePath,
             subPath: mission.subPath,
             timeoutMs,
+            runtimeOverrides: mission.runtimeOverrides,
           })
 
           if (res.waitingStatus) {

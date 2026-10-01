@@ -23,6 +23,8 @@ export type F6AgentRuntime = (typeof F6_AGENT_RUNTIMES)[number]
  */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+export type RuntimeOverrides = Record<string, unknown>
+
 export interface AgentRuntimeSelection {
   runtime: F6AgentRuntime
   model?: string
@@ -58,6 +60,7 @@ export interface AgentMission {
   evidenceRefs: string[]
   userId?: string
   executionLimits?: GuestExecutionLimits & ExecutionLimits
+  runtimeOverrides?: RuntimeOverrides
 }
 
 export type OnboardingStepKind =

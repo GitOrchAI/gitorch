@@ -12,7 +12,7 @@ import type {
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
 import { buildPrimingPreamble } from './prompts/priming.js'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
-import type { StateNode } from './types'
+import type { StateNode, RuntimeOverrides } from './types'
 import { SynapseClient } from '@gitorch/synapse'
 
 export const workspaceManager = new WorkspaceManager()
@@ -33,6 +33,7 @@ export interface BuildAgentMissionInput {
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
   executionLimits?: ExecutionLimits
+  runtimeOverrides?: RuntimeOverrides
 }
 
 export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {

@@ -91,3 +91,11 @@ export function getTracingEnvironment(): TracingEnvironment {
     ...(process.env['TELEMETRY_ENABLED'] === '1' ? { TELEMETRY_ENABLED: '1' } : {}),
   }
 }
+
+export function applyRuntimeOverrides(
+  baseOptions: Record<string, unknown>,
+  overrides?: Record<string, unknown>
+): Record<string, unknown> {
+  if (!overrides) return baseOptions
+  return { ...baseOptions, ...overrides }
+}

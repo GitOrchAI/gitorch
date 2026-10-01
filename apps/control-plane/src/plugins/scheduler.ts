@@ -4765,6 +4765,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               ...(model ? { model } : {}),
               ...(reasoning ? { reasoning: reasoning as ReasoningEffort } : {}),
             },
+            ...(project.runtimeConfig &&
+            typeof project.runtimeConfig === 'object' &&
+            'runtimeOverrides' in project.runtimeConfig
+              ? {
+                  runtimeOverrides: project.runtimeConfig.runtimeOverrides as Record<
+                    string,
+                    unknown
+                  >,
+                }
+              : {}),
             credentialRef,
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,
