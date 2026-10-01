@@ -15,11 +15,11 @@ export const RiskFindingSchema = z.object({
 export type RiskFinding = z.infer<typeof RiskFindingSchema>
 
 export const RiskAssessmentSchema = z.object({
-  score: z.number().min(0).max(100).optional(),
+  score: z.number().min(0).max(100),
   findings: z.array(RiskFindingSchema),
-  coveredCapabilities: z.array(z.string()).optional(),
+  coveredCapabilities: z.array(z.string()),
   missingCapabilities: z.array(z.string()),
-  recommendedStages: z.array(z.string()).optional(),
+  recommendedStages: z.array(z.string()),
   scoreAntes: z.number().optional(),
   scoreDepois: z.number().optional(),
   capacidadesAdicionadas: z.array(z.string()).optional(),

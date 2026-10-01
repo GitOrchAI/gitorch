@@ -26,7 +26,7 @@ export function optimizeExistingPipeline(options: OptimizationOptions): Pipeline
     mainTestJob = ir.jobs[jobIds[0]]
   }
 
-  for (const missing of assessment.missingCapabilities) {
+  for (const missing of assessment.missingCapabilities || []) {
     if (missing === 'secret-scan') {
       ir.jobs['security-scan'] = {
         id: 'security-scan',
@@ -101,7 +101,7 @@ export function optimizeExistingPipeline(options: OptimizationOptions): Pipeline
     if (
       finding.type === 'missing_capability' &&
       finding.id === 'secret-scan' &&
-      !assessment.missingCapabilities.includes('secret-scan')
+      !(assessment.missingCapabilities || []).includes('secret-scan')
     ) {
       // Could duplicate, but in this case missingCapabilities should contain it.
       // Doing nothing extra here to avoid duplicates.

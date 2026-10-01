@@ -10,6 +10,6 @@ export interface GenerationOptions {
 
 export interface OptimizationOptions {
   currentIr: PipelineIR
-  assessment: RiskAssessment
+  assessment: Partial<RiskAssessment>
   runner?: RunnerRequirement
 }

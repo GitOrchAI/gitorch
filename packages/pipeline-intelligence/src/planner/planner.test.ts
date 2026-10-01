@@ -59,7 +59,7 @@ describe('Planner', () => {
         },
       }
 
-      const assessment: RiskAssessment = {
+      const assessment: Partial<RiskAssessment> = {
         findings: [],
         missingCapabilities: ['secret-scan', 'typecheck'],
       }

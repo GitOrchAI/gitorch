@@ -9,7 +9,7 @@ export interface GitActorParams {
   autonomy: AutonomiaModo
   optimizedYaml: string
   workflowPath?: string // default: '.github/workflows/ci.yml'
-  assessment: RiskAssessment
+  assessment: Partial<RiskAssessment>
   baseBranch?: string // default: 'main'
   branchName?: string
 }
