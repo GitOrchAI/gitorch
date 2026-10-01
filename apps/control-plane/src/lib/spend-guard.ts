@@ -218,49 +218,17 @@ export async function checkGuestQuotaAvailable(guestId: string, projectId: strin
   }
 }
 
-export async function assertGuestQuotaAvailable(guestId: string, projectId: string): Promise<void> {
+export async function assertGuestQuotaAvailable(
+  guestId: string,
+  _projectId: string
+): Promise<void> {
   const { prisma } = await import('../plugins/prisma.js')
-  const invitation = await prisma.projectInvitation.findUnique({
-    where: { id: guestId },
-  })
-  if (!invitation || !invitation.executionLimits) return
+  const { verificarQuotaDoConvidado, recordGuestConsumption } = await import('./consumption.js')
 
-  const limits = invitation.executionLimits as { maxQuota?: number; maxStepsPerMission?: number }
-  if (limits.maxQuota == null || limits.maxQuota <= 0) return
-
-  const usedQuota = await prisma.mission.count({
-    where: {
-      projectId: projectId,
-      payload: {
-        path: ['guestId'],
-        equals: guestId,
-      },
-    },
-  })
-
-  const appEmit = (globalThis as unknown as { appEmitter?: { emit: Function } }).appEmitter
-  if (appEmit && limits.maxQuota > 0) {
-    const fraction = usedQuota / limits.maxQuota
-    if (fraction >= 1) {
-      appEmit.emit('telemetry:guest_quota_alert', {
-        guestId,
-        projectId,
-        fraction,
-        used: usedQuota,
-        limit: limits.maxQuota,
-      })
-    } else if (fraction >= 0.8) {
-      appEmit.emit('telemetry:guest_quota_alert', {
-        guestId,
-        projectId,
-        fraction,
-        used: usedQuota,
-        limit: limits.maxQuota,
-      })
-    }
-  }
-
-  if (usedQuota >= limits.maxQuota) {
+  const hasQuota = await verificarQuotaDoConvidado(guestId, prisma)
+  if (!hasQuota) {
     throw new QuotaExcedidaError(`Quota excedida para o convidado ${guestId}`)
   }
+
+  await recordGuestConsumption(guestId, 1, prisma)
 }
