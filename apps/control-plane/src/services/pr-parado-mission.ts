@@ -5,6 +5,8 @@ import type { StepExecutor } from './role-rails.js'
 export interface ContextoPrParado {
   titulo: string
   idadeDias: number
+  /** A idade já dita em português ("5 horas", "3 dias"); tem precedência sobre `idadeDias`. */
+  idadeTexto?: string
   estadoCi: string
   conflitos: boolean
   arquivosAlterados?: string
@@ -41,7 +43,7 @@ export async function gerarPerguntaSobrePrParado(args: {
 
 Fatos:
 - Título: ${args.contextoPr.titulo}
-- Idade: ${args.contextoPr.idadeDias} dias
+- Idade: ${args.contextoPr.idadeTexto ?? `${args.contextoPr.idadeDias} dias`}
 - CI: ${args.contextoPr.estadoCi}
 - Conflitos: ${args.contextoPr.conflitos ? 'Sim' : 'Não'}
 - Arquivos: ${args.contextoPr.arquivosAlterados || 'Não informado'}

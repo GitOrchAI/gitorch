@@ -1,30 +1,29 @@
 // Quando o QA REPROVA um pull request do dev assíncrono e a sessão que abriu
 // esse PR já está TERMINAL (COMPLETED/FAILED — o Jules não vai empurrar
 // commit novo sozinho), a esteira NÃO pode simplesmente fechar a linha e
-// devolver a issue para a fila: sem `startingBranch`/`workingBranch`
-// apontando para o PR existente, a próxima delegação abre um PULL REQUEST
+// devolver a issue para a fila: a próxima delegação abriria um pull request
 // NOVO do zero — a MESMA tarefa acumulando sessões e PRs.
 //
 // Medido: issue #3884 do Jardim (02/09/2026), 5 sessões e 3 pull requests
-// (#3907 31/08, #3913 01/09, #3917 02/09) para UMA task. Toda madrugada o SM
-// delegava de novo porque a sessão anterior tinha fechado como
-// `pr-rejeitado-sem-retomada`, e a nova sessão abria um PR novo em vez de
-// continuar o PR reprovado — #3907 e #3917 ficaram os DOIS abertos para a
-// mesma issue.
+// (#3907 31/08, #3913 01/09, #3917 02/09) para UMA task.
 //
-// A retomada certa é no MESMO PR: sessão nova, mas `startingBranch` e
-// `workingBranch` apontando para a branch que o PR já usa — o Jules empurra
-// na branch existente em vez de inventar uma nova, e o pull request que já
-// existe recebe o commit novo. Contrato conferido AO VIVO em 31/08/2026
-// contra `jules.googleapis.com` (ver `criarSessaoDev`/`CriarSessaoDeps` em
-// jules-client.ts): sem `workingBranch`, `automationMode: 'AUTO_CREATE_PR'`
-// cria um pull request NOVO.
+// A retomada certa parte da `main` (`startingBranch` = base do projeto, nunca
+// o ramo do PR antigo: medido em 30/09, o Jules abre o PR novo com BASE no
+// ponto de partida da sessão, e o PR nascia mirando o ramo velho). O trabalho
+// antigo viaja só pelo PROMPT (pedido-de-pr-novo.ts) e o resultado é um pull
+// request NOVO contra a `main`. NÃO se manda `workingBranch`: medido em
+// produção (62 retomadas em 14 dias), com ele a sessão concluía o conserto e
+// nunca publicava nada. O PR antigo é fechado como substituído quando o novo
+// aparece (pr-substituido.ts), porque a sessão de retomada continua
+// registrada com a mesma issue.
 //
 // PURO NA DECISÃO, INJETADO NA AÇÃO — mesma disciplina de `vigia-do-pr.ts` e
 // `sessao-terminal.ts`: o teto de retomadas por PR é testável sem rede, e
 // quem fala com o dev externo, o banco e o dono é sempre injeção.
 
 import type { ResultadoDoAcionamentoDoDev } from './sm-delegation.js'
+import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
+import { baseDoDev } from './base-do-dev.js'
 
 /**
  * Quantas vezes a esteira tenta retomar o MESMO pull request reprovado antes
@@ -150,11 +149,8 @@ function neutralizarMarcasDeMoldura(texto: string): string {
 
 /**
  * O prompt que o dev recebe ao retomar: o parecer do QA (como DADO, nunca
- * instrução) + a instrução explícita de NÃO abrir outro pull request.
- *
- * Sem a instrução, nada garante que o dev entenda "continue aqui" — e o
- * histórico medido (#3907/#3913/#3917) é exatamente o comportamento padrão
- * quando ninguém pede o contrário.
+ * instrução) + a instrução explícita de buscar o ramo antigo e publicar um
+ * pull request NOVO contra a `main`.
  *
  * S1 (CSO): o parecer nunca entra cru. Nesta ordem: (1) filtro de segredo no
  * texto INTEIRO — antes do corte, senão um segredo cortado ao meio escaparia
@@ -166,6 +162,8 @@ function neutralizarMarcasDeMoldura(texto: string): string {
  */
 export function montarPromptDeRetomada(args: {
   numeroDoPr: number
+  /** O ramo do PR antigo — só citado no prompt, nunca base da sessão. */
+  ramoDoPr: string
   parecerDoQa: string
   /** Só para a mensagem de `onWarn` (repo#pr) — nunca usado na sanitização em si. */
   repository: string
@@ -193,9 +191,7 @@ export function montarPromptDeRetomada(args: {
     parecerSeguro,
     MARCA_FIM_PARECER,
     '',
-    `Continue neste pull request #${args.numeroDoPr}, nesta mesma branch — a entrega já existe, ` +
-      'só precisa do conserto acima. NÃO abra outro pull request: isso deixaria duas entregas ' +
-      'abertas para a mesma tarefa.',
+    instrucaoDePrNovoAPartirDoRamo({ numeroDoPr: args.numeroDoPr, ramoDoPr: args.ramoDoPr }),
   ].join('\n')
 }
 
@@ -217,11 +213,14 @@ export interface DepsDeRetomadaDoPr {
    * sessão ORIGINAL que abriu o PR, só as retomadas depois dela.
    */
   contarRetomadasAnteriores: (args: { projectId: string; prNumber: number }) => Promise<number>
-  /** Aciona o dev de verdade — mesma família de `criarSessaoJules`. */
+  /**
+   * Aciona o dev de verdade — mesma família de `criarSessaoJules`.
+   * `startingBranch` é SEMPRE a base do projeto (`baseDoDev`), nunca o ramo do
+   * PR reprovado: o PR novo herda a base do ponto de partida da sessão.
+   */
   criarSessaoDev: (args: {
     repository: string
     startingBranch: string
-    workingBranch: string
     titulo: string
     prompt: string
   }) => Promise<ResultadoDoAcionamentoDoDev>
@@ -325,11 +324,11 @@ export async function retomarPrReprovado(
 
   const resultado = await deps.criarSessaoDev({
     repository: args.repository,
-    startingBranch: args.pr.headRef,
-    workingBranch: args.pr.headRef,
+    startingBranch: baseDoDev(),
     titulo: `Retomada do PR #${args.pr.number} (issue #${args.issueNumber})`,
     prompt: montarPromptDeRetomada({
       numeroDoPr: args.pr.number,
+      ramoDoPr: args.pr.headRef,
       parecerDoQa: args.parecerDoQa,
       repository: args.repository,
       onWarn: warn,
@@ -349,7 +348,7 @@ export async function retomarPrReprovado(
   })
   info(
     `[retomada] sessão ${args.sessaoAnterior.sessionName} fechada; PR #${args.pr.number} ` +
-      `(issue #${args.issueNumber}) retomado na sessão ${resultado.sessionName} — mesma branch`
+      `(issue #${args.issueNumber}) retomado na sessão ${resultado.sessionName} — PR novo contra a base`
   )
   return { acao: 'retomou', sessionName: resultado.sessionName }
 }

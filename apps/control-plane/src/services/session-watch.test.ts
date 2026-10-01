@@ -71,6 +71,56 @@ function hashDe(mensagem: string): string {
   return createHash('sha256').update(mensagem).digest('hex').slice(0, 16)
 }
 
+describe('vigiarSessoes — sessão presa em QUEUED', () => {
+  // Caso real (#3718): o Jules mexe no `updateTime` da sessão todo dia mesmo
+  // sem ela ter começado. Isso não pode contar como progresso em QUEUED, senão
+  // o relógio de abandono nunca vence.
+  it('QUEUED com updateTime novo NÃO move lastProgressAt', async () => {
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/presa',
+          state: 'QUEUED',
+          lastProgressAt: new Date(agora.getTime() - 60 * 60 * 1000),
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'QUEUED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    const chamada = vi.mocked(deps.registrarEstado).mock.calls[0]![0]
+    expect(chamada.estado).toBe('QUEUED')
+    expect('progrediu' in chamada).toBe(false)
+  })
+
+  it('sair de QUEUED para IN_PROGRESS com updateTime novo CONTA como progresso', async () => {
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/comecou',
+          state: 'QUEUED',
+          lastProgressAt: new Date(agora.getTime() - 60 * 60 * 1000),
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'IN_PROGRESS',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    const chamada = vi.mocked(deps.registrarEstado).mock.calls[0]![0]
+    expect(chamada.progrediu).toBe(true)
+  })
+})
+
 describe('vigiarSessoes', () => {
   it('sem sessão viva não faz nenhuma chamada externa — a vigia é escopada, não global', async () => {
     const deps = depsFalso({ sessoes: [] })

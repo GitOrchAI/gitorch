@@ -25,7 +25,10 @@
 // isso é mais delicado que nos vizinhos, porque o pull request do dev sai com o
 // AUTOR do dono (conta da instalação) e sem label: o login não separa nada.
 
+import type { Prisma } from '@prisma/client'
 import { pedidoDeRebase } from './conflito-de-merge.js'
+import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
+import { baseDoDev } from './base-do-dev.js'
 
 /**
  * Rodapé emitido pelo dev assíncrono ao abrir o pull request — a ÚNICA
@@ -59,7 +62,7 @@ const AUTORES_DA_AUTOMACAO = ['dependabot[bot]', 'dependabot-preview[bot]']
  * origem registrada"), ou seja: ESCALAR ao dono. Medido no repositório do
  * produto em 31/08/2026, os dois pull requests do Dependabot abertos (#403 e
  * #404) não têm linha de sessão — cada um viraria duas escaladas assim que
- * passasse dos três dias, sobre algo que o próprio Dependabot resolve: o #360
+ * passasse da idade mínima de órfão, sobre algo que o próprio Dependabot resolve: o #360
  * foi fechado por ele mesmo, com "Looks like these dependencies are updatable
  * in another way, so this is no longer needed".
  *
@@ -125,7 +128,9 @@ export function ehPRDaAutomacao(pr: SinaisDePR): boolean {
  * Quantas vezes o vigia age sobre o MESMO pull request antes de parar e chamar
  * gente.
  *
- * DOIS, o mesmo número (e o mesmo motivo) de `MAX_PEDIDOS_DE_REBASE` em
+ * UM: uma retomada com o código corrigido. Se o PR continua parado na varredura
+ * seguinte, o vigia fecha o antigo e devolve a tarefa à fila (uma vez por tarefa);
+ * só se isso falhar escala ao dono. Antes era DOIS, como `MAX_PEDIDOS_DE_REBASE` em
  * `conflito-de-merge.ts`: se o dev não resolveu na segunda, ou o conflito é
  * maior do que ele alcança, ou há algo que ele não entende. Cada ação aqui
  * custa uma SESSÃO NOVA na conta do dev — insistir a terceira vez queima cota
@@ -135,7 +140,110 @@ export function ehPRDaAutomacao(pr: SinaisDePR): boolean {
  * número de tentativas escrito no recado. Teto silencioso é o mesmo defeito
  * que ele deveria consertar.
  */
-export const MAX_ACOES_DO_VIGIA = 2
+export const MAX_ACOES_DO_VIGIA = 1
+
+/**
+ * Data de corte da contagem de ações do vigia por pull request.
+ *
+ * Instante em que o código corrigido (PR #982: a retomada abre PR novo) entrou
+ * em produção. Retomadas gravadas ANTES disso publicavam no ramo antigo e nunca
+ * entregavam (62 tentativas, 0 entregas em 14 dias): não contam para o limite.
+ * As feitas DEPOIS contam para `MAX_ACOES_DO_VIGIA`.
+ */
+export const CORTE_DAS_RETOMADAS_COM_DEFEITO = new Date('2026-09-29T21:58:00Z')
+
+/**
+ * Filtro dos eventos que contam como ação do vigia sobre UM pull request:
+ * só os gravados depois do corte (e, opcionalmente, depois de `depoisDe`).
+ */
+export function filtroDeAcoesDoVigia(args: {
+  projectId: string
+  numeroDoPr: number
+  depoisDe?: Date
+}): Prisma.EventWhereInput {
+  const desde =
+    args.depoisDe && args.depoisDe > CORTE_DAS_RETOMADAS_COM_DEFEITO
+      ? args.depoisDe
+      : CORTE_DAS_RETOMADAS_COM_DEFEITO
+  return {
+    projectId: args.projectId,
+    type: 'audit',
+    payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: args.numeroDoPr },
+    createdAt: { gte: desde },
+  }
+}
+
+/** O mínimo do banco que as contagens do vigia precisam. */
+export interface ContadorDeEventos {
+  event: { count: (args: { where: Prisma.EventWhereInput }) => Promise<number> }
+}
+
+/** Quantas ações o vigia já fez neste pull request, sem contar as do período com defeito. */
+export async function contarAcoesDoVigia(
+  db: ContadorDeEventos,
+  args: { projectId: string; numeroDoPr: number; depoisDe?: Date }
+): Promise<number> {
+  return db.event.count({ where: filtroDeAcoesDoVigia(args) })
+}
+
+/**
+ * Esta tarefa já foi devolvida à fila pelo vigia? A devolução acontece UMA
+ * única vez por tarefa: sem esta marca, cada PR novo da mesma tarefa
+ * repetiria o ciclo para sempre.
+ */
+export async function tarefaJaFoiDevolvidaAFila(
+  db: ContadorDeEventos,
+  args: { projectId: string; issueNumber: number }
+): Promise<boolean> {
+  const total = await db.event.count({
+    where: {
+      projectId: args.projectId,
+      type: 'audit',
+      AND: [
+        { payload: { path: ['vigiaDoPr', 'acao'], equals: 'devolver-a-fila' } },
+        { payload: { path: ['vigiaDoPr', 'issueNumber'], equals: args.issueNumber } },
+      ],
+    },
+  })
+  return total > 0
+}
+
+/**
+ * O pedido que a sessão de conserto recebe: o que consertar + a instrução de
+ * buscar o ramo antigo e publicar pull request contra a `main`.
+ */
+export function montarPedidoDeConsertoDoVigia(args: {
+  numeroDoPr: number
+  ramoDoPr: string
+  pedido: string
+}): string {
+  return `${args.pedido}\n\n${instrucaoDePrNovoAPartirDoRamo({
+    numeroDoPr: args.numeroDoPr,
+    ramoDoPr: args.ramoDoPr,
+  })}`
+}
+
+/**
+ * A sessão de conserto inteira: nasce da base do projeto (NUNCA do ramo do PR
+ * antigo — o PR novo herda a base do ponto de partida, e a entrega precisa
+ * chegar na `main`), e o ramo antigo viaja só no prompt.
+ */
+export function montarSessaoDeConsertoDoVigia(args: {
+  numeroDoPr: number
+  issueNumber: number
+  ramoDoPr: string
+  pedido: string
+}): { startingBranch: string; titulo: string; prompt: string } {
+  return {
+    startingBranch: baseDoDev(),
+    titulo: `Destravar o pull request #${args.numeroDoPr} (tarefa #${args.issueNumber})`,
+    prompt: montarPedidoDeConsertoDoVigia({
+      numeroDoPr: args.numeroDoPr,
+      ramoDoPr: args.ramoDoPr,
+      pedido: args.pedido,
+    }),
+  }
+}
 
 /**
  * Quantas ações o vigia executa numa MESMA passada, somando todo o projeto
@@ -148,42 +256,52 @@ export const MAX_ACOES_DO_VIGIA = 2
  * (#314, #324, #330, #331, #335, #341). Estrear com uma limpeza em massa é a
  * pior forma de o dono descobrir que o vigia existe.
  *
- * DOIS, e o número tem conta:
- *   · a varredura roda de 6 em 6 horas, então o teto ainda drena 8 por dia — a
- *     dívida medida hoje (6) se resolve em menos de um dia, e o regime normal
- *     do repositório é 1 a 2 órfãos por dia, bem abaixo disso;
- *   · com 2 por passada, as duas primeiras ações chegam ao Telegram e à linha
- *     do tempo do painel ~6h antes das seguintes: há janela para desligar;
- *   · é o mesmo número, pelo mesmo motivo, de `TETO_DE_ANALISES_POR_PASSADA`
- *     (analisar-falhas-pendentes.ts): ação que custa caro e é difícil de
- *     desfazer anda devagar.
+ * SEIS (era 2 até 30/09/2026). Medido em produção nessa data: padrao-executores
+ * com 5 PRs travados e gitorch idem, mas só 2 tratados a cada 6h ("3 além do
+ * teto desta passada (2)") — o teto só atrasava a fila. O freio real são as
+ * vagas da conta do dev (`podeAbrirSessao`, ~12 no plano Pro) e o teto de
+ * tentativas por PR (`MAX_ACOES_DO_VIGIA`); este teto segue existindo para a
+ * estreia não ser uma limpeza em massa, e 6 com varredura de 3h drena até 48
+ * por dia. O que passa do teto é adiado com prioridade (`foiAdiadoAntes`).
  *
  * E ele DIZ quando morde: o resumo da passada conta quantos ficaram para a
  * próxima. Teto silencioso é o mesmo defeito que ele existe para consertar.
  */
-export const TETO_DE_ACOES_POR_PASSADA = 2
+export const TETO_DE_ACOES_POR_PASSADA = 6
 
 /**
- * Quanto tempo um pull request precisa ficar sem avanço antes de o vigia
+ * Quanto tempo um pull request precisa ficar sem commit novo antes de o vigia
  * considerá-lo órfão.
  *
- * Três dias, e não algumas horas: o dev assíncrono trabalha em rajadas, e um
- * pull request que recebeu commit ontem pode muito bem receber outro hoje.
- * Agir cedo demais abriria sessão nova contra trabalho que ainda está andando —
- * o mesmo desperdício que a cadência de `session-watch` evita, numa escala
- * maior.
+ * Três horas (eram 3 dias até 30/09/2026): sem sessão viva e sem commit há 3h,
+ * ninguém está atrás do pull request. A varredura roda a cada 3h, e o teto de
+ * tentativas por PR + as vagas da conta seguem como freio.
  */
-export const IDADE_MINIMA_DE_ORFANDADE_MS = 3 * 24 * 60 * 60 * 1000
+export const IDADE_MINIMA_DE_ORFANDADE_MS = 3 * 60 * 60 * 1000
+
+const UMA_HORA_MS = 60 * 60 * 1000
+const UM_DIA_MS = 24 * UMA_HORA_MS
+
+/** O tempo parado em português: horas abaixo de 2 dias, dias a partir daí. */
+export function descreverTempoParado(ms: number): string {
+  if (ms < 2 * UM_DIA_MS) {
+    const horas = Math.floor(ms / UMA_HORA_MS)
+    if (horas < 1) return 'menos de 1 hora'
+    return horas === 1 ? '1 hora' : `${horas} horas`
+  }
+  return `${Math.floor(ms / UM_DIA_MS)} dias`
+}
 
 /**
  * De quanto em quanto tempo a varredura roda por projeto.
  *
- * Seis horas — o mesmo período do relógio que já varre conflitos
- * (`jules-pr-conflict.yml`). Bem abaixo da idade mínima de órfão de propósito:
- * assim quem decide se é hora de agir é a IDADE do pull request, não o acaso de
- * quando o relógio bateu.
+ * Três horas (era 6h até 30/09/2026, quando a fila parada foi medida em
+ * produção). 3h mantém a leitura do GitHub dentro do limite de chamadas da
+ * instalação compartilhada. Igual à idade mínima de órfão de propósito: quem
+ * decide se é hora de agir é a IDADE do pull request, não o acaso de quando o
+ * relógio bateu — e um PR órfão espera no máximo uma passada além das 3h.
  */
-export const CADENCIA_DA_VARREDURA_MS = 6 * 60 * 60 * 1000
+export const CADENCIA_DA_VARREDURA_MS = 3 * 60 * 60 * 1000
 
 /** O que a verificação automática do pull request está dizendo agora. */
 export type EstadoDaVerificacao = 'verde' | 'vermelha' | 'pendente' | 'ausente'
@@ -243,8 +361,10 @@ export interface PrOrfaoObservado extends RamoDoPr {
   mergeable: boolean | null
   verificacao: EstadoDaVerificacao
   paradoHaMs: number
-  /** Quantas vezes o vigia JÁ agiu sobre este pull request (lido de `events`). */
+  /** Quantas vezes o vigia JÁ agiu sobre este pull request (lido de `events`, só após o corte). */
   acoesAnteriores: number
+  /** A tarefa de origem já foi devolvida à fila por este vigia (uma vez por tarefa)? */
+  tarefaJaDevolvidaAFila: boolean
   /** Há vaga na conta do dev para abrir mais uma sessão nesta passada? */
   podeAbrirSessao: boolean
 }
@@ -267,9 +387,23 @@ export type AcaoDoVigia =
     }
   /** Fechar o pull request dizendo por quê. */
   | { acao: 'fechar'; motivo: string }
+  /**
+   * O limite de tentativas estourou: fecha o pull request antigo e devolve a
+   * tarefa para a fila (tarefa nova a partir da `main`). Uma vez por tarefa.
+   */
+  | { acao: 'devolver-a-fila'; issueNumber: number; motivo: string }
   /** O produto não resolve: o dono precisa saber. */
   | { acao: 'escalar'; motivo: string }
   | { acao: 'pedir-julgamento'; motivo: string }
+
+/** O comentário deixado no pull request antigo — texto de negócio, sem jargão. */
+export function motivoDeDevolverAFila(numeroDoPr: number): string {
+  return (
+    `Tentei consertar a entrega #${numeroDoPr} mais de uma vez e ela continua parada. ` +
+    'Vou fechá-la e devolver a tarefa para a fila, para ser refeita do zero a partir da versão ' +
+    'mais recente do projeto.'
+  )
+}
 
 function pedidoDeConsertarVerificacao(numeroDoPr: number): string {
   return [
@@ -325,10 +459,9 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
 
   // 4) CEDO DEMAIS.
   if (pr.paradoHaMs < IDADE_MINIMA_DE_ORFANDADE_MS) {
-    const dias = Math.floor(IDADE_MINIMA_DE_ORFANDADE_MS / (24 * 60 * 60 * 1000))
     return {
       acao: 'ignorar',
-      motivo: `#${pr.numero} recebeu novidade há menos de ${dias} dias — ainda pode andar sozinho`,
+      motivo: `#${pr.numero} recebeu novidade há menos de ${descreverTempoParado(IDADE_MINIMA_DE_ORFANDADE_MS)} — ainda pode andar sozinho`,
     }
   }
 
@@ -344,10 +477,19 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
     }
   }
   if (pr.acoesAnteriores >= MAX_ACOES_DO_VIGIA) {
+    // Antes de desistir, UMA chance: fecha o antigo e a tarefa recomeça da
+    // `main`. Só se isso também falhar (ou já foi feito) o dono é chamado.
+    if (pr.issueNumber !== null && pr.issueAberta && !pr.tarefaJaDevolvidaAFila) {
+      return {
+        acao: 'devolver-a-fila',
+        issueNumber: pr.issueNumber,
+        motivo: motivoDeDevolverAFila(pr.numero),
+      }
+    }
     return {
       acao: 'escalar',
       motivo:
-        `Tentei ${MAX_ACOES_DO_VIGIA} vezes destravar o pull request #${pr.numero} e ele continua ` +
+        `Tentei ${MAX_ACOES_DO_VIGIA} ${MAX_ACOES_DO_VIGIA === 1 ? 'vez' : 'vezes'} destravar o pull request #${pr.numero} e ele continua ` +
         'parado. Não vou tentar de novo: alguém precisa olhar, ou a entrega fica onde está.',
     }
   }
@@ -397,12 +539,11 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
   // nada — o dev entregaria de novo o que já está entregue. O que falta é
   // julgamento, e isso é notícia para o dono.
   if (causa === null) {
-    const dias = Math.floor(pr.paradoHaMs / (24 * 60 * 60 * 1000))
     return {
       acao: 'escalar',
       motivo:
         `O pull request #${pr.numero} (tarefa #${pr.issueNumber}) está mesclável e sem verificação ` +
-        `reprovada há ${dias} dias, e ninguém o mesclou. A entrega está pronta e parada.`,
+        `reprovada há ${descreverTempoParado(pr.paradoHaMs)}, e ninguém o mesclou. A entrega está pronta e parada.`,
     }
   }
 
@@ -463,6 +604,8 @@ export interface VigiaDoPrDeps {
   issueAberta: (issueNumber: number) => Promise<boolean>
   /** Quantas decisões o vigia já gravou para este pull request — é o teto. */
   acoesAnteriores: (numeroDoPr: number) => Promise<number>
+  /** A tarefa já foi devolvida à fila pelo vigia? (uma vez por tarefa) */
+  tarefaJaDevolvidaAFila: (issueNumber: number) => Promise<boolean>
   /** Vagas de sessão simultânea que sobram na conta do dev nesta passada. */
   vagasLivres: number
   decidirAcaoNoPrOrfao?: (pr: PrOrfaoObservado, rawPr: PrAberto) => Promise<AcaoDoVigia>
@@ -490,6 +633,8 @@ export interface VigiaDoPrDeps {
     numeroDoPr: number
     acao: AcaoDoVigia['acao']
     texto: string
+    /** Só na devolução à fila: é o que impede repetir o ciclo na mesma tarefa. */
+    issueNumber?: number
   }) => Promise<void>
   /**
    * Teto de ações desta passada. Padrão: `TETO_DE_ACOES_POR_PASSADA`.
@@ -500,6 +645,24 @@ export interface VigiaDoPrDeps {
   teto?: number | undefined
   onWarn?: (m: string) => void
   onInfo?: (m: string) => void
+  /**
+   * O PR já foi adiado pelo teto numa passada anterior? (task
+   * fix-scheduler-tick-cabe / PR #3953). Sem isto, o teto corta a lista
+   * SEMPRE na mesma ordem e a passada seguinte reprocessa os mesmos PRs na
+   * MESMA ordem — então quem ficou de fora uma vez pode ficar de fora para
+   * sempre, se houver ≥ teto PRs "na frente" dele. Quando presente, os PRs
+   * para os quais isto devolve `true` são movidos para o INÍCIO da lista
+   * desta passada (partição estável — a ordem relativa dentro de cada grupo
+   * não muda).
+   */
+  foiAdiadoAntes?: ((numeroDoPr: number) => boolean) | undefined
+  /**
+   * Chamado toda vez que um PR é adiado pelo teto NESTA passada — mesmo
+   * ponto onde `adiadosPeloTeto` é incrementado. Quem injeta isto decide
+   * onde guardar a lista (ex.: memória do processo, banco) para alimentar
+   * `foiAdiadoAntes` na próxima passada.
+   */
+  registrarAdiadoPeloTeto?: ((numeroDoPr: number) => void) | undefined
 }
 
 function pluralizar(n: number, singular: string, plural: string): string {
@@ -519,7 +682,28 @@ function pluralizar(n: number, singular: string, plural: string): string {
 export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   const warn = deps.onWarn ?? (() => undefined)
   const info = deps.onInfo ?? (() => undefined)
-  const prs = await deps.listarPrsAbertos()
+  const prsLidos = await deps.listarPrsAbertos()
+
+  // PRIORIDADE PARA O ADIADO PELO TETO (task fix-scheduler-tick-cabe / PR
+  // #3953): sem isto, o teto corta SEMPRE na mesma ordem de entrada, e quem
+  // ficou de fora fica de fora de novo na próxima passada se houver ≥ teto
+  // PRs na frente dele. Partição estável: adiados-antes primeiro, o resto
+  // depois, preservando a ordem relativa dentro de cada grupo.
+  const prs = deps.foiAdiadoAntes
+    ? (() => {
+        const foiAdiadoAntes = deps.foiAdiadoAntes
+        const prioritarios: PrAberto[] = []
+        const resto: PrAberto[] = []
+        for (const pr of prsLidos) {
+          if (foiAdiadoAntes(pr.numero)) {
+            prioritarios.push(pr)
+          } else {
+            resto.push(pr)
+          }
+        }
+        return [...prioritarios, ...resto]
+      })()
+    : prsLidos
 
   const teto = deps.teto ?? TETO_DE_ACOES_POR_PASSADA
   let vagas = deps.vagasLivres
@@ -531,6 +715,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   let retomados = 0
   let fechados = 0
   let escalados = 0
+  let devolvidos = 0
   let adiadosPeloTeto = 0
   let falhas = 0
 
@@ -570,6 +755,8 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         verificacao: pr.verificacao,
         paradoHaMs: pr.paradoHaMs,
         acoesAnteriores: await deps.acoesAnteriores(pr.numero),
+        tarefaJaDevolvidaAFila:
+          issueNumber === null ? false : await deps.tarefaJaDevolvidaAFila(issueNumber),
         podeAbrirSessao: vagas > 0,
       }
 
@@ -584,6 +771,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
       // que precisa andar devagar é a escrita, não o olhar.
       if (decisao.acao !== 'ignorar' && acoesFeitas >= teto) {
         adiadosPeloTeto += 1
+        deps.registrarAdiadoPeloTeto?.(pr.numero)
         warn(
           `[vigia-do-pr] o #${pr.numero} ficaria em "${decisao.acao}", mas já fiz ${acoesFeitas} ` +
             `ações nesta passada (teto ${teto}); fica para a próxima`
@@ -656,6 +844,40 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
           break
         }
 
+        case 'devolver-a-fila': {
+          // Fecha o PR antigo (com o motivo no comentário) e só então grava. O
+          // fechamento é o que devolve a tarefa: sem PR aberto, ela volta à
+          // fila e a próxima sessão parte da `main`. Se falhar, escala ao dono.
+          const fechou = await deps.fecharPr({ numero: pr.numero, motivo: decisao.motivo })
+          if (fechou) {
+            devolvidos += 1
+            await deps.registrarDecisao({
+              numeroDoPr: pr.numero,
+              acao: 'devolver-a-fila',
+              issueNumber: decisao.issueNumber,
+              texto: `Fechei a entrega #${pr.numero} e devolvi a tarefa #${decisao.issueNumber} para a fila: ${decisao.motivo}`,
+            })
+            break
+          }
+          warn(`[vigia-do-pr] não consegui fechar o #${pr.numero} para devolver a tarefa à fila`)
+          const motivoDaEscalada =
+            `Tentei consertar a entrega #${pr.numero} e não consegui, e também não consegui fechá-la ` +
+            'para devolver a tarefa à fila. Alguém precisa olhar.'
+          escalados += 1
+          await deps.registrarDecisao({
+            numeroDoPr: pr.numero,
+            acao: 'escalar',
+            texto: motivoDaEscalada,
+          })
+          if (!(await deps.avisarDono(`GitOrch: ${motivoDaEscalada}`))) {
+            warn(
+              `[vigia-do-pr] o recado sobre o #${pr.numero} não chegou ao dono; ` +
+                'ficou registrado na linha do tempo do painel'
+            )
+          }
+          break
+        }
+
         case 'escalar': {
           // O evento vem ANTES do recado, e é gravado mesmo se o recado não
           // chegar. É ele que conta o teto: se só contasse quando o Telegram
@@ -687,6 +909,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   const partes: string[] = []
   if (retomados > 0) partes.push(pluralizar(retomados, 'retomado', 'retomados'))
   if (fechados > 0) partes.push(pluralizar(fechados, 'fechado', 'fechados'))
+  if (devolvidos > 0) partes.push(pluralizar(devolvidos, 'devolvido à fila', 'devolvidos à fila'))
   if (escalados > 0) partes.push(pluralizar(escalados, 'escalado', 'escalados'))
   if (adiadosPeloTeto > 0) {
     partes.push(`${adiadosPeloTeto} além do teto desta passada (${teto})`)

@@ -11,6 +11,7 @@ import {
   TETO_DE_ACOES_POR_PASSADA,
   branchParaRetomar,
   decidirAcaoNoPrOrfao,
+  descreverTempoParado,
   ehPRDaAutomacao,
   fecharPrDoVigia,
   listarPrsAbertosParaOVigia,
@@ -36,7 +37,8 @@ import {
   LABELS_PR_408,
 } from './__fixtures__/corpos-reais-de-pr.js'
 
-const DIA = 24 * 60 * 60 * 1000
+const HORA = 60 * 60 * 1000
+const DIA = 24 * HORA
 
 function situacao(over: Partial<PrOrfaoObservado> = {}): PrOrfaoObservado {
   return {
@@ -52,6 +54,7 @@ function situacao(over: Partial<PrOrfaoObservado> = {}): PrOrfaoObservado {
     verificacao: 'verde',
     paradoHaMs: 7 * DIA,
     acoesAnteriores: 0,
+    tarefaJaDevolvidaAFila: false,
     podeAbrirSessao: true,
     ...over,
   }
@@ -258,7 +261,11 @@ describe('o que o vigia decide para o PR órfão', () => {
 describe('o teto DIZ quando morde', () => {
   it('estourado, a decisão vira escalar e o motivo traz o número de ações', () => {
     const d = decidirAcaoNoPrOrfao(
-      situacao({ mergeable: false, acoesAnteriores: MAX_ACOES_DO_VIGIA })
+      situacao({
+        mergeable: false,
+        acoesAnteriores: MAX_ACOES_DO_VIGIA,
+        tarefaJaDevolvidaAFila: true,
+      })
     )
     expect(d.acao).toBe('escalar')
     expect(d.motivo).toContain(String(MAX_ACOES_DO_VIGIA))
@@ -279,6 +286,7 @@ describe('o teto DIZ quando morde', () => {
       prs: [prAberto({ numero: 356, corpo: CORPO_PR_356_DEV, mergeable: false })],
       issueDoPr: () => 329,
       acoesAnteriores: async () => MAX_ACOES_DO_VIGIA,
+      tarefaJaDevolvidaAFila: async () => true,
       avisarDono: async (t) => {
         avisos.push(t)
         return true
@@ -410,8 +418,88 @@ describe('a regra do rodapé não pode divergir da automação de conflito', () 
     ).toBe(false)
   })
 
-  it('a cadência da varredura é bem menor que a idade mínima de órfão', () => {
-    expect(CADENCIA_DA_VARREDURA_MS).toBeLessThan(IDADE_MINIMA_DE_ORFANDADE_MS)
+  it('a cadência da varredura não passa da idade mínima de órfão', () => {
+    expect(CADENCIA_DA_VARREDURA_MS).toBeLessThanOrEqual(IDADE_MINIMA_DE_ORFANDADE_MS)
+  })
+})
+
+describe('PR sem ninguém atrás é retomado após 3 horas, não 3 dias', () => {
+  it('a idade mínima de órfão é de 3 horas', () => {
+    expect(IDADE_MINIMA_DE_ORFANDADE_MS).toBe(3 * HORA)
+  })
+
+  it('(a) automação parada há 4h, sem sessão viva, com CI vermelha: retoma', () => {
+    const d = decidirAcaoNoPrOrfao(
+      situacao({ paradoHaMs: 4 * HORA, mergeable: true, verificacao: 'vermelha' })
+    )
+    expect(d.acao).toBe('retomar')
+    if (d.acao !== 'retomar') throw new Error('esperava retomar')
+    expect(d.causa).toBe('ci-vermelha')
+    expect(d.pedido).toContain('#356')
+  })
+
+  it('(b) parada há 2h continua ignorada, dizendo o limite em horas', () => {
+    const d = decidirAcaoNoPrOrfao(
+      situacao({ paradoHaMs: 2 * HORA, mergeable: true, verificacao: 'vermelha' })
+    )
+    expect(d.acao).toBe('ignorar')
+    expect(d.motivo).toContain('menos de 3 horas')
+  })
+
+  it('(c) sessão viva, PR de gente e Dependabot nunca são tocados aos 4h', () => {
+    const doDependabot = { autor: 'dependabot[bot]', labels: ['dependencies'], corpo: 'Bumps x.' }
+    const casos: PrOrfaoObservado[] = [
+      situacao({ paradoHaMs: 4 * HORA, verificacao: 'vermelha', temSessaoViva: true }),
+      situacao({
+        numero: 347,
+        paradoHaMs: 4 * HORA,
+        verificacao: 'vermelha',
+        sinais: { autor: AUTOR_PR_347, labels: LABELS_PR_347, corpo: CORPO_PR_347_DONO },
+      }),
+      situacao({
+        numero: 403,
+        paradoHaMs: 4 * HORA,
+        verificacao: 'vermelha',
+        sinais: doDependabot,
+      }),
+    ]
+    for (const caso of casos) {
+      expect(decidirAcaoNoPrOrfao(caso).acao).toBe('ignorar')
+    }
+  })
+
+  it('na varredura, o de 4h é retomado e o de 2h fica quieto', async () => {
+    const abertas: number[] = []
+    await rodar({
+      prs: [
+        prAberto({ numero: 356, paradoHaMs: 4 * HORA, verificacao: 'vermelha' }),
+        prAberto({ numero: 357, paradoHaMs: 2 * HORA, verificacao: 'vermelha' }),
+      ],
+      issueDoPr: () => 329,
+      abrirSessaoDeConserto: async ({ numeroDoPr }) => {
+        abertas.push(numeroDoPr)
+        return true
+      },
+    })
+    expect(abertas).toEqual([356])
+  })
+
+  it('o tempo parado é dito em horas abaixo de 2 dias e em dias a partir daí', () => {
+    expect(descreverTempoParado(3 * HORA)).toBe('3 horas')
+    expect(descreverTempoParado(HORA)).toBe('1 hora')
+    expect(descreverTempoParado(47 * HORA)).toBe('47 horas')
+    expect(descreverTempoParado(2 * DIA)).toBe('2 dias')
+    expect(descreverTempoParado(7 * DIA + 5 * HORA)).toBe('7 dias')
+    expect(descreverTempoParado(10 * 60 * 1000)).toBe('menos de 1 hora')
+  })
+
+  it('mesclável e sem reprovação: a escalada ao dono diz "há 5 horas", não "há 0 dias"', () => {
+    const d = decidirAcaoNoPrOrfao(
+      situacao({ paradoHaMs: 5 * HORA, mergeable: true, verificacao: 'verde' })
+    )
+    expect(d.acao).toBe('escalar')
+    expect(d.motivo).toContain('há 5 horas')
+    expect(d.motivo).not.toContain('0 dias')
   })
 })
 
@@ -438,12 +526,15 @@ async function rodar(over: {
   issueDoPr?: (n: number) => number | null
   issueAberta?: (n: number) => Promise<boolean>
   acoesAnteriores?: (n: number) => Promise<number>
+  tarefaJaDevolvidaAFila?: (issueNumber: number) => Promise<boolean>
   vagasLivres?: number
   abrirSessaoDeConserto?: VigiaDoPrDeps['abrirSessaoDeConserto']
   fecharPr?: VigiaDoPrDeps['fecharPr']
   avisarDono?: VigiaDoPrDeps['avisarDono']
   registrarDecisao?: VigiaDoPrDeps['registrarDecisao']
   teto?: number
+  foiAdiadoAntes?: VigiaDoPrDeps['foiAdiadoAntes']
+  registrarAdiadoPeloTeto?: VigiaDoPrDeps['registrarAdiadoPeloTeto']
 }): Promise<string> {
   return vigiarPrsOrfaos({
     teto: over.teto,
@@ -452,12 +543,17 @@ async function rodar(over: {
     issueDoPr: over.issueDoPr ?? (() => null),
     issueAberta: over.issueAberta ?? (async () => true),
     acoesAnteriores: over.acoesAnteriores ?? (async () => 0),
+    tarefaJaDevolvidaAFila: over.tarefaJaDevolvidaAFila ?? (async () => false),
     vagasLivres: over.vagasLivres ?? 15,
     pedirJulgamento: async () => {},
     abrirSessaoDeConserto: over.abrirSessaoDeConserto ?? (async () => true),
     fecharPr: over.fecharPr ?? (async () => true),
     avisarDono: over.avisarDono ?? (async () => true),
     registrarDecisao: over.registrarDecisao ?? (async () => undefined),
+    ...(over.foiAdiadoAntes !== undefined ? { foiAdiadoAntes: over.foiAdiadoAntes } : {}),
+    ...(over.registrarAdiadoPeloTeto !== undefined
+      ? { registrarAdiadoPeloTeto: over.registrarAdiadoPeloTeto }
+      : {}),
   })
 }
 
@@ -664,17 +760,25 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
   // seco contra o GitHub e o banco: a PRIMEIRA passada fecharia SEIS pull
   // requests (#314, #324, #330, #331, #335, #341). O teto por passada existe
   // para que a estreia seja visível antes de ser irreversível.
-  const seisParaFechar = [314, 324, 330, 331, 335, 341]
+  // Fila parada medida em 30/09/2026 (padrao-executores: 5 travados, gitorch
+  // idem, só 2 tratados a cada 6h): teto 6 e varredura de 3h. Oito PRs
+  // elegíveis = seis agem, dois ficam adiados para a passada seguinte.
+  const oitoParaFechar = [314, 324, 330, 331, 335, 341, 342, 345]
 
-  it('o teto por passada é MENOR que a população que a primeira passada fecharia', () => {
-    expect(TETO_DE_ACOES_POR_PASSADA).toBeLessThan(seisParaFechar.length)
+  it('o teto é 6 por passada e a varredura roda a cada 3h (fila parada medida em 30/09)', () => {
+    expect(TETO_DE_ACOES_POR_PASSADA).toBe(6)
+    expect(CADENCIA_DA_VARREDURA_MS).toBe(3 * 60 * 60 * 1000)
+  })
+
+  it('o teto por passada é MENOR que a população do teste e maior que zero', () => {
+    expect(TETO_DE_ACOES_POR_PASSADA).toBeLessThan(oitoParaFechar.length)
     expect(TETO_DE_ACOES_POR_PASSADA).toBeGreaterThan(0)
   })
 
-  it('com seis a fechar, só o teto sai — e o resto fica para a próxima passada', async () => {
+  it('com oito a fechar, só o teto (6) sai — e o resto fica para a próxima passada', async () => {
     const fechados: number[] = []
     const resumo = await rodar({
-      prs: seisParaFechar.map((numero) =>
+      prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
       issueDoPr: (n) => n - 10,
@@ -685,16 +789,16 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
       },
     })
     expect(fechados).toHaveLength(TETO_DE_ACOES_POR_PASSADA)
-    expect(fechados).toEqual(seisParaFechar.slice(0, TETO_DE_ACOES_POR_PASSADA))
+    expect(fechados).toEqual(oitoParaFechar.slice(0, TETO_DE_ACOES_POR_PASSADA))
     // O teto DIZ quando morde — teto silencioso é o defeito que ele conserta.
     expect(resumo).toContain('teto desta passada')
-    expect(resumo).toContain(String(seisParaFechar.length - TETO_DE_ACOES_POR_PASSADA))
+    expect(resumo).toContain(String(oitoParaFechar.length - TETO_DE_ACOES_POR_PASSADA))
   })
 
-  it('o teto conta TODA ação, não só o fechamento — seis escaladas não viram enxurrada', async () => {
+  it('o teto conta TODA ação, não só o fechamento — oito escaladas não viram enxurrada', async () => {
     const avisos: string[] = []
     await rodar({
-      prs: seisParaFechar.map((numero) =>
+      prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
       issueDoPr: () => null,
@@ -712,6 +816,58 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
       issueDoPr: () => 329,
     })
     expect(resumo).not.toContain('teto desta passada')
+  })
+
+  it('o adiado pelo teto tem prioridade na passada seguinte — nenhum PR passa fome (task fix-scheduler-tick-cabe)', async () => {
+    // Medido em produção (PR #3953): o teto corta a lista SEMPRE na mesma
+    // ordem, e a passada seguinte reprocessa os mesmos PRs na MESMA ordem —
+    // então quem foi adiado uma vez podia ser adiado para sempre se houvesse
+    // ≥ teto PRs "na frente" dele. `foiAdiadoAntes`/`registrarAdiadoPeloTeto`
+    // dão prioridade real ao que já ficou de fora.
+
+    // Passada 1: sem prioridade nenhuma — reproduz o teste "só o teto sai"
+    // acima, mas capturando explicitamente quem foi adiado desta vez.
+    const fechadosPassada1: number[] = []
+    const adiadosPassada1: number[] = []
+    await rodar({
+      prs: oitoParaFechar.map((numero) =>
+        prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
+      ),
+      issueDoPr: (n) => n - 10,
+      issueAberta: async () => false,
+      fecharPr: async ({ numero }) => {
+        fechadosPassada1.push(numero)
+        return true
+      },
+      registrarAdiadoPeloTeto: (numero) => {
+        adiadosPassada1.push(numero)
+      },
+    })
+    expect(fechadosPassada1).toEqual([314, 324, 330, 331, 335, 341])
+    expect(adiadosPassada1).toEqual([342, 345])
+
+    // Passada 2: MESMA lista de PRs (nenhum foi resolvido ainda — é a mesma
+    // consulta ao GitHub de antes), mas agora `foiAdiadoAntes` sabe quem
+    // ficou de fora na passada 1. Sem prioridade, o teto fecharia os mesmos
+    // seis da frente de novo (mesma ordem do `findMany`/GitHub) — 342/345
+    // nunca andariam. Com prioridade, quem foi adiado vai primeiro.
+    const adiadosDaPassada1 = new Set(adiadosPassada1)
+    const fechadosPassada2: number[] = []
+    const resumo2 = await rodar({
+      prs: oitoParaFechar.map((numero) =>
+        prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
+      ),
+      issueDoPr: (n) => n - 10,
+      issueAberta: async () => false,
+      fecharPr: async ({ numero }) => {
+        fechadosPassada2.push(numero)
+        return true
+      },
+      foiAdiadoAntes: (numero) => adiadosDaPassada1.has(numero),
+    })
+    expect(fechadosPassada2).toEqual([342, 345, 314, 324, 330, 331])
+    expect(fechadosPassada2).not.toEqual(fechadosPassada1)
+    expect(resumo2).toContain('teto desta passada')
   })
 })
 
@@ -952,18 +1108,21 @@ describe('ACHADO 1 — a ponta que nenhum teste de unidade alcança: o relógio'
     expect(i).toBeGreaterThan(-1)
     const j = scheduler.indexOf('const criada = await criarSessaoJules({', i)
     expect(j).toBeGreaterThan(i)
-    return scheduler.slice(j, scheduler.indexOf('})', j))
+    return scheduler.slice(j, scheduler.indexOf('onWarn:', j))
   }
 
-  it('a sessão de conserto nasce no ramo do PR — e NÃO na principal', () => {
+  it('a sessão de conserto nasce da principal — e NUNCA do ramo do PR antigo', () => {
     const chamada = corpoDeAbrirSessaoDeConsertoDoPr()
-    expect(chamada).toContain('startingBranch: args.branchDoPr')
-    expect(chamada).not.toContain("'main'")
-    expect(chamada).not.toContain('GITORCH_DEV_BASE_BRANCH')
+    // A base vem da fábrica pura (testada em vigia-do-pr-devolucao.test.ts).
+    expect(chamada).toContain('montarSessaoDeConsertoDoVigia')
+    expect(chamada).not.toContain('startingBranch: args.branchDoPr')
+    expect(chamada).not.toMatch(/startingBranch:\s*args\./)
   })
 
-  it('e devolve o trabalho no mesmo ramo, para não abrir um SEGUNDO pull request', () => {
-    expect(corpoDeAbrirSessaoDeConsertoDoPr()).toContain('workingBranch: args.branchDoPr')
+  it('NÃO manda workingBranch (medido: com ele a sessão nunca publicava) e usa o pedido de PR novo', () => {
+    const chamada = corpoDeAbrirSessaoDeConsertoDoPr()
+    expect(chamada).not.toContain('workingBranch')
+    expect(chamada).toContain('montarSessaoDeConsertoDoVigia')
   })
 
   it('o fechamento no relógio passa por `fecharPrDoVigia` — a ordem não é recopiada lá', () => {

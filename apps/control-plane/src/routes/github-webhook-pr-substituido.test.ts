@@ -32,6 +32,8 @@ describe('fecharPrsSubstituidosDaEntrega', () => {
       projectId: 'proj-1',
       sessionName: 'sessions/nova',
       numeroDoNovoPr: 3917,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'main', arquivosAlterados: 3 }),
       lerPr: async () => ({ aberto: true, ehDoDev: true }),
       comentariosDoPr: async () => [],
       comentarEFechar,
@@ -55,6 +57,8 @@ describe('fecharPrsSubstituidosDaEntrega', () => {
       projectId: 'proj-1',
       sessionName: 'sessions/nova',
       numeroDoNovoPr: 3917,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'main', arquivosAlterados: 3 }),
       lerPr: async () => ({ aberto: true, ehDoDev: true }),
       comentariosDoPr: async () => [],
       comentarEFechar,
@@ -74,6 +78,8 @@ describe('fecharPrsSubstituidosDaEntrega', () => {
       projectId: 'proj-1',
       sessionName: 'sessions/fantasma',
       numeroDoNovoPr: 1,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'main', arquivosAlterados: 3 }),
       lerPr: async () => ({ aberto: true, ehDoDev: true }),
       comentariosDoPr: async () => [],
       comentarEFechar,
@@ -93,8 +99,52 @@ describe('fecharPrsSubstituidosDaEntrega', () => {
       projectId: 'proj-1',
       sessionName: 'sessions/nova',
       numeroDoNovoPr: 3917,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'main', arquivosAlterados: 3 }),
       lerPr: async () => ({ aberto: true, ehDoDev: true }),
       comentariosDoPr: async () => [marcadorDePrSubstituido(3917)],
+      comentarEFechar,
+    })
+    expect(r).toEqual([])
+    expect(comentarEFechar).not.toHaveBeenCalled()
+  })
+
+  it('PR novo com base em ramo antigo (não é a principal) → o antigo NÃO fecha', async () => {
+    const { prisma } = prismaFalso({
+      sessaoNova: { sessionName: 'sessions/nova', issueNumber: 4044 },
+      linhasComPr: [{ pullRequestNumber: 154 }, { pullRequestNumber: 4100 }],
+    })
+    const comentarEFechar = vi.fn(async () => undefined)
+    const r = await fecharPrsSubstituidosDaEntrega({
+      prisma,
+      projectId: 'proj-1',
+      sessionName: 'sessions/nova',
+      numeroDoNovoPr: 4100,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'fix/combo-audit-suggestions-9', arquivosAlterados: 4 }),
+      lerPr: async () => ({ aberto: true, ehDoDev: true }),
+      comentariosDoPr: async () => [],
+      comentarEFechar,
+    })
+    expect(r).toEqual([])
+    expect(comentarEFechar).not.toHaveBeenCalled()
+  })
+
+  it('PR novo vazio (0 arquivos) → o antigo NÃO fecha', async () => {
+    const { prisma } = prismaFalso({
+      sessaoNova: { sessionName: 'sessions/nova', issueNumber: 4044 },
+      linhasComPr: [{ pullRequestNumber: 154 }, { pullRequestNumber: 4100 }],
+    })
+    const comentarEFechar = vi.fn(async () => undefined)
+    const r = await fecharPrsSubstituidosDaEntrega({
+      prisma,
+      projectId: 'proj-1',
+      sessionName: 'sessions/nova',
+      numeroDoNovoPr: 4100,
+      branchPadrao: 'main',
+      lerPrNovo: async () => ({ baseRef: 'main', arquivosAlterados: 0 }),
+      lerPr: async () => ({ aberto: true, ehDoDev: true }),
+      comentariosDoPr: async () => [],
       comentarEFechar,
     })
     expect(r).toEqual([])

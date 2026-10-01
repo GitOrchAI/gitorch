@@ -629,14 +629,14 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       fecharPr: async ({ repository, prNumber }) => {
         await gh('PATCH', `/repos/${repository}/pulls/${prNumber}`, { state: 'closed' })
       },
-      criarSessaoDev: async ({ repository, startingBranch, workingBranch, titulo, prompt }) =>
+      criarSessaoDev: async ({ repository, startingBranch, titulo, prompt }) =>
         criarSessaoJules({
           apiKey:
             (await resolverChaveDoDevDoProjeto(depsDaChaveDoDevParaRetomada, args.projectId)) ??
             undefined,
           repository,
+          // Base do projeto (retomarPrReprovado) — nunca o ramo do PR antigo.
           startingBranch,
-          workingBranch,
           titulo,
           prompt,
           onWarn: (m) => app.log.warn(`[Telegram] ${m}`),

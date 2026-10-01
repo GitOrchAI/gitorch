@@ -1,8 +1,9 @@
 import type { NextConfig } from 'next'
 
 const rawBasePath = process.env.NEXT_PUBLIC_BASE_PATH?.trim()
+// basePath starts with / but no trailing slash, or strictly undefined.
 const basePath =
-  rawBasePath && rawBasePath !== '' && rawBasePath !== '/'
+  rawBasePath !== undefined && rawBasePath !== '' && rawBasePath !== '/'
     ? (rawBasePath.startsWith('/') ? rawBasePath : `/${rawBasePath}`).replace(/\/+$/, '')
     : undefined
 

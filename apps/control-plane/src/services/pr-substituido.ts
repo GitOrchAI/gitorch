@@ -13,6 +13,11 @@
 // ADMINISTRA (aqui, fecha) o que ele mesmo encomendou — pull request de gente
 // nunca é tocado, mesmo que esteja aberto e pareça duplicado.
 //
+// O PR NOVO só substitui o antigo se de fato ENTREGA: base = branch padrão do
+// projeto e diff não vazio contra ela. Medido em 30/09: PRs novos de retomada
+// nasciam com base num ramo antigo (ou vazios) e, se o antigo fechasse mesmo
+// assim, a tarefa ficava sem nenhuma entrega viva na principal.
+//
 // PURO NA DECISÃO — sem rede — e a ação (ler o PR, comentar, fechar) é
 // injetada.
 
@@ -43,6 +48,25 @@ export function deveFecharComoSubstituido(pr: SinaisDoPrAntigo | null): boolean 
   return pr.aberto && pr.ehDoDev
 }
 
+/** O que basta saber do PR NOVO: onde ele mira e se tem alguma mudança. */
+export interface SinaisDoPrNovo {
+  /** `base.ref` do GitHub; `null` quando não veio. */
+  baseRef: string | null
+  /** `changed_files` do GitHub; `null` quando não veio. */
+  arquivosAlterados: number | null
+}
+
+/**
+ * O PR novo pode substituir o antigo? Só se mira a branch padrão do projeto E
+ * tem diff (>= 1 arquivo). Sinal ausente nunca autoriza: na dúvida, o antigo
+ * fica aberto.
+ */
+export function novoPrPodeSubstituir(novo: SinaisDoPrNovo | null, branchPadrao: string): boolean {
+  if (!novo) return false
+  if (novo.baseRef === null || novo.baseRef !== branchPadrao) return false
+  return novo.arquivosAlterados !== null && novo.arquivosAlterados > 0
+}
+
 export interface DepsDeSubstituicaoDePr {
   /**
    * Outros números de pull request que sessões desta MESMA issue já
@@ -52,6 +76,8 @@ export interface DepsDeSubstituicaoDePr {
     issueNumber: number
     numeroDoNovoPr: number
   }) => Promise<number[]>
+  /** Base e tamanho do PR NOVO — `null` quando não deu para ler. */
+  lerPrNovo: () => Promise<SinaisDoPrNovo | null>
   /** O que basta saber do PR antigo para decidir — `null` quando não deu para ler. */
   lerPr: (numeroDoPr: number) => Promise<SinaisDoPrAntigo | null>
   /** Comentários JÁ existentes no PR antigo — só para a idempotência. */
@@ -79,11 +105,32 @@ function comentarioDeSubstituicao(numeroDoNovoPr: number): string {
  * `vigiarPrsOrfaos`.
  */
 export async function fecharPrsSubstituidos(
-  args: { issueNumber: number; numeroDoNovoPr: number },
+  args: {
+    issueNumber: number
+    numeroDoNovoPr: number
+    /** A branch padrão do projeto — onde o PR novo precisa mirar. */
+    branchPadrao: string
+  },
   deps: DepsDeSubstituicaoDePr
 ): Promise<number[]> {
   const info = deps.onInfo ?? (() => undefined)
   const warn = deps.onWarn ?? (() => undefined)
+
+  let novo: SinaisDoPrNovo | null = null
+  try {
+    novo = await deps.lerPrNovo()
+  } catch (err) {
+    warn(
+      `[pr-substituido] não deu para ler o PR novo #${args.numeroDoNovoPr}: ${(err as Error).message}`
+    )
+  }
+  if (!novoPrPodeSubstituir(novo, args.branchPadrao)) {
+    info(
+      `[pr-substituido] PR novo #${args.numeroDoNovoPr} não mira a \`${args.branchPadrao}\` ` +
+        'ou não tem mudança — os PRs antigos da tarefa continuam abertos'
+    )
+    return []
+  }
 
   const candidatos = await deps.candidatosDaMesmaIssue({
     issueNumber: args.issueNumber,

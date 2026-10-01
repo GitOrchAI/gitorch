@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { encryptGuestCredential, decryptGuestCredential } from './credential-crypto.js'
 
 // Serializa/desserializa um diretório de credencial de motor (ex.: ~/.codex,
 // ~/.gemini, ~/.claude) para um blob string transportável. Permite capturar a
@@ -147,6 +148,16 @@ export async function restoreDirectory(
     // modo capturado (que pode ter vindo 0644 do host).
     await fs.writeFile(target, Buffer.from(entry.content, 'base64'), { mode: 0o600 })
   }
+}
+
+export function packGuestCredentials(tokens: Record<string, string>): string {
+  const payload = JSON.stringify(tokens)
+  return encryptGuestCredential(payload)
+}
+
+export function unpackGuestCredentials(envelope: string): Record<string, string> {
+  const payload = decryptGuestCredential(envelope)
+  return JSON.parse(payload) as Record<string, string>
 }
 
 export const revokedGuestCredentials = new Set<string>()

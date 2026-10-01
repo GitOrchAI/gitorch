@@ -15,6 +15,7 @@ function linha(over: Partial<LinhaParaCicloTerminal>): LinhaParaCicloTerminal {
     analysisDoneAt: null,
     devAccountId: null,
     answeredHash: null,
+    mergeCommitSha: null,
     ...over,
   }
 }
@@ -51,6 +52,55 @@ describe('executarCicloTerminal', () => {
     const r = await executarCicloTerminal(d)
     expect(fechadas).toEqual([])
     expect(r).toMatchObject({ fechadasConcluidas: 0, issuesRedelegadas: [], mantidas: 0 })
+  })
+
+  // Achado real 30/09 (Jardim #4000/PR 4044 e #3718/PR 4045): a mescla gravou
+  // mergeCommitSha, a vigia pré-merge parou de olhar a linha e o estado ficou
+  // IN_PROGRESS para sempre — o ciclo só olhava estado terminal.
+  it('IN_PROGRESS com mescla registrada e PR mesclado no GitHub → fecha como merged', async () => {
+    const lidos: number[] = []
+    const { d, fechadas } = deps({
+      linhas: [
+        linha({
+          sessionName: 'sessions/4000',
+          issueNumber: 4000,
+          state: 'IN_PROGRESS',
+          pullRequestNumber: 4044,
+          mergeCommitSha: '85ce2fb',
+        }),
+      ],
+    })
+    d.situacaoDoPr = async ({ numeroDoPr }) => {
+      lidos.push(numeroDoPr as number)
+      return 'mesclado'
+    }
+    const r = await executarCicloTerminal(d)
+    expect(lidos).toEqual([4044])
+    expect(fechadas).toEqual([{ sessionName: 'sessions/4000', motivo: 'merged' }])
+    expect(r.fechadasConcluidas).toBe(1)
+    expect(r.issuesRedelegadas).toEqual([])
+    expect(r.projetosComVagaLiberada).toEqual(['p1'])
+  })
+
+  it('IN_PROGRESS com mescla registrada mas o GitHub diz aberto → mantém e NÃO fecha', async () => {
+    const { d, fechadas } = deps({
+      linhas: [linha({ state: 'IN_PROGRESS', pullRequestNumber: 7, mergeCommitSha: 'abc' })],
+      pr: 'aberto-vivo',
+    })
+    const r = await executarCicloTerminal(d)
+    expect(fechadas).toEqual([])
+    expect(r.mantidas).toBe(1)
+  })
+
+  it('IN_PROGRESS SEM mescla registrada não gasta leitura no GitHub (custo por tique)', async () => {
+    const situacaoDoPr = vi.fn(async () => 'mesclado' as const)
+    const { d, fechadas } = deps({
+      linhas: [linha({ state: 'IN_PROGRESS', pullRequestNumber: 7, mergeCommitSha: null })],
+    })
+    d.situacaoDoPr = situacaoDoPr
+    await executarCicloTerminal(d)
+    expect(situacaoDoPr).not.toHaveBeenCalled()
+    expect(fechadas).toEqual([])
   })
 
   it('COMPLETED sem PR → fecha (dev-concluiu-sem-entrega), a issue volta à fila', async () => {
@@ -109,11 +159,11 @@ describe('executarCicloTerminal', () => {
 
   // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — CENÁRIO
   // EXATO de produção (03/09): sessão COMPLETED (estado remoto do Jules já
-  // sincronizado) + PR aberto-rejeitado-parado além das 12h, mas com marca
+  // sincronizado) + PR aberto-rejeitado-parado além da espera, mas com marca
   // `escalada:0:<hash>` em `answeredHash` — a dúvida ainda espera o dono.
   // Antes deste fix-up, `[ciclo-terminal] ... fechada (pr-rejeitado-sem-retomada)`
   // era exatamente isto.
-  it('COMPLETED + PR rejeitado além das 12h, mas com marca escalada → NÃO fecha (cenário exato de produção)', async () => {
+  it('COMPLETED + PR rejeitado além da espera, mas com marca escalada → NÃO fecha (cenário exato de produção)', async () => {
     const { d, fechadas } = deps({
       linhas: [linha({ issueNumber: 3787, answeredHash: 'escalada:0:abc123' })],
       pr: 'aberto-rejeitado-parado',
@@ -250,16 +300,31 @@ describe('executarCicloTerminal', () => {
       expect(r.issuesRetomadasNoPr).toEqual([])
     })
 
-    it('ainda dentro das 12h → mantém, nem chega a olhar o ramo', async () => {
-      const linhas = [linha({ issueNumber: 3884, pullRequestNumber: 3917 })]
+    it('terminal há 59min → mantém, nem chega a olhar o ramo', async () => {
+      const linhas = [linha({ issueNumber: 4038, pullRequestNumber: 4038 })]
       const { d, fechadas } = deps({ linhas, pr: 'aberto-rejeitado-parado' })
-      d.agora = new Date('2026-08-28T06:00:00Z') // poucas horas depois
+      d.agora = new Date('2026-08-28T00:59:00Z') // 59min depois de lastProgressAt
       const branchRetomavel = vi.fn(async () => 'branch-x')
       d.branchRetomavel = branchRetomavel
       const r = await executarCicloTerminal(d)
       expect(fechadas).toEqual([])
       expect(r.mantidas).toBe(1)
       expect(branchRetomavel).not.toHaveBeenCalled()
+    })
+
+    it('terminal há 61min (bem antes das 12h antigas) → retoma no mesmo PR', async () => {
+      const linhas = [linha({ issueNumber: 4038, pullRequestNumber: 4038 })]
+      const { d, fechadas } = deps({ linhas, pr: 'aberto-rejeitado-parado' })
+      d.agora = new Date('2026-08-28T01:01:00Z') // 61min depois de lastProgressAt
+      d.branchRetomavel = async () => 'jules-4038-branch'
+      const retomadas: number[] = []
+      d.retomarNoMesmoPr = async ({ linha: l }) => {
+        retomadas.push(l.issueNumber)
+      }
+      const r = await executarCicloTerminal(d)
+      expect(fechadas).toEqual([{ sessionName: 'sessions/x', motivo: 'pr-rejeitado-sem-retomada' }])
+      expect(retomadas).toEqual([4038])
+      expect(r.issuesRetomadasNoPr).toEqual([4038])
     })
   })
 })
