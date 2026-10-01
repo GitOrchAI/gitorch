@@ -301,7 +301,11 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
       const estadoBruto = consulta.estado
       const estadoNormalizado = estadoBruto.toUpperCase()
 
+      // QUEUED com `updateTime` novo NÃO é progresso: o fornecedor mexe nesse
+      // campo todo dia sem a sessão ter começado (#3718 ficou 15 dias em
+      // QUEUED). Só sair de QUEUED conta; senão o relógio de abandono nunca vence.
       const progrediu = Boolean(
+        estadoNormalizado !== 'QUEUED' &&
         consulta.ultimaAtualizacao &&
         (!linha.lastProgressAt ||
           new Date(consulta.ultimaAtualizacao).getTime() > linha.lastProgressAt.getTime())

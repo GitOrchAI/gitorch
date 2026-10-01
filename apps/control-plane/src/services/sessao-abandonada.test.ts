@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   sessoesAbandonadas,
   HORAS_SEM_PROGRESSO_ATE_ABANDONAR,
+  HORAS_EM_QUEUED_ATE_ABANDONAR,
   TETO_POR_VARREDURA,
   type LinhaParaJulgar,
 } from './sessao-abandonada.js'
@@ -110,7 +111,11 @@ describe('sessoesAbandonadas', () => {
   it.each(['QUEUED', 'IN_PROGRESS', 'AWAITING_USER_FEEDBACK'])(
     'estado "%s" ainda podia andar, então conta',
     (state) => {
-      const parada = linha({ state, lastProgressAt: new Date(AGORA.getTime() - 90 * HORA) })
+      const parada = linha({
+        state,
+        createdAt: new Date(AGORA.getTime() - 90 * HORA),
+        lastProgressAt: new Date(AGORA.getTime() - 90 * HORA),
+      })
       expect(sessoesAbandonadas({ linhas: [parada], agora: AGORA })).toHaveLength(1)
     }
   )
@@ -183,5 +188,54 @@ describe('sessoesAbandonadas', () => {
 
   it('lista vazia não quebra', () => {
     expect(sessoesAbandonadas({ linhas: [], agora: AGORA })).toEqual([])
+  })
+})
+
+// Caso real: a sessão da issue #3718 do Jardim ficou em QUEUED de 14/09 a
+// 29/09 sem nunca começar, e `lastProgressAt` seguia sendo atualizado todo dia.
+describe('sessoesAbandonadas — QUEUED conta pelo createdAt', () => {
+  const DIA = 24 * HORA
+
+  it('QUEUED criada há 15 dias com lastProgressAt de HOJE é abandonada', () => {
+    const presa = linha({
+      issueNumber: 3718,
+      sessionName: 'sessions/3718',
+      state: 'QUEUED',
+      createdAt: new Date(AGORA.getTime() - 15 * DIA),
+      lastProgressAt: new Date(AGORA.getTime() - 1 * HORA),
+    })
+    const achadas = sessoesAbandonadas({ linhas: [presa], agora: AGORA })
+    expect(achadas.map((l) => l.issueNumber)).toEqual([3718])
+  })
+
+  it('QUEUED há menos que o limite de QUEUED não é abandonada', () => {
+    const recente = linha({
+      state: 'QUEUED',
+      createdAt: new Date(AGORA.getTime() - (HORAS_EM_QUEUED_ATE_ABANDONAR - 1) * HORA),
+      lastProgressAt: new Date(AGORA.getTime() - 30 * 60 * 1000),
+    })
+    expect(sessoesAbandonadas({ linhas: [recente], agora: AGORA })).toEqual([])
+  })
+
+  it('o limite de QUEUED é de 6 horas', () => {
+    expect(HORAS_EM_QUEUED_ATE_ABANDONAR).toBe(6)
+  })
+
+  it('IN_PROGRESS velha mas com progresso recente continua intocada (só QUEUED usa createdAt)', () => {
+    const andando = linha({
+      state: 'IN_PROGRESS',
+      createdAt: new Date(AGORA.getTime() - 15 * DIA),
+      lastProgressAt: new Date(AGORA.getTime() - 1 * HORA),
+    })
+    expect(sessoesAbandonadas({ linhas: [andando], agora: AGORA })).toEqual([])
+  })
+
+  it('QUEUED sem createdAt cai no lastProgressAt: "não sei" nunca vira "está velha"', () => {
+    const semData = linha({
+      state: 'QUEUED',
+      createdAt: null,
+      lastProgressAt: new Date(AGORA.getTime() - 1 * HORA),
+    })
+    expect(sessoesAbandonadas({ linhas: [semData], agora: AGORA })).toEqual([])
   })
 })

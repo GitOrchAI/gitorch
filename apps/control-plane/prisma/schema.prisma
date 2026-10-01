@@ -974,10 +974,43 @@ model RepoItem {
   parecerTravadoAte   DateTime? @map("parecer_travado_ate")
   parecerTravaHeadSha String?   @map("parecer_trava_head_sha")
 
+  vinculos RepoItemVinculos?
+
   /// Uma ficha por (projeto, tipo, número) — upsert nunca duplica.
   @@unique([projectId, tipo, numero])
   @@index([projectId, tipo])
   @@map("repo_items")
+}
+
+/// Grafo completo de vínculos do RepoItem (issue #877): hierarquia (parent/
+/// sub-issues até a raiz), milestone, campos do Project v2 (Status, sprint,
+/// Peso...), labels/assignees, PRs ligados, sessões do Jules casadas, e —
+/// só para PR — o estado do CI e o último parecer do QA do GitOrch. Tudo
+/// JSON porque a forma vem inteira do GitHub (GraphQL) e não há consulta
+/// relacional sobre estes campos — só leitura em bloco por `tudoSobreOItem`.
+model RepoItemVinculos {
+  id         String   @id @default(cuid())
+  repoItemId String   @unique @map("repo_item_id")
+  repoItem   RepoItem @relation(fields: [repoItemId], references: [id], onDelete: Cascade)
+
+  hierarquia         Json?
+  milestone          Json?
+  projectFields      Json? @map("project_fields")
+  labelsAndAssignees Json? @map("labels_and_assignees")
+  prsLigados         Json? @map("prs_ligados")
+  /// Sessões do Jules casadas com este item — por issueNumber (tipo issue) ou
+  /// por pullRequestNumber/sufixo do branch (tipo pr). Ver grafo-de-vinculos.ts.
+  sessoesJules       Json? @map("sessoes_jules")
+  /// Só para PR: { state, headSha, resumo, submittedAt } do último parecer
+  /// nosso (marca `<!-- gitorch:qa -->`), ou null se ainda não julgamos.
+  qaReview           Json? @map("qa_review")
+  /// Só para PR: statusCheckRollup do head atual (SUCCESS/FAILURE/PENDING...).
+  statusCheckRollup  Json? @map("status_check_rollup")
+
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  @@map("repo_item_vinculos")
 }
 
 /// O pedido de desejo que ficou ESPERANDO o dono dizer a qual projeto ele

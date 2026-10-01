@@ -7,8 +7,8 @@ import { schedulerPlugin } from './scheduler.js'
 // a task original ebf7e69e) — os testes unitários de `executarCicloTerminal`
 // e `retomarPrReprovado` já provam a DECISÃO com deps falsos; nenhum arquivo
 // provava, pelo seam real do `schedulerPlugin`, que uma sessão COMPLETED com
-// pull request aberto-e-reprovado além das 12h de fato vira uma sessão NOVA
-// no MESMO PR — não uma linha morta esperando o vigia de PR órfão (3 dias
+// pull request aberto-e-reprovado além da espera (1h) de fato vira uma sessão NOVA
+// no MESMO PR — não uma linha morta esperando o vigia de PR órfão (3 horas
 // depois) ou uma redelegação que abriria um PR SEGUNDO do zero.
 //
 // Mesmo "real seam" dos irmãos: registra o `schedulerPlugin` de VERDADE,
@@ -42,7 +42,7 @@ function sessaoTerminalComPrRejeitado() {
     pullRequestNumber: PR_NUMBER,
     attempts: 1,
     nudges: 0,
-    // 13h sem avançar: passou das 12h de espera (HORAS_ATE_DESISTIR_DO_PR_REJEITADO).
+    // 13h sem avançar: muito além da espera de 1h (HORAS_ATE_DESISTIR_DO_PR_REJEITADO).
     lastProgressAt: new Date(Date.now() - 13 * 60 * 60 * 1000),
     stateCheckedAt: null,
     reworkNoticePending: null,
@@ -130,6 +130,7 @@ const ENV_KEYS = [
   'GITORCH_TELEGRAM_BOT_TOKEN',
   'TELEGRAM_BOT_TOKEN',
   'GITORCH_RETOMADAS_POR_PR',
+  'GITORCH_DEV_BASE_BRANCH',
 ]
 
 describe('retomada no mesmo PR — wiring do ciclo terminal (real seam, C11/L4-T5)', () => {
@@ -214,13 +215,16 @@ describe('retomada no mesmo PR — wiring do ciclo terminal (real seam, C11/L4-T
       { timeout: 3000, interval: 10 }
     )
 
-    // A sessão nova nasce NA MESMA branch do PR reprovado — startingBranch E
-    // workingBranch, nunca deixando o Jules escolher um ramo novo (que
-    // criaria um PR NOVO do zero, o próprio defeito medido em #3884).
+    // A sessão nova PARTE da main (startingBranch) e NÃO manda workingBranch:
+    // com esse campo, 62 retomadas em 14 dias nunca publicaram. E com
+    // startingBranch = ramo do PR antigo (30/09) o PR novo nascia com BASE nesse
+    // ramo, nunca na main. O ramo antigo só vai no prompt.
     const sourceContext = chamadasAoJules[0]!.body['sourceContext'] as Record<string, unknown>
-    expect(sourceContext['workingBranch']).toBe(BRANCH_DO_PR)
+    expect('workingBranch' in sourceContext).toBe(false)
+    expect(String(chamadasAoJules[0]!.body['prompt'])).toMatch(/pull request contra a `main`/)
     const githubCtx = sourceContext['githubRepoContext'] as Record<string, unknown>
-    expect(githubCtx['startingBranch']).toBe(BRANCH_DO_PR)
+    expect(githubCtx['startingBranch']).toBe('main')
+    expect(String(chamadasAoJules[0]!.body['prompt'])).toContain(BRANCH_DO_PR)
 
     // A linha antiga fecha (a vaga da conta precisa voltar) — isto É
     // esperado e intencional, não o defeito. O que prova que a issue NÃO
