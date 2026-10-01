@@ -118,9 +118,8 @@ export const ssePlugin: FastifyPluginAsync = async (app) => {
         lastHeartbeat: Date.now(),
       }
       app.sseClients.set(clientId, client)
-
-      request.raw.on('close', () => app.sseClients.delete(clientId))
-      request.raw.on('end', () => app.sseClients.delete(clientId))
+      ;(request.raw as NodeJS.EventEmitter).on('close', () => app.sseClients.delete(clientId))
+      ;(request.raw as NodeJS.EventEmitter).on('end', () => app.sseClients.delete(clientId))
 
       // Recupera a trilha histórica já consolidada e envia o playback inicial imediatamente
       const history = await getMissionExecutionHistory(missionId)
@@ -137,8 +136,8 @@ export const ssePlugin: FastifyPluginAsync = async (app) => {
           const cleanup = () => {
             cleanupDone = true
           }
-          request.raw.on('close', cleanup)
-          request.raw.on('end', cleanup)
+          ;(request.raw as NodeJS.EventEmitter).on('close', cleanup)
+          ;(request.raw as NodeJS.EventEmitter).on('end', cleanup)
 
           while (!cleanupDone) {
             await new Promise((resolve) => setTimeout(resolve, heartbeatInterval))
@@ -184,9 +183,8 @@ export const ssePlugin: FastifyPluginAsync = async (app) => {
           // Clean up the session if the connection closes before moderation
           await app.redis.del(`waiting_room:${token}`)
         }
-
-        request.raw.on('close', cleanup)
-        request.raw.on('end', cleanup)
+        ;(request.raw as NodeJS.EventEmitter).on('close', cleanup)
+        ;(request.raw as NodeJS.EventEmitter).on('end', cleanup)
 
         try {
           while (!cleanupDone) {

@@ -274,10 +274,10 @@ function defaultCodexExecRunner(
       // Achou a quota (vem cedo) OU já bufferizou o teto — em ambos, para.
       if (buf.includes(CODEX_RATE_LIMITS_MARKER) || buf.length >= CODEX_TRACE_MAX_BYTES) finish()
     }
-    child.stdout.on('data', onData)
-    child.stderr.on('data', onData)
-    child.on('error', finish)
-    child.on('exit', finish)
+    ;(child.stdout as NodeJS.EventEmitter).on('data', onData)
+    ;(child.stderr as NodeJS.EventEmitter).on('data', onData)
+    ;(child as NodeJS.EventEmitter).on('error', finish)
+    ;(child as NodeJS.EventEmitter).on('exit', finish)
     const timer = setTimeout(finish, CODEX_WARMUP_TIMEOUT_MS)
   })
 }

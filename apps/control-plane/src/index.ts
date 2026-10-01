@@ -203,8 +203,8 @@ export async function buildApp(): Promise<FastifyInstance> {
           }
         }
       }
-    } catch (e: any) {
-      if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
+    } catch (e: unknown) {
+      if ((e as Error & { code?: string }).code === 'FST_REQ_FILE_TOO_LARGE') {
         return reply.code(400).send({ error: 'File size limit exceeded' })
       }
       throw e
