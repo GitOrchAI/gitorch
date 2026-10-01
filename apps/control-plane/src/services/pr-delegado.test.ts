@@ -141,9 +141,19 @@ describe('ehPrDelegado — participante do repositório', () => {
         delegado: true,
         issueNumber: null,
         origem: 'participante',
+        associacao,
       })
     }
   )
+
+  it('a associação sai normalizada em maiúscula, para quem decide a mescla comparar sem surpresa', () => {
+    expect(ehPrDelegado({ ...base, authorAssociation: 'owner' })).toEqual({
+      delegado: true,
+      issueNumber: null,
+      origem: 'participante',
+      associacao: 'OWNER',
+    })
+  })
 
   it.each(['CONTRIBUTOR', 'NONE', 'FIRST_TIME_CONTRIBUTOR', 'MANNEQUIN', '', undefined])(
     'PR de %s continua NÃO delegado',

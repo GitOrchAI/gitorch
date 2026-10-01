@@ -16,14 +16,31 @@
 // Conta de aplicativo (`type: "Bot"`) também fica fora: o vigia já trata
 // dependabot e afins à parte.
 
-const ASSOCIACOES_DE_PARTICIPANTE: ReadonlySet<string> = new Set([
-  'OWNER',
-  'MEMBER',
-  'COLLABORATOR',
-])
+export type AssociacaoDeParticipante = 'OWNER' | 'MEMBER' | 'COLLABORATOR'
+
+/**
+ * A associação normalizada (maiúscula) quando o autor é participante; `null`
+ * quando não é. Quem decide o que cada associação PODE fazer (por exemplo,
+ * mesclar sozinho) compara este valor, nunca texto do PR.
+ */
+export function associacaoDeParticipante(
+  authorAssociation: unknown,
+  tipoDoAutor?: unknown
+): AssociacaoDeParticipante | null {
+  if (typeof tipoDoAutor === 'string' && tipoDoAutor.toLowerCase() === 'bot') return null
+  if (typeof authorAssociation !== 'string') return null
+  switch (authorAssociation.toUpperCase()) {
+    case 'OWNER':
+      return 'OWNER'
+    case 'MEMBER':
+      return 'MEMBER'
+    case 'COLLABORATOR':
+      return 'COLLABORATOR'
+    default:
+      return null
+  }
+}
 
 export function ehParticipanteDoRepo(authorAssociation: unknown, tipoDoAutor?: unknown): boolean {
-  if (typeof tipoDoAutor === 'string' && tipoDoAutor.toLowerCase() === 'bot') return false
-  if (typeof authorAssociation !== 'string') return false
-  return ASSOCIACOES_DE_PARTICIPANTE.has(authorAssociation.toUpperCase())
+  return associacaoDeParticipante(authorAssociation, tipoDoAutor) !== null
 }

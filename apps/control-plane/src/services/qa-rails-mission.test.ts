@@ -5104,8 +5104,29 @@ describe('PR de participante do repositório', () => {
     return { r, posted }
   }
 
-  it.each(['OWNER', 'MEMBER', 'COLLABORATOR'])(
-    '%s: o QA julga e mescla com as travas de sempre, SEM linha de sessão',
+  it('OWNER sem linha de sessão: o QA julga e mescla com as travas de sempre', async () => {
+    const aoMesclar = vi.fn()
+    const { r, posted } = await julgar(
+      [{ number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER', userType: 'User' }],
+      { sessoes: [], aoMesclar }
+    )
+    expect(r.exitCode).toBe(0)
+    expect(r.noOp).toBeUndefined()
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(posted.merges).toEqual([
+      { number: 120, body: { merge_method: 'squash', sha: 'abc123' } },
+    ])
+    expect(r.output).toContain('Merge: merged')
+    expect(r.podeMesclar).toBe(true)
+    // Não há sessão de dev atrás deste PR: o pós-merge de sessão não roda.
+    expect(aoMesclar).not.toHaveBeenCalled()
+  })
+
+  // Repositório público + diff de terceiro lido por LLM: sem humano, não se
+  // mescla o PR de quem não é o dono. O parecer sai; a mescla é do dono.
+  it.each(['MEMBER', 'COLLABORATOR'])(
+    '%s: QA aprova com CI verde e base na principal, mas o produto NÃO mescla e diz que a mescla é do dono',
     async (associacao) => {
       const aoMesclar = vi.fn()
       const { r, posted } = await julgar(
@@ -5120,22 +5141,52 @@ describe('PR de participante do repositório', () => {
         { sessoes: [], aoMesclar }
       )
       expect(r.exitCode).toBe(0)
-      expect(r.noOp).toBeUndefined()
       expect(posted.reviews).toHaveLength(1)
       expect(posted.reviews[0]!.event).toBe('APPROVE')
-      expect(posted.merges).toEqual([
-        { number: 120, body: { merge_method: 'squash', sha: 'abc123' } },
-      ])
-      expect(r.output).toContain('Merge: merged')
-      expect(r.podeMesclar).toBe(true)
-      // Não há sessão de dev atrás deste PR: o pós-merge de sessão não roda.
+      expect(posted.merges).toHaveLength(0)
       expect(aoMesclar).not.toHaveBeenCalled()
+      expect(r.podeMesclar).toBe(false)
+      expect(r.output).not.toContain('Merge: merged')
+      const corpo = posted.reviews[0]!.body ?? ''
+      expect(corpo).toContain('aprovado pelo QA')
+      expect(corpo).toContain('mescla é do dono do repositório')
+      expect(corpo).not.toContain('O GitOrch só mescla sozinho')
     }
   )
 
+  it('MEMBER aprovado e não mesclado: o ciclo seguinte não repete parecer nem tentativa', async () => {
+    const ciclo1 = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'MEMBER' }],
+      { sessoes: [] }
+    )
+    const corpo = ciclo1.posted.reviews[0]!.body as string
+    const ciclo2 = await julgar(
+      [
+        {
+          number: 120,
+          user: 'colega-da-equipe',
+          authorAssociation: 'MEMBER',
+          existingReviews: [{ body: corpo, commit_id: 'abc123' }],
+        },
+      ],
+      { sessoes: [] }
+    )
+    expect(ciclo2.r.noOp).toBe(true)
+    expect(ciclo2.posted.reviews).toHaveLength(0)
+    expect(ciclo2.posted.merges).toHaveLength(0)
+  })
+
+  it('o PR do dev delegado (linha de sessão) de um COLLABORATOR continua mesclado como sempre', async () => {
+    const { posted } = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'COLLABORATOR' }],
+      { sessoes: [linha({ issueNumber: 50, pullRequestNumber: 120, sessionName: 'sessions/x' })] }
+    )
+    expect(posted.merges).toHaveLength(1)
+  })
+
   it('o parecer ao participante sai em português claro e diz o que o produto faz', async () => {
     const { posted } = await julgar([
-      { number: 120, user: 'colega-da-equipe', authorAssociation: 'COLLABORATOR' },
+      { number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER' },
     ])
     const corpo = posted.reviews[0]!.body ?? ''
     expect(corpo).toContain('participante do repositório')

@@ -89,10 +89,21 @@ const JULES_MARKER = MARCA_DO_PARECER
  * quem é, o que o produto vai (ou não) fazer, e que o PR continua sendo dele —
  * o produto não abre sessão de retrabalho nem mexe na branch da pessoa.
  */
-function avisoAoParticipante(veredito: 'approve' | 'request_changes'): string {
+function avisoAoParticipante(
+  veredito: 'approve' | 'request_changes',
+  /** O produto pode mesclar este PR sozinho (só a conta do dono)? */
+  mesclaSozinho: boolean
+): string {
   const abertura =
     'GitOrch analisou este PR porque você é participante do repositório (o GitHub informa ' +
     'a sua relação com ele; texto do PR não conta).'
+  if (veredito === 'approve' && !mesclaSozinho) {
+    return (
+      `${abertura} Parecer: aprovado pelo QA neste commit. A mescla é do dono do repositório: ` +
+      'o GitOrch não mescla sozinho PR de participante que não seja a conta do dono. Nada mais ' +
+      'é preciso da sua parte; um commit novo reabre o julgamento.'
+    )
+  }
   if (veredito === 'approve') {
     return (
       `${abertura} Parecer: aprovado neste commit. O GitOrch só mescla sozinho quando TODAS as ` +
@@ -537,6 +548,12 @@ export async function runQaMissionViaRails(
   let delegado = false
   /** O PR escolhido é de um participante do repositório (sem sessão do dev por trás). */
   let participante = false
+  /**
+   * Quem o GitHub diz que é o participante. A mescla automática de PR de
+   * participante é só da conta do dono: o diff de terceiro é lido por um modelo
+   * (risco de injeção) e uma conta de colaborador pode estar comprometida.
+   */
+  let associacaoDoParticipante: string | null = null
   // Tarefa 10: true quando o PR escolhido já tinha uma aprovação NOSSA
   // marcada NESTE MESMO head — ou seja, esta passagem está RETOMANDO uma
   // mescla que falhou antes, não abrindo julgamento novo. É o que diferencia
@@ -1127,6 +1144,7 @@ export async function runQaMissionViaRails(
     issueDaEntrega = veredito.issueNumber
     delegado = veredito.delegado
     participante = deParticipante
+    associacaoDoParticipante = veredito.associacao ?? null
     // Inclui a entrada pela reprovação do portão. Hoje `mergeFailures` está
     // garantidamente em zero quando esse caminho dispara — a marca do portão
     // só existe quando nenhum merge chegou a ser tentado naquele head —, então
@@ -1414,7 +1432,7 @@ export async function runQaMissionViaRails(
       'REQUEST_CHANGES',
       `${JULES_MARKER}\n${MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA}\n` +
         'GitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.' +
-        (participante ? `\n\n${avisoAoParticipante('request_changes')}` : '')
+        (participante ? `\n\n${avisoAoParticipante('request_changes', false)}` : '')
     )
 
     const textoParaODev = textoDeEntregaSemConteudo(target.number)
@@ -1735,6 +1753,11 @@ export async function runQaMissionViaRails(
   // após buscar `pr` — o corte de entrega sem conteúdo (L5-T1) precisa dela
   // antes de o motor rodar, então subiu de posição; a lógica é exatamente a
   // mesma descrita aqui.
+  // Mescla automática: o PR delegado de verdade (como sempre) e o PR de
+  // participante SÓ quando o GitHub diz que o autor é o dono (OWNER). MEMBER e
+  // COLLABORATOR recebem o parecer, mas a mescla fica com o dono.
+  const podeMesclarEste = delegado && (!participante || associacaoDoParticipante === 'OWNER')
+
   const reviewEvent = !delegado
     ? 'COMMENT'
     : effectiveVerdict === 'approve'
@@ -1755,7 +1778,7 @@ export async function runQaMissionViaRails(
   // que lê a review no GitHub precisa saber, sempre, que isto é uma opinião
   // e não um convite a clicar em "merge" esperando o produto terminar.
   const avisoDeNaoMesclar = participante
-    ? `\n\n${avisoAoParticipante(effectiveVerdict)}`
+    ? `\n\n${avisoAoParticipante(effectiveVerdict, podeMesclarEste)}`
     : delegado
       ? ''
       : `\n\n${MARCA_SEM_PODER_DE_MESCLAR}\n` +
@@ -1779,7 +1802,7 @@ export async function runQaMissionViaRails(
     // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
     // antes dos três de sempre — sem prova de delegação, a missão nem tenta
     // mesclar. Uma entrega de humano aprovada pelo QA fica só com o parecer.
-    if (delegado) {
+    if (podeMesclarEste) {
       // Task 9: `shaAtual` tem de ser lido AGORA — nunca herdado de `pr`
       // (passo 2, minutos atrás, antes do motor rodar). Reusar `pr.head.sha`
       // aqui compararia o sha revisado contra ele mesmo e o portão não
@@ -1820,7 +1843,7 @@ export async function runQaMissionViaRails(
         ciState,
         vereditoDoQa: effectiveVerdict,
         diffTruncado: truncado,
-        delegado,
+        delegado: podeMesclarEste,
         baseDoPr: baseDoPrDe(entregaAgora),
         branchPadrao,
         shaRevisado: pr.head?.sha ?? '',
@@ -2225,7 +2248,9 @@ export async function runQaMissionViaRails(
   // grava como memória do projeto — declarada, nunca engolida.
   const mergeNote = resultadoDoMerge
     ? ` Merge: ${resultadoDoMerge.mesclado ? 'merged' : 'blocked'} (${resultadoDoMerge.motivo}).`
-    : ''
+    : participante && effectiveVerdict === 'approve' && !podeMesclarEste
+      ? ' Merge: left to the repository owner (participant PR, not the owner account).'
+      : ''
   const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}${mergeNote}`
   return {
     exitCode: 0,
@@ -2233,6 +2258,6 @@ export async function runQaMissionViaRails(
     stderr: '',
     // Task 8: espelha `delegado`, independente do veredito — a entrega foi
     // julgada de qualquer forma; só quem o produto encomendou pode mesclar.
-    podeMesclar: delegado,
+    podeMesclar: podeMesclarEste,
   }
 }

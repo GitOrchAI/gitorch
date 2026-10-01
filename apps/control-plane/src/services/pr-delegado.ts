@@ -11,7 +11,7 @@
 // desta mudança e o dia em que o serviço externo mudar de comportamento.
 
 import type { LinhaDeSessao } from './dev-session-store.js'
-import { ehParticipanteDoRepo } from './participante-do-repo.js'
+import { associacaoDeParticipante, type AssociacaoDeParticipante } from './participante-do-repo.js'
 
 export interface ResultadoPrDelegado {
   delegado: boolean
@@ -23,6 +23,8 @@ export interface ResultadoPrDelegado {
    * pode assumir sessão, issue de origem nem o dev para retrabalhar.
    */
   origem?: 'participante'
+  /** Só com `origem: 'participante'`: a associação que o GitHub informou (decide quem pode mesclar). */
+  associacao?: AssociacaoDeParticipante
 }
 
 export function ehPrDelegado(args: {
@@ -78,8 +80,9 @@ export function ehPrDelegado(args: {
   // texto do corpo ou login não contam (repositório público). É o ÚLTIMO recuo
   // de propósito: qualquer prova de delegação de verdade (linha, jules, ligação)
   // ganha e mantém a issue de origem.
-  if (ehParticipanteDoRepo(args.authorAssociation, args.tipoDoAutor)) {
-    return { delegado: true, issueNumber: null, origem: 'participante' }
+  const associacao = associacaoDeParticipante(args.authorAssociation, args.tipoDoAutor)
+  if (associacao !== null) {
+    return { delegado: true, issueNumber: null, origem: 'participante', associacao }
   }
 
   return { delegado: false, issueNumber: null }
