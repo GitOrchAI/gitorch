@@ -453,6 +453,9 @@ importers:
 
   packages/pipeline-core:
     dependencies:
+      yaml:
+        specifier: ^2.3.4
+        version: 2.9.1
       zod:
         specifier: ^3.22.4
         version: 3.25.76
