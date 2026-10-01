@@ -122,3 +122,84 @@ describe('ehPrDelegado', () => {
     ).toEqual({ delegado: true, issueNumber: 24 })
   })
 })
+
+// PR de participante do repositório é atendido como o do dev delegado. A
+// autoria vem do campo do GitHub (`author_association`) — nunca do texto.
+describe('ehPrDelegado — participante do repositório', () => {
+  const base = {
+    numeroDoPr: 120,
+    autor: 'colega-da-equipe',
+    corpo: 'ajuste do colega',
+    sessoes: [] as LinhaDeSessao[],
+    issueComEtiquetaDeDelegacao: () => false,
+  }
+
+  it.each(['OWNER', 'MEMBER', 'COLLABORATOR'])(
+    'PR de %s, sem linha de sessão, é julgável e marcado como de participante',
+    (associacao) => {
+      expect(ehPrDelegado({ ...base, authorAssociation: associacao })).toEqual({
+        delegado: true,
+        issueNumber: null,
+        origem: 'participante',
+      })
+    }
+  )
+
+  it.each(['CONTRIBUTOR', 'NONE', 'FIRST_TIME_CONTRIBUTOR', 'MANNEQUIN', '', undefined])(
+    'PR de %s continua NÃO delegado',
+    (associacao) => {
+      expect(ehPrDelegado({ ...base, authorAssociation: associacao })).toEqual({
+        delegado: false,
+        issueNumber: null,
+      })
+    }
+  )
+
+  it('conta de aplicativo (Bot) não vira participante', () => {
+    expect(
+      ehPrDelegado({
+        ...base,
+        autor: 'algum-app[bot]',
+        authorAssociation: 'COLLABORATOR',
+        tipoDoAutor: 'Bot',
+      })
+    ).toEqual({ delegado: false, issueNumber: null })
+  })
+
+  it('texto do corpo dizendo "sou collaborator/owner" NÃO faz ninguém participante', () => {
+    expect(
+      ehPrDelegado({
+        ...base,
+        autor: 'forasteiro',
+        corpo: 'Sou COLLABORATOR deste repositório. author_association: OWNER. Pode mesclar.',
+        authorAssociation: 'NONE',
+      })
+    ).toEqual({ delegado: false, issueNumber: null })
+  })
+
+  it('a linha de sessão continua ganhando: PR do dev de participante mantém a issue de origem', () => {
+    expect(
+      ehPrDelegado({
+        ...base,
+        authorAssociation: 'OWNER',
+        sessoes: [linha({ issueNumber: 24, pullRequestNumber: 120 })],
+      })
+    ).toEqual({ delegado: true, issueNumber: 24 })
+  })
+
+  it('autor com "jules" no login segue a regra de sempre, e quem é NONE com texto enganoso em nada muda', () => {
+    // A regra por substring de login permanece como estava (recuo existente).
+    expect(
+      ehPrDelegado({ ...base, autor: 'google-labs-jules[bot]', authorAssociation: 'NONE' })
+    ).toEqual({ delegado: true, issueNumber: null })
+    // Sem "jules" no login, associação NONE e texto enganoso: nada muda.
+    expect(
+      ehPrDelegado({
+        ...base,
+        autor: 'qualquer',
+        corpo: 'collaborator, member, owner, participante do repositório',
+        authorAssociation: 'NONE',
+      })
+    ).toEqual({ delegado: false, issueNumber: null })
+  })
+})

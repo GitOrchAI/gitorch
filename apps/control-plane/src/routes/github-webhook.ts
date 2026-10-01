@@ -25,6 +25,7 @@ import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/de
 import { fecharPrsSubstituidos, type SinaisDoPrNovo } from '../services/pr-substituido.js'
 import { baseDoPrDe, branchPadraoDoRepositorio, campoNumero } from '../services/base-do-dev.js'
 import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
+import { ehParticipanteDoRepo } from '../services/participante-do-repo.js'
 import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 
@@ -47,6 +48,8 @@ const syncEngine = new GitHubSyncEngine()
 
 // Label que marca uma issue como "desejo" (wishlist) para o RA analisar.
 const WISHLIST_LABEL = 'wishlist'
+// Rótulo que marca a issue como tarefa delegável (fluxo normal do PO/SM).
+const TASK_LABEL = 'gitorch:task'
 
 // Decide qual missão de agente um evento do GitHub deve acordar (o "sistema
 // nervoso" do loop). Retorna o papel a disparar, ou null se o evento não é um
@@ -55,8 +58,21 @@ export function missionRoleForEvent(
   event: string | undefined,
   payload: {
     action?: string
-    issue?: { labels?: Array<{ name?: string }> }
-    pull_request?: { user?: { login?: string } }
+    // `title`/`body` existem no aviso, mas NUNCA entram na decisão de quem é
+    // participante: só `author_association` (do GitHub) e `user.type`.
+    issue?: {
+      labels?: Array<{ name?: string }>
+      author_association?: string | undefined
+      user?: { login?: string; type?: string }
+      title?: string
+      body?: string
+    }
+    pull_request?: {
+      user?: { login?: string; type?: string }
+      author_association?: string | undefined
+      title?: string
+      body?: string
+    }
     sender?: { login?: string }
     check_suite?: { pull_requests?: Array<{ number?: number }> }
     workflow_run?: { pull_requests?: Array<{ number?: number }> }
@@ -66,11 +82,31 @@ export function missionRoleForEvent(
   if (event === 'issues' && payload.action === 'opened') {
     const labels = (payload.issue?.labels ?? []).map((l) => (l.name ?? '').toLowerCase())
     if (labels.includes(WISHLIST_LABEL)) return 'ra'
+    // Issue aberta por PARTICIPANTE do repositório (OWNER/MEMBER/COLLABORATOR,
+    // segundo o `author_association` do GITHUB — nunca o texto da issue, que é
+    // público e qualquer um escreve) -> o RA acorda. Com o rótulo de tarefa a
+    // issue já segue a delegação normal (PO/SM): aqui não nasce caminho novo.
+    if (
+      !labels.includes(TASK_LABEL) &&
+      ehParticipanteDoRepo(payload.issue?.author_association, payload.issue?.user?.type)
+    ) {
+      return 'ra'
+    }
   }
-  // PR recém-aberto pelo Jules -> o QA acorda e julga.
+  // PR recém-aberto pelo Jules -> o QA acorda e julga. O de PARTICIPANTE do
+  // repositório (mesma regra de autoria acima) também: o login com "jules" é o
+  // recuo antigo, e o `author_association` é o que o GitHub afirma.
   if (event === 'pull_request' && payload.action === 'opened') {
     const author = (payload.pull_request?.user?.login ?? payload.sender?.login ?? '').toLowerCase()
     if (author.includes('jules')) return 'qa'
+    if (
+      ehParticipanteDoRepo(
+        payload.pull_request?.author_association,
+        payload.pull_request?.user?.type
+      )
+    ) {
+      return 'qa'
+    }
   }
   // CI concluiu (passou ou falhou) -> o QA acorda para julgar o PR.
   //
