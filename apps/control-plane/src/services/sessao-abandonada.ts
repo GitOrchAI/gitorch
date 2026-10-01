@@ -28,6 +28,18 @@ import { ehMarcaDeEscalada } from './pergunta-sem-resposta.js'
 export const HORAS_SEM_PROGRESSO_ATE_ABANDONAR = 12
 
 /**
+ * Sessão em QUEUED (nunca começou) é dada como abandonada depois deste tempo,
+ * contado desde a CRIAÇÃO da linha.
+ *
+ * Caso real: a sessão da issue #3718 do Jardim ficou em QUEUED de 14/09 a
+ * 29/09 (15 dias) sem nunca começar, enquanto o fornecedor mexia no
+ * `updateTime` todo dia. Ela ocupava vaga e reservava os arquivos declarados,
+ * travando oito tarefas prontas. Seis horas porque quem entra na fila do dev
+ * costuma começar em minutos; passar disso é fila morta, não lentidão.
+ */
+export const HORAS_EM_QUEUED_ATE_ABANDONAR = 6
+
+/**
  * Teto por varredura. Uma correção de relógio, ou a primeira varredura depois
  * de um acúmulo, não pode fechar tudo de uma vez sem ninguém ver — o mesmo
  * cuidado que a drenagem de vagas já tem.
@@ -95,9 +107,11 @@ export function sessoesAbandonadas(args: {
   linhas: LinhaParaJulgar[]
   agora: Date
   horasSemProgresso?: number
+  horasEmQueued?: number
   teto?: number
 }): LinhaParaJulgar[] {
   const limiteMs = (args.horasSemProgresso ?? HORAS_SEM_PROGRESSO_ATE_ABANDONAR) * 60 * 60 * 1000
+  const limiteQueuedMs = (args.horasEmQueued ?? HORAS_EM_QUEUED_ATE_ABANDONAR) * 60 * 60 * 1000
   const teto = args.teto ?? TETO_POR_VARREDURA
 
   const paradas: Array<{ linha: LinhaParaJulgar; paradaHa: number }> = []
@@ -113,7 +127,11 @@ export function sessoesAbandonadas(args: {
     // AWAITING sem marca de escalada continua com a regra de 12h de sempre.
     if (ehDuvidaEscaladaAoDono(linha)) continue
 
-    const ultimoSinal = linha.lastProgressAt ?? linha.createdAt
+    // QUEUED nunca começou: o relógio vale desde a criação, não desde o último
+    // sinal (o fornecedor mexe no `updateTime` sem a sessão andar). Sem
+    // `createdAt` cai no comportamento de sempre.
+    const emQueued = linha.state === 'QUEUED' && linha.createdAt !== null
+    const ultimoSinal = emQueued ? linha.createdAt : (linha.lastProgressAt ?? linha.createdAt)
     // Sem NENHUMA data não dá para dizer que está parada. "Não sei" nunca pode
     // virar "está velha": fechar por ignorância jogaria fora o trabalho do dev.
     if (!ultimoSinal) continue
@@ -123,7 +141,7 @@ export function sessoesAbandonadas(args: {
     const paradaHa = args.agora.getTime() - quando
     // Relógio adiantado no registro produz diferença negativa. Isso é
     // "acabou de acontecer", nunca "muito tempo atrás".
-    if (paradaHa <= limiteMs) continue
+    if (paradaHa <= (emQueued ? limiteQueuedMs : limiteMs)) continue
 
     paradas.push({ linha, paradaHa })
   }

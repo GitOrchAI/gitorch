@@ -13,6 +13,7 @@ function base(): MotorDoProximoPassoDeps {
     verificacao: 'verde',
     paradoHaMs: 4 * 24 * 60 * 60 * 1000,
     acoesAnteriores: 0,
+    tarefaJaDevolvidaAFila: false,
     podeAbrirSessao: true,
     origem: 'jules',
     cuidaPorOrigem: PADRAO_DE_CUIDADO,
@@ -40,6 +41,40 @@ describe('decidirProximoPasso — portões herdados de decidirAcaoNoPrOrfao', ()
   it('conflito, sem sessão viva, fora da janela de construção: retoma', () => {
     const d = decidirProximoPasso(base())
     expect(d.acao).toBe('retomar')
+  })
+
+  it('parado há 4h com parecer do QA pedindo mudanças: retoma (não espera 3 dias)', () => {
+    const d = decidirProximoPasso({
+      ...base(),
+      mergeable: true,
+      verificacao: 'verde',
+      paradoHaMs: 4 * 60 * 60 * 1000,
+      ultimoParecerQa: { body: 'Rode o Prettier.', timestamp: new Date('2026-09-30T10:00:00Z') },
+    })
+    expect(d.acao).toBe('retomar')
+    if (d.acao !== 'retomar') throw new Error('esperava retomar')
+    expect(d.causa).toBe('qa-reprovou')
+  })
+
+  it('parado há 2h: só acompanha, mesmo com parecer pedindo mudanças', () => {
+    const d = decidirProximoPasso({
+      ...base(),
+      mergeable: true,
+      verificacao: 'vermelha',
+      paradoHaMs: 2 * 60 * 60 * 1000,
+      ultimoParecerQa: { body: 'Rode o Prettier.', timestamp: new Date('2026-09-30T10:00:00Z') },
+    })
+    expect(d.acao).toBe('so-acompanhar')
+  })
+
+  it('sessão viva aos 4h continua sem ser tocada', () => {
+    const d = decidirProximoPasso({
+      ...base(),
+      temSessaoViva: true,
+      paradoHaMs: 4 * 60 * 60 * 1000,
+      verificacao: 'vermelha',
+    })
+    expect(d.acao).toBe('so-acompanhar')
   })
 
   it('tarefa já fechada: fecha o PR como vazio, com o motivo', () => {

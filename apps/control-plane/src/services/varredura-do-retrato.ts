@@ -10,7 +10,7 @@ import {
 } from '../routes/github-webhook.js'
 import type { EstadoDoItem, TipoDoItem } from './ficha-do-item.js'
 
-/** Cadência da varredura de retrato — separada da de `vigiarPrsOrfaos` (6h): a
+/** Cadência da varredura de retrato — separada da de `vigiarPrsOrfaos` (3h): a
  *  ficha precisa ficar em dia bem mais rápido que a decisão de agir sobre um
  *  pull request órfão. */
 export const CADENCIA_DO_RETRATO_MS = 30 * 60_000
@@ -26,6 +26,47 @@ export interface VarreduraDoRetratoDeps {
     estado: EstadoDoItem
   }) => Promise<void>
   onWarn?: (m: string) => void
+  /** Issue #877 item 5: backfill do grafo de vínculos para itens que ainda
+   *  não têm (repoItemVinculos ausente) — best-effort, com teto por ciclo
+   *  (a cota da installation do GitHub estourou em produção com a coleta
+   *  antiga, 5.969 respostas 403 em 24h — ver grafo-de-vinculos.ts).
+   *  Ausente = varredura não faz backfill (comportamento de hoje).
+   *
+   *  `aplicar` devolve `true` quando REALMENTE disparou a coleta (o item não
+   *  tinha grafo ainda, ou o grafo está velho o bastante pra justificar
+   *  recoleta) e `false` quando só constatou que o item já está em dia e
+   *  pulou. Bug real em produção (commit 4dfb2f86, 29/09/2026): o teto era
+   *  gasto em TODO item do lote, inclusive os já cobertos — os 5 slots iam
+   *  sempre pros itens mais recentes (já tinham grafo de ciclos anteriores),
+   *  e itens antigos sem grafo (ex.: PR #583, issue #877) nunca eram
+   *  alcançados. Só contar quem `aplicar` de fato coletou resolve isso. */
+  backfillGrafo?: {
+    aplicar: (args: { tipo: TipoDoItem; numero: number }) => Promise<boolean>
+    teto: number
+  }
+  /** Issue #877 (conserto pós-#979, achado real 29/09/2026 no PR #583): a
+   *  MESMA varredura que faz o backfill do grafo também reclassifica a
+   *  origem de PRs que ainda estão em baixa confiança (`jules_fora` sem
+   *  `issueNumber` — ver `origemPrecisaDeReclassificacao`,
+   *  origem-do-item.ts). `classificarOrigemEIssueDoPr` só corre hoje por
+   *  webhook `pull_request` novo; um PR que nunca mais recebe push fica
+   *  preso na classificação errada pra sempre sem isto.
+   *
+   *  Só PRs (issues não têm essa classificação de origem por webhook) — por
+   *  isso este dep só é consultado no laço de PRs, nunca no de issues.
+   *
+   *  Teto SEPARADO do `backfillGrafo` (decisão: mais simples que
+   *  compartilhar um único contador entre duas preocupações diferentes, e
+   *  não mexe no contador do backfill, que já tem comentário cuidadoso
+   *  sobre o bug real que corrigiu). `aplicar` decide sozinho (mesmo padrão
+   *  de `backfillGrafo.aplicar`) se este PR precisa reclassificar — só
+   *  retorna `true` quando REALMENTE tentou (gastou uma chamada de API),
+   *  igual ao backfill: PR já classificado com confiança não gasta o
+   *  teto. */
+  reclassificarOrigem?: {
+    aplicar: (args: { numero: number; pr: PrCru }) => Promise<boolean>
+    teto: number
+  }
 }
 
 interface PrCru {
@@ -33,8 +74,14 @@ interface PrCru {
   state?: string
   draft?: boolean
   mergeable?: boolean | null
-  head?: { sha?: string }
+  head?: { sha?: string; ref?: string }
   changed_files?: number
+  /** Só usados por `reclassificarOrigem` (issue #877) — a rota
+   *  `/pulls?state=open` do GitHub já devolve o PR completo, corpo, autor e
+   *  labels inclusos, sem chamada extra. */
+  body?: string
+  user?: { login?: string }
+  labels?: Array<{ name?: string }>
 }
 
 interface IssueCru {
@@ -48,6 +95,51 @@ export async function varrerRetratoDoProjeto(
 ): Promise<{ prs: number; issues: number; alertas: number }> {
   let prs = 0
   let issues = 0
+  // Issue #877 item 5: contador COMPARTILHADO entre os dois laços (PRs e
+  // issues) — o teto é por CICLO da varredura inteira, não por laço. Se o
+  // ciclo termina antes de cobrir tudo, é esperado: o próximo ciclo (30 min)
+  // continua de onde faltou (não há registro de "onde parei" — o backfill só
+  // pula quem já tem `vinculos`, então repassar não duplica trabalho útil).
+  let tentativasDeBackfill = 0
+
+  const tentarBackfill = async (tipo: TipoDoItem, numero: number): Promise<void> => {
+    if (!deps.backfillGrafo) return
+    if (tentativasDeBackfill >= deps.backfillGrafo.teto) return
+    try {
+      // Só incrementa o teto quando `aplicar` de fato disparou a coleta —
+      // item que já estava em dia (retornou false) é pulado sem gastar slot,
+      // deixando o teto sobrar pra quem realmente precisa (issue #877).
+      const coletou = await deps.backfillGrafo.aplicar({ tipo, numero })
+      if (coletou) tentativasDeBackfill += 1
+    } catch (err) {
+      // Erro aconteceu DEPOIS de decidir coletar (aplicar só lança depois de
+      // já ter passado da checagem "já tem grafo?") — conta como tentativa
+      // real pra não virar retry-storm no mesmo item dentro do ciclo.
+      tentativasDeBackfill += 1
+      deps.onWarn?.(
+        `varredura-do-retrato: backfill do grafo de vínculos falhou para ${tipo} #${numero} (${deps.repo}): ${err}`
+      )
+    }
+  }
+
+  let tentativasDeReclassificacao = 0
+
+  const tentarReclassificarOrigem = async (pr: PrCru): Promise<void> => {
+    if (!deps.reclassificarOrigem) return
+    if (tentativasDeReclassificacao >= deps.reclassificarOrigem.teto) return
+    try {
+      // Mesmo padrão de `tentarBackfill`: só conta contra o teto quando
+      // `aplicar` de fato reclassificou — PR já classificado com confiança
+      // (`aplicar` decide isso sozinho) retorna `false` sem gastar slot.
+      const reclassificou = await deps.reclassificarOrigem.aplicar({ numero: pr.number, pr })
+      if (reclassificou) tentativasDeReclassificacao += 1
+    } catch (err) {
+      tentativasDeReclassificacao += 1
+      deps.onWarn?.(
+        `varredura-do-retrato: reclassificação de origem falhou para pr #${pr.number} (${deps.repo}): ${err}`
+      )
+    }
+  }
 
   for (let pagina = 1; pagina <= MAX_PAGINAS_DA_VARREDURA; pagina += 1) {
     const lote = (await deps.ghGet(
@@ -60,6 +152,8 @@ export async function varrerRetratoDoProjeto(
         estado: estadoDoPrAPartirDoPayload({ pull_request: pr }),
       })
       prs += 1
+      await tentarBackfill('pr', pr.number)
+      await tentarReclassificarOrigem(pr)
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {
@@ -84,6 +178,7 @@ export async function varrerRetratoDoProjeto(
         estado: estadoDaIssueAPartirDoPayload({ issue }),
       })
       issues += 1
+      await tentarBackfill('issue', issue.number)
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {

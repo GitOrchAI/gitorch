@@ -45,7 +45,7 @@ export interface CicloTerminalDeps {
   /**
    * L4-T5: o ramo do pull request reprovado, quando dá para retomar nele
    * (`branchParaRetomar`, vigia-do-pr.ts) — só chamado quando a situação é
-   * `aberto-rejeitado-parado` e as 12h já passaram. Devolve `null` quando não
+   * `aberto-rejeitado-parado` e a espera já passou. Devolve `null` quando não
    * há ramo utilizável (fork, ausente); ausente o dep inteiro (chamador
    * antigo), o ciclo preserva o comportamento anterior a esta tarefa (fecha e
    * redelega, nunca tenta retomar no mesmo PR).
@@ -55,7 +55,7 @@ export interface CicloTerminalDeps {
     numeroDoPr: number
   }) => Promise<string | null>
   /**
-   * L4-T5: executa a retomada de fato — abre a sessão nova na mesma branch
+   * L4-T5: executa a retomada de fato — abre a sessão nova a partir da main (o ramo do PR só vai no prompt)
    * (ou escala ao dono se o teto de tentativas do PR já bateu; ver
    * `retomarPrReprovado`, retomar-pr-reprovado.ts). Só chamado quando
    * `branchRetomavel` devolveu um ramo utilizável. A linha ANTIGA já foi
@@ -133,7 +133,12 @@ export async function executarCicloTerminal(
     r.projetosComVagaLiberada.push(projectId)
   }
 
-  const linhas = (await deps.listarLinhas()).filter((l) => ehTerminal(l.state))
+  // Terminal, ou já mesclada pela esteira: a mescla tira a linha da vigia
+  // pré-merge e o estado gravado pode ficar velho (IN_PROGRESS). Sem mescla
+  // registrada e sem estado terminal, não vale gastar leitura no GitHub.
+  const linhas = (await deps.listarLinhas()).filter(
+    (l) => ehTerminal(l.state) || l.mergeCommitSha !== null
+  )
   // Mais paradas primeiro: fechar as mais antigas devolve as vagas mais seguras.
   linhas.sort(
     (a, b) => horasEntre(deps.agora, b.lastProgressAt) - horasEntre(deps.agora, a.lastProgressAt)
@@ -164,7 +169,7 @@ export async function executarCicloTerminal(
     }
 
     // L4-T5: só busca o ramo retomável quando PODE fazer diferença — PR
-    // reprovado, 12h já passadas, o dep injetado (chamador antigo não paga
+    // reprovado, espera já passada, o dep injetado (chamador antigo não paga
     // esta chamada) e há de fato um PR para olhar. Custa uma chamada; gastá-la
     // fora deste caso específico seria à toa.
     let branchRetomavel: string | null = null
@@ -247,7 +252,7 @@ export async function executarCicloTerminal(
         r.issuesRetomadasNoPr.push(linha.issueNumber)
         info(
           `[ciclo-terminal] ${linha.sessionName} (issue #${linha.issueNumber}) fechada; PR ` +
-            `#${linha.pullRequestNumber} retomado na mesma branch (${decisao.branchDoPr})`
+            `#${linha.pullRequestNumber} retomado (ramo antigo só no prompt: ${decisao.branchDoPr})`
         )
       } catch (err) {
         warn(

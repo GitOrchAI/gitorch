@@ -10,6 +10,8 @@ const base = {
   shaRevisado: 'abc123',
   shaAtual: 'abc123',
   entendimentoPresente: true,
+  baseDoPr: 'main',
+  branchPadrao: 'main',
 }
 
 describe('mesclarPr', () => {
@@ -145,5 +147,57 @@ describe('mesclarPr', () => {
       merge: async () => true,
     })
     expect(resultado.mesclado).toBe(true)
+  })
+})
+
+describe('mesclarPr — só mescla PR que MIRA a branch padrão do projeto', () => {
+  it('PR com base num ramo antigo NÃO é mesclado (mesclagem falsa, medido em 30/09)', async () => {
+    let chamado = false
+    const r = await mesclarPr({
+      ...base,
+      baseDoPr: 'fix-refactor-conflict-verification-1',
+      merge: async () => {
+        chamado = true
+        return true
+      },
+    })
+    expect(chamado).toBe(false)
+    expect(r.mesclado).toBe(false)
+    // Motivo em português de negócio: diz o ramo, a principal e que precisa de gente.
+    expect(r.motivo).toContain('fix-refactor-conflict-verification-1')
+    expect(r.motivo).toContain('`main`')
+    expect(r.motivo).toMatch(/julgamento humano/)
+  })
+
+  it('base desconhecida (null) NÃO é mesclada: na dúvida, não mescla', async () => {
+    let chamado = false
+    const r = await mesclarPr({
+      ...base,
+      baseDoPr: null,
+      merge: async () => {
+        chamado = true
+        return true
+      },
+    })
+    expect(chamado).toBe(false)
+    expect(r.mesclado).toBe(false)
+    expect(r.motivo).toMatch(/não deu para confirmar/)
+  })
+
+  it('compara com a branch padrão DO PROJETO (develop), não com "main" fixo', async () => {
+    const naPadrao = await mesclarPr({
+      ...base,
+      baseDoPr: 'develop',
+      branchPadrao: 'develop',
+      merge: async () => true,
+    })
+    expect(naPadrao.mesclado).toBe(true)
+    const naMain = await mesclarPr({
+      ...base,
+      baseDoPr: 'main',
+      branchPadrao: 'develop',
+      merge: async () => true,
+    })
+    expect(naMain.mesclado).toBe(false)
   })
 })

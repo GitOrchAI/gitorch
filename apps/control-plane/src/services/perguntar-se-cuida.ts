@@ -1,9 +1,11 @@
+import type { PrismaClient } from '@prisma/client'
 import type { ContextoExecutivoDaPergunta } from './contexto-executivo-da-pergunta.js'
 import { buildFreeTextOption } from './telegram-bot.js'
 import type { AgentQuestionOption } from './agent-question.js'
 import type { OrigemDoItem } from './origem-do-item.js'
 import { gerarPerguntaSobrePrParado, type ContextoPrParado } from './pr-parado-mission.js'
 import type { StepExecutor } from './role-rails.js'
+import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 
 export const DEDUP_PREFIXO_CUIDA_DESTE_PEDIDO = 'cuida-deste-pedido:'
 
@@ -39,7 +41,7 @@ export function montarMensagemDeFatosBrutos(args: {
   partes.push(`Pull Request #${args.numeroDoPr} (${args.repository})`)
   partes.push(`Título: ${args.contextoPr?.titulo}`)
   partes.push(`Origem: ${args.origem}`)
-  partes.push(`Idade: ${args.contextoPr?.idadeDias} dias`)
+  partes.push(`Idade: ${args.contextoPr?.idadeTexto ?? `${args.contextoPr?.idadeDias} dias`}`)
   partes.push(`CI: ${args.contextoPr?.estadoCi}`)
   partes.push(`Conflitos: ${args.contextoPr?.conflitos ? 'Sim' : 'Não'}`)
 
@@ -49,6 +51,14 @@ export function montarMensagemDeFatosBrutos(args: {
     )
   } else {
     partes.push('Nenhuma issue ligada.')
+  }
+
+  // Issue #877: o grafo de vínculos (hierarquia, milestone, labels, PRs
+  // ligados, sessões do Jules, parecer do QA), quando disponível — o
+  // fallback de fatos brutos também precisa dele, não só o caminho via LLM
+  // (gerarPerguntaSobrePrParado, que já o usa).
+  if (args.contextoPr?.historicoGitorch && args.contextoPr.historicoGitorch.length > 0) {
+    partes.push(`Vínculos: ${args.contextoPr.historicoGitorch.join(' | ')}`)
   }
 
   partes.push('O que você quer que eu faça com ele?')
@@ -82,6 +92,7 @@ export async function perguntarSeCuida(
     agentQuestion: AgentQuestionAskerDeCuidado
     execute?: StepExecutor
     onWarn?: (msg: string) => void
+    prisma?: Pick<PrismaClient, 'repoItem'>
   }
 ): Promise<void> {
   let text = ''
@@ -90,10 +101,31 @@ export async function perguntarSeCuida(
   const maxOpcoes = 4
   const dedupKey = dedupKeyDeCuidaDestePedido(args.repository, args.numeroDoPr)
 
-  if (deps.execute && args.contextoPr) {
+  // Issue #877: mesmo padrão de decisao-do-vigia.ts/qa-rails-mission.ts —
+  // se o chamador ainda não preencheu `historicoGitorch` (ex.: PR sem issue
+  // vinculada, onde decisao-do-vigia.ts pula a busca), perguntarSeCuida se
+  // vira sozinho buscando o grafo do PRÓPRIO PR. Best-effort, nunca impede
+  // a pergunta de nascer; se o chamador já preencheu, não busca de novo.
+  let contextoPr = args.contextoPr
+  if (deps.prisma && contextoPr && !contextoPr.historicoGitorch) {
+    try {
+      const contextoDoGrafo = await montarContextoDoItem({
+        prisma: deps.prisma,
+        projectId: args.projectId,
+        numero: args.numeroDoPr,
+      })
+      if (contextoDoGrafo) contextoPr = { ...contextoPr, historicoGitorch: contextoDoGrafo.linhas }
+    } catch (err) {
+      deps.onWarn?.(
+        `perguntarSeCuida: falha ao montar contexto do grafo de vínculos do #${args.numeroDoPr}: ${err}`
+      )
+    }
+  }
+
+  if (deps.execute && contextoPr) {
     try {
       const resp = await gerarPerguntaSobrePrParado({
-        contextoPr: args.contextoPr,
+        contextoPr,
         execute: deps.execute,
       })
 
@@ -111,7 +143,10 @@ export async function perguntarSeCuida(
   }
 
   if (!text) {
-    const fallback = montarMensagemDeFatosBrutos(args)
+    const fallback = montarMensagemDeFatosBrutos({
+      ...args,
+      ...(contextoPr ? { contextoPr } : {}),
+    })
     text = fallback.text
     options = fallback.options
   }

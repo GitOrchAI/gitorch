@@ -20,6 +20,7 @@ export type {
   CampoNumerico,
   CampoNumericoCriado,
   SetNumberFieldInput,
+  GrafoCompletoDoItem,
 } from './project-v2-client'
 export { GitHubWebhookNormalizer } from './webhook-normalizer'
 export { GitHubSyncEngine } from './sync-engine'

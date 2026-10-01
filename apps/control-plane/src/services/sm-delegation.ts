@@ -241,6 +241,32 @@ export function motivoPublicavel(motivo: string): string {
 }
 
 /**
+ * Traduz a falha da checagem "issue já tem PR aberto do dev" (a proteção
+ * contra sessão duplicada, `issuesComPrAbertoDoDev`) para uma frase
+ * publicável ao DONO — nunca o corpo cru do GitHub, que carrega o ID da
+ * instalação e o request-id do fornecedor (INCIDENTE 28/09/2026: o corpo do
+ * 403 real trazia `installation ID 151710755` e um request-id do GitHub
+ * Support). Mesma disciplina de `motivoPublicavel`, para um domínio
+ * diferente (checagem do GitHub, não recusa do dev assíncrono).
+ */
+export function motivoDaProtecaoPublicavel(motivo: string): string {
+  const m = motivo.toUpperCase()
+  if (m.includes('RATE LIMIT') || (m.includes('403') && m.includes('RATE'))) {
+    return 'o GitHub recusou por excesso de chamadas nesta hora (limite de taxa)'
+  }
+  if (m.includes('403')) {
+    return 'o GitHub recusou a consulta (permissão ou limite de chamadas)'
+  }
+  if (m.includes('401')) {
+    return 'a credencial do GitHub foi recusada'
+  }
+  if (m.includes('404')) {
+    return 'o repositório não respondeu a esta consulta'
+  }
+  return 'o GitHub não respondeu a esta consulta'
+}
+
+/**
  * O que o acionamento do dev assíncrono devolve.
  *
  * Os três casos precisam ser DISTINTOS, e essa é a lição de 21/08/2026:
@@ -478,6 +504,15 @@ export interface SmDelegationResult {
    * ("N tarefas prontas esperando vaga").
    */
   prontasNaoDelegadas: number
+  /**
+   * INCIDENTE 28/09/2026: `true` quando a checagem "issue já tem PR aberto
+   * do dev" (`issuesComPrAbertoDoDev`, a proteção contra sessão duplicada)
+   * falhou — o ciclo pulou a delegação inteira deste projeto (fail-closed)
+   * em vez de assumir "sem PR aberto" por omissão. `delegated` vem vazio
+   * neste caso; quem chama pode usar este campo para não tratar o ciclo
+   * como tentativa normal em métricas/alertas.
+   */
+  falhaAoProtegerContraDuplicata: boolean
 }
 
 /** Extrai os números de "Blocked by #N, #M" do corpo da issue. */
@@ -505,7 +540,25 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // outros futuros chamadores).
   const cap = options.cap ?? options.tetoConcorrentes ?? 3
 
+  // INCIDENTE 28/09 (28/09 09:49-09:52 UTC, 5969 respostas 403 em 24h): a
+  // instalação do GitHub App (151710755) é COMPARTILHADA por 3 projetos, e o
+  // limite de chamadas é por instalação, não por projeto. Uma vez esgotado,
+  // cada chamada SEGUINTE no mesmo ciclo também volta 403 — e o log mostrou
+  // uma rajada de dezenas de chamadas repetidas, todas fadadas a falhar,
+  // dentro da MESMA acordada do SM. `limiteEsgotadoNesteCiclo` é o disjuntor:
+  // a PRIMEIRA resposta que traz `x-ratelimit-remaining: 0` marca o ciclo
+  // como esgotado, e toda chamada seguinte (ainda dentro desta mesma chamada
+  // de `runSmDelegation` — um ciclo, um projeto) falha IMEDIATAMENTE sem
+  // tocar a rede, em vez de bater de novo num serviço que já disse "não".
+  // Reseta sozinho a cada novo ciclo (variável local ao closure).
+  let limiteEsgotadoNesteCiclo: string | null = null
   const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
+    if (limiteEsgotadoNesteCiclo) {
+      throw new GithubExecutionError(
+        `GitHub ${method} ${path} pulado neste ciclo: limite de chamadas ao GitHub já esgotado ` +
+          `(${limiteEsgotadoNesteCiclo})`
+      )
+    }
     const resp = await f(`https://api.github.com${path}`, {
       method,
       headers: {
@@ -516,7 +569,20 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
-    if (!resp.ok) throw new GithubExecutionError(`GitHub ${method} ${path} failed (${resp.status})`)
+    if (!resp.ok) {
+      // Só abre o disjuntor no limite PRIMÁRIO confirmado pelo próprio
+      // GitHub (`x-ratelimit-remaining: 0`) — um 403 de permissão
+      // (instalação sem escopo) não deve calar o resto do ciclo, porque não
+      // vai se resolver sozinho na próxima chamada nem na próxima janela.
+      if (resp.status === 403 && resp.headers.get('x-ratelimit-remaining') === '0') {
+        const resetHeader = resp.headers.get('x-ratelimit-reset')
+        const renovaEm = resetHeader
+          ? new Date(Number(resetHeader) * 1000).toISOString()
+          : 'horário desconhecido'
+        limiteEsgotadoNesteCiclo = `renova às ${renovaEm}`
+      }
+      throw new GithubExecutionError(`GitHub ${method} ${path} failed (${resp.status})`)
+    }
     return resp.json().catch(() => ({}))
   }
 
@@ -684,18 +750,50 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // L4-T5: issue cuja sessão do dev já tem um PR ABERTO não pode ser tratada
   // como livre, mesmo com a sessão fechada. UMA chamada ao GitHub (cache por
   // ciclo), reaproveitada por todas as sessões — nunca uma consulta por
-  // issue. Best-effort: falha aqui não pode travar a delegação inteira, só
-  // deixa de aplicar este filtro específico neste ciclo.
+  // issue.
+  //
+  // INCIDENTE 28/09/2026 (fail-closed, ESTEIRA/CORREÇÃO): até aqui, uma
+  // falha nesta checagem (`.catch` devolvendo `Set()` vazio) era tratada
+  // como "nenhuma issue tem PR aberto" — FAIL-OPEN. Medido em produção:
+  // 09:49:57 a checagem funcionou e barrou 7 issues com PR aberto
+  // (#3933, #3930, #3717, #3989, #3830, #3841, #3987); 2 minutos depois, com
+  // a mesma instalação do GitHub App (151710755) batendo no limite de
+  // chamadas (403 "API rate limit exceeded"), a checagem falhou, o filtro
+  // sumiu, e a esteira tratou como livres issues que segundos antes sabia
+  // que tinham PR aberto — abrindo sessão duplicada no dev assíncrono. A
+  // proteção contra duplicata existe EXATAMENTE para este caso; se ela não
+  // pôde ser verificada, o correto é não delegar NADA neste ciclo (fica para
+  // o próximo, que tenta de novo) — nunca assumir "sem PR aberto" por
+  // omissão.
   const naFilaComPr = options.sessoesParaReconhecerPr ?? options.sessoesVivas ?? []
+  let falhaAoProtegerContraDuplicata = false
   const comPrAbertoDoDev = await issuesComPrAbertoDoDev({
     repository: options.repository,
     gh: (method, path) => gh(method, path),
     sessoes: naFilaComPr,
   }).catch((err) => {
+    falhaAoProtegerContraDuplicata = true
+    const motivoCru = (err as Error).message
+    // O motivo CRU vai para o log estruturado (onWarn), nunca para o dono —
+    // pode carregar o ID da instalação e o request-id do fornecedor.
     options.onWarn(
-      `sm-delegation: não deu para checar PRs abertos do dev; a fila segue este ciclo sem ` +
-        `esse filtro: ${(err as Error).message}`
+      `sm-delegation: não deu para checar PRs abertos do dev; nenhuma issue é delegada neste ` +
+        `ciclo (fail-closed) até a próxima janela: ${motivoCru}`
     )
+    if (options.avisarDono) {
+      options
+        .avisarDono(
+          `GitOrch: pulei a delegação de tarefas novas em ${options.repository} neste ciclo ` +
+            `porque não consegui confirmar com o GitHub quais tarefas já têm entrega aberta — ` +
+            `${motivoDaProtecaoPublicavel(motivoCru)}. Tento de novo no próximo ciclo; nenhuma ` +
+            'sessão de trabalho foi aberta enquanto isso não é confirmado.'
+        )
+        .catch((err2) =>
+          options.onWarn(
+            `[sm] aviso ao dono (proteção contra duplicata) não chegou: ${(err2 as Error).message}`
+          )
+        )
+    }
     return new Set<number>()
   })
   if (comPrAbertoDoDev.size > 0) {
@@ -708,31 +806,33 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
 
   let travadaPorVaga = false
   let prontasNoDiagnostico = 0
-  const escolhidas = escolherParaDelegar({
-    candidatas,
-    arquivosEmTrabalho: [...arquivosEmTrabalho],
-    sessoesVivas: options.sessoesVivas ?? [],
-    issuesComPrAbertoDoDev: comPrAbertoDoDev,
-    delegadasHoje: options.delegadasHoje ?? 0,
-    onDiagnostico: (d) => {
-      travadaPorVaga = d.travadaPorVaga
-      prontasNoDiagnostico = d.prontas
-    },
-    // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
-    // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
-    // projeto — e 15 linhas COMPLETED abertas no gitorch zeravam a folga e
-    // paravam a delegação (medido 29/08).
-    ...(options.ocupamVagaNaConta !== undefined
-      ? { ocupamVagaNaConta: options.ocupamVagaNaConta }
-      : {}),
-    ...(options.vivasNaConta !== undefined ? { vivasNaConta: options.vivasNaConta } : {}),
-    ...(options.issuesComAnalisePendente
-      ? { issuesComAnalisePendente: options.issuesComAnalisePendente }
-      : {}),
-    tetoConcorrentes: options.tetoConcorrentes ?? 3,
-    tetoDiario: options.tetoDiario ?? 15,
-    capPorCiclo: cap,
-  })
+  const escolhidas = falhaAoProtegerContraDuplicata
+    ? []
+    : escolherParaDelegar({
+        candidatas,
+        arquivosEmTrabalho: [...arquivosEmTrabalho],
+        sessoesVivas: options.sessoesVivas ?? [],
+        issuesComPrAbertoDoDev: comPrAbertoDoDev,
+        delegadasHoje: options.delegadasHoje ?? 0,
+        onDiagnostico: (d) => {
+          travadaPorVaga = d.travadaPorVaga
+          prontasNoDiagnostico = d.prontas
+        },
+        // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
+        // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
+        // projeto — e 15 linhas COMPLETED abertas no gitorch zeravam a folga e
+        // paravam a delegação (medido 29/08).
+        ...(options.ocupamVagaNaConta !== undefined
+          ? { ocupamVagaNaConta: options.ocupamVagaNaConta }
+          : {}),
+        ...(options.vivasNaConta !== undefined ? { vivasNaConta: options.vivasNaConta } : {}),
+        ...(options.issuesComAnalisePendente
+          ? { issuesComAnalisePendente: options.issuesComAnalisePendente }
+          : {}),
+        tetoConcorrentes: options.tetoConcorrentes ?? 3,
+        tetoDiario: options.tetoDiario ?? 15,
+        capPorCiclo: cap,
+      })
   const porNumero = new Map(abertas.map((t) => [t.number, t]))
 
   const delegated: number[] = []
@@ -978,8 +1078,9 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
         `${recusadas.map((r) => `#${r.numero} (${r.motivo})`).join('; ')}.`
       : ''
 
-  const linhaDaDelegacao =
-    delegated.length > 0
+  const linhaDaDelegacao = falhaAoProtegerContraDuplicata
+    ? 'SM: delegation SKIPPED this cycle (fail-closed — could not verify open PRs of the dev); retrying next cycle.'
+    : delegated.length > 0
       ? `SM delegated ${delegated.length} ready task(s): ${delegated.map((n) => `#${n}`).join(', ')}.` +
         (sessoes.length > 0 ? ` Dev sessions: ${sessoes.join(', ')}.` : '')
       : 'SM: no newly-ready task to delegate.'
@@ -999,13 +1100,16 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     // trabalho, e tratá-la como no-op faria o descanso pós-acordada-vazia
     // (descanso-apos-vazia.ts) calar justamente o ciclo que destrava entrega.
     // Tentar e ser recusado NÃO é acordada vazia: houve trabalho, houve
-    // decisão, e há motivo para acordar de novo em breve.
+    // decisão, e há motivo para acordar de novo em breve. Uma acordada que
+    // pulou a delegação por fail-closed também NÃO é vazia, pelo mesmo
+    // motivo: precisa tentar de novo em breve, não esperar o descanso longo.
     noOp:
       delegated.length === 0 &&
       paraJulgar.length === 0 &&
       recusadas.length === 0 &&
       sinalizadasComoResolvidas.length === 0 &&
-      !falhaAoEnfileirar,
+      !falhaAoEnfileirar &&
+      !falhaAoProtegerContraDuplicata,
     delegated,
     paraJulgar,
     travadaPorVaga,
@@ -1015,5 +1119,8 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     // futura divergência entre as duas contagens virar número negativo no
     // painel do dono.
     prontasNaoDelegadas: Math.max(0, prontasNoDiagnostico - escolhidas.length),
+    // Visível para quem chama poder decidir (ex.: não contar este ciclo como
+    // "tentativa normal" em métricas) sem precisar fazer parsing do `output`.
+    falhaAoProtegerContraDuplicata,
   }
 }

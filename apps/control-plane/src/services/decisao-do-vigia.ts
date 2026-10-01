@@ -3,6 +3,7 @@ import { horasEmConstrucao } from './em-construcao.js'
 import { decidirProximoPasso } from './motor-do-proximo-passo.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
+import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
 import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
 import {
@@ -15,13 +16,14 @@ import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.j
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
-import type { VigiaDoPrDeps } from './vigia-do-pr.js'
+import { contarAcoesDoVigia, descreverTempoParado, type VigiaDoPrDeps } from './vigia-do-pr.js'
 import { perguntarSeCuida, type AgentQuestionAskerDeCuidado } from './perguntar-se-cuida.js'
 import type {
   montarContextoExecutivoDaPergunta,
   DepsDoContextoExecutivo,
 } from './contexto-executivo-da-pergunta.js'
 import type { OrigemDoItem } from './origem-do-item.js'
+import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 
 type AcaoDoVigia = ReturnType<
   NonNullable<
@@ -83,6 +85,26 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   let currentHeadSha: string | undefined
   let diffTruncado = false
 
+  // Base do PR (agora) e branch padrão do repositório — o motor só mescla sozinho
+  // PR que mira a branch padrão (merge-do-pr.ts). Lido fresco na porta do merge.
+  const lerBaseParaMerge = async (): Promise<{ baseDoPr: string | null; branchPadrao: string }> => {
+    let baseDoPr: string | null = null
+    try {
+      baseDoPr = baseDoPrDe(
+        await ghGet(`/repos/${projeto.wingId}/pulls/${depsVigia.numero}`, token)
+      )
+    } catch (err) {
+      onWarn(
+        `decidirAcaoNoPrOrfaoIntegrado: não deu para ler a base do PR #${depsVigia.numero}: ${(err as Error).message}`
+      )
+    }
+    const branchPadrao = await branchPadraoDoRepositorio(
+      async () => ghGet(`/repos/${projeto.wingId}`, token),
+      onWarn
+    )
+    return { baseDoPr, branchPadrao }
+  }
+
   if (depsVigia.issueNumber !== null) {
     const ficha = await lerFichaDoItem({
       prisma: prisma as never,
@@ -126,12 +148,14 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
           token
         )) as { head: { sha: string } }
-        await mesclarPr({
+        const baseDoMerge = await lerBaseParaMerge()
+        const resultadoDoMerge = await mesclarPr({
           numeroDoPr: depsVigia.numero,
           ciState: 'green',
           vereditoDoQa: 'approve',
           diffTruncado: false,
           delegado: true,
+          ...baseDoMerge,
           shaRevisado: currentPr.head.sha,
           shaAtual: currentPr.head.sha,
           entendimentoPresente: true,
@@ -153,6 +177,14 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
             }
           },
         })
+        // Antes ignorava o resultado e registrava "merge feito" mesmo com o
+        // merge barrado (base fora da principal, GitHub recusando...).
+        if (!resultadoDoMerge.mesclado) {
+          return {
+            acao: 'ignorar',
+            motivo: `Dependabot expresso não mesclado: ${resultadoDoMerge.motivo}`,
+          }
+        }
         await registrarNoPainel(
           projeto.id,
           `dependabot-merge:${projeto.wingId}:${depsVigia.numero}`,
@@ -277,13 +309,10 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
 
     if (ultimoParecerQa) {
       try {
-        depsVigia.acoesAnteriores = await prisma.event.count({
-          where: {
-            projectId: projeto.id,
-            type: 'audit',
-            payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: depsVigia.numero },
-            createdAt: { gt: ultimoParecerQa.timestamp },
-          },
+        depsVigia.acoesAnteriores = await contarAcoesDoVigia(prisma, {
+          projectId: projeto.id,
+          numeroDoPr: depsVigia.numero,
+          depoisDe: ultimoParecerQa.timestamp,
         })
       } catch (err) {}
     }
@@ -370,6 +399,27 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       )
 
       const fallbackCiState = depsVigia.verificacao || 'unknown'
+
+      // Issue #877: o grafo de vínculos da issue de origem (hierarquia,
+      // milestone, campos do quadro, PRs ligados, sessões do Jules, parecer
+      // do QA) — best-effort, nunca impede a pergunta de nascer. Só roda
+      // quando há issue vinculada (garantido pelo corte no topo deste bloco).
+      let historicoGitorch: string[] | undefined
+      if (depsVigia.issueNumber !== null) {
+        try {
+          const contextoDoGrafo = await montarContextoDoItem({
+            prisma,
+            projectId: projeto.id,
+            numero: depsVigia.issueNumber,
+          })
+          if (contextoDoGrafo) historicoGitorch = contextoDoGrafo.linhas
+        } catch (err) {
+          onWarn(
+            `decidirAcaoNoPrOrfaoIntegrado: falha ao montar contexto do grafo para a issue #${depsVigia.issueNumber}: ${err}`
+          )
+        }
+      }
+
       await perguntarSeCuida(
         {
           userId,
@@ -383,14 +433,17 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
             idadeDias: depsVigia.paradoHaMs
               ? Math.floor(depsVigia.paradoHaMs / (1000 * 60 * 60 * 24))
               : 0,
+            idadeTexto: descreverTempoParado(depsVigia.paradoHaMs),
             estadoCi: fallbackCiState,
             conflitos: depsVigia.mergeable === false,
+            ...(historicoGitorch ? { historicoGitorch } : {}),
           },
         },
         {
           agentQuestion: agentQuestion as NonNullable<typeof agentQuestion>,
           ...(execute ? { execute } : {}),
           onWarn,
+          prisma,
         }
       )
     } catch (err) {
@@ -410,12 +463,14 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     )
 
     try {
+      const baseDoMerge = await lerBaseParaMerge()
       const result = await mesclarPr({
         numeroDoPr: depsVigia.numero,
         ciState: depsVigia.verificacao === 'verde' ? 'green' : 'red',
         vereditoDoQa: vereditoDoQa ?? 'unknown',
         diffTruncado: diffTruncado,
         delegado: true,
+        ...baseDoMerge,
         shaRevisado: currentHeadSha ?? '',
         shaAtual: currentHeadSha ?? '',
         entendimentoPresente: entendimentoCompleto,
@@ -518,6 +573,18 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       pedido: retomarAcao.pedido,
       branchDoPr: retomarAcao.branchDoPr,
       motivo: retomarAcao.motivo,
+    }
+  }
+  if (acaoMotor.acao === 'devolver-a-fila') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
+    return {
+      acao: 'devolver-a-fila',
+      issueNumber: acaoMotor.issueNumber,
+      motivo: acaoMotor.motivo,
     }
   }
   if (acaoMotor.acao === 'escalar') {

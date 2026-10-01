@@ -1,10 +1,11 @@
 import * as TravaModule from './trava-de-parecer.js'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   runQaMissionViaRails,
   buildJulesReworkComment,
   buildEntendimentoSection,
   MAX_TENTATIVAS_DE_MERGE,
+  MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS,
   dispensarParecerAntigo,
 } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
@@ -13,6 +14,18 @@ import type { LinhaDeSessao } from './dev-session-store.js'
 import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
 import type { EstadoDaJanela } from './aviso-por-janela.js'
 import { textoDeEntregaSemConteudo } from './entrega-sem-conteudo.js'
+import {
+  cacheDoProcesso,
+  criarCacheDeVerificacaoPendente,
+  chaveDaVerificacao,
+  TTL_DA_VERIFICACAO_PENDENTE_MS,
+} from './cache-de-verificacao-pendente.js'
+
+// O cache de pendentes é do processo: sem zerar, um teste herdaria o pendente
+// gravado por outro que usa o mesmo repositório, PR e sha.
+beforeEach(() => {
+  cacheDoProcesso.limpar()
+})
 
 const RECON = JSON.stringify({
   ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
@@ -116,6 +129,16 @@ function fakeFetch(
     changedFiles?: number
     additions?: number
     deletions?: number
+    /** Base (`base.ref`) do PR. Default 'main' — a branch padrão dos testes. */
+    baseRef?: string
+    /**
+     * Head e verificação PRÓPRIOS deste PR. Sem eles vale o `opts.headSha` e o
+     * `opts.checkRuns` globais (todos os PRs iguais) — comportamento antigo.
+     * Só o teste da fila com PR pendente precisa de PRs com verificações
+     * diferentes entre si.
+     */
+    headSha?: string
+    checkRuns?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
   }>,
   issueLabels: string[] = ['jules', 'gitorch:task'],
   /**
@@ -193,7 +216,9 @@ function fakeFetch(
      * que corpo, ou para qual PR.
      */
     merges: Array<{ number: number; body: unknown }>
-  } = { reviews: [], comments: [], labels: [], merges: [] }
+    /** Um item por leitura de check-runs (o sha lido) — mede o custo em chamadas. */
+    checkRunReads: string[]
+  } = { reviews: [], comments: [], labels: [], merges: [], checkRunReads: [] }
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
     const method = init?.method ?? 'GET'
@@ -207,7 +232,7 @@ function fakeFetch(
           user: { login: p.user },
           draft: false,
           body: p.body ?? 'Closes #50',
-          head: { sha: opts.headSha ?? 'abc123' },
+          head: { sha: p.headSha ?? opts.headSha ?? 'abc123' },
         }))
       )
     }
@@ -225,7 +250,8 @@ function fakeFetch(
       return json({
         number: numeroDoPr,
         body: p?.body ?? 'Closes #50',
-        head: opts.semShaNaPrIsolada ? {} : { sha: opts.headSha ?? 'abc123' },
+        head: opts.semShaNaPrIsolada ? {} : { sha: p?.headSha ?? opts.headSha ?? 'abc123' },
+        base: { ref: p?.baseRef ?? 'main' },
         ...(p?.changedFiles !== undefined ? { changed_files: p.changedFiles } : {}),
         ...(p?.additions !== undefined ? { additions: p.additions } : {}),
         ...(p?.deletions !== undefined ? { deletions: p.deletions } : {}),
@@ -253,8 +279,12 @@ function fakeFetch(
       })
     }
     if (u.includes('/commits/') && u.includes('/check-runs')) {
+      const shaLido = u.match(/\/commits\/([^/]+)\/check-runs/)?.[1] ?? ''
+      posted.checkRunReads.push(shaLido)
+      const doPr = prs.find((x) => x.headSha === shaLido)
       return json({
-        check_runs: opts.checkRuns ?? [{ name: 'ci', conclusion: 'success', status: 'completed' }],
+        check_runs: doPr?.checkRuns ??
+          opts.checkRuns ?? [{ name: 'ci', conclusion: 'success', status: 'completed' }],
       })
     }
     // L4-T17: API de jobs do Actions — o id do job é o MESMO id do
@@ -427,6 +457,67 @@ describe('runQaMissionViaRails', () => {
     expect(r.exitCode).toBe(0)
     expect(posted.reviews[0]!.event).toBe('APPROVE')
     expect(posted.comments).toHaveLength(0)
+  })
+
+  it('issue #877: injeta o grafo de vínculos (montarContextoDoItem) no prompt do veredito', async () => {
+    const f = fakeFetch([{ number: 7, user: 'google-labs-jules[bot]' }])
+    const prompts: string[] = []
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: {
+          upsert: vi.fn(),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findFirst: vi.fn().mockResolvedValue({
+            id: 'item-1',
+            projectId: 'proj',
+            tipo: 'pr',
+            numero: 7,
+            estado: { status: 'aberto' },
+            origem: 'jules_gitorch',
+            issueNumber: 50,
+            entendimento: null,
+            vinculos: {
+              hierarquia: { parents: [], subIssues: [] },
+              milestone: { title: 'Sprint Grafo 877', number: 9, dueOn: null, state: 'OPEN' },
+              projectFields: [],
+              labelsAndAssignees: { labels: ['grafo-teste-877'], assignees: [] },
+              prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+              sessoesJules: [],
+              qaReview: null,
+              statusCheckRollup: null,
+            },
+          }),
+        },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async (prompt) => {
+        prompts.push(prompt)
+        return APPROVE
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(prompts[0]).toContain('grafo-teste-877')
+    expect(prompts[0]).toContain('Sprint Grafo 877')
+  })
+
+  it('issue #877: sem options.prisma/projectId (como hoje), nada quebra — comportamento preservado', async () => {
+    const f = fakeFetch([{ number: 7, user: 'google-labs-jules[bot]' }])
+    const posted = (
+      f as unknown as {
+        posted: { reviews: Array<{ event?: string }>; comments: Array<{ body?: string }> }
+      }
+    ).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
   })
 
   it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules E sessão para ela', async () => {
@@ -1587,6 +1678,35 @@ describe('runQaMissionViaRails', () => {
   // janela — e é exatamente o que o QA pede ao reprovar: "Revise the SAME
   // pull request" — faria o produto mesclar código que ninguém leu nem
   // verificou, furando os três porteiros por dentro.
+  // Só entrega na branch padrão do projeto pode ser mesclada sozinha. Medido em
+  // 30/09: PRs de retomada com BASE num ramo antigo eram "mesclados" nesse ramo
+  // e nunca chegavam na main — o card ia para "entregue" sem entrega.
+  it('approve + CI verde, mas o PR mira um ramo antigo (não a main): NÃO mescla e declara o motivo', async () => {
+    const f = fakeFetch([
+      { number: 7, user: 'jules[bot]', baseRef: 'fix/combo-audit-suggestions-3' },
+    ])
+    const posted = (
+      f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
+    ).posted
+    const aoMesclar = vi.fn()
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      aoMesclar,
+    })
+    expect(posted.merges).toHaveLength(0)
+    expect(aoMesclar).not.toHaveBeenCalled()
+    expect(r.output).toContain('Merge: blocked')
+    expect(r.output).toContain('fix/combo-audit-suggestions-3')
+    expect(r.output).toContain('`main`')
+  })
+
   it('I2: o corpo do PUT .../merge contém o sha do head que foi revisado', async () => {
     const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
     const posted = (
@@ -4435,5 +4555,511 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
         expect.stringContaining('already publishing a review for head')
       )
     })
+  })
+})
+
+// PR com verificação pendente NÃO pode travar a fila inteira do QA.
+//
+// Medido em produção (30/09/2026, Jardim): o laço escolhia o PRIMEIRO PR que
+// precisava de parecer e, só depois, lia a verificação — pendente → missão
+// encerrada ("não julgado"). Três PRs pendentes à frente (#4041, #4052, #4055)
+// impediam julgar QUALQUER outro; o #4046, 14/14 verde, ficou 10+ min sem
+// parecer porque o QA batia sempre nos mesmos pendentes.
+describe('runQaMissionViaRails: a fila anda quando o primeiro PR está pendente', () => {
+  const PENDENTE = [{ name: 'ci', status: 'in_progress' }]
+  const VERDE = [{ name: 'ci', conclusion: 'success', status: 'completed' }]
+  // Uma instância por chamada: o vitest zera os mocks entre testes, e a trava
+  // do parecer precisa do `updateMany` devolvendo `{ count: 1 }` de verdade.
+  const novoPrisma = () =>
+    ({
+      repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    }) as unknown as import('@prisma/client').PrismaClient
+
+  // `ordemDoJulgamento` alterna a ponta da fila pelo minuto do relógio. Minuto
+  // par = do mais antigo ao mais novo — fixa o relógio para o teste ser
+  // determinístico (só `Date`, os timers reais seguem).
+  beforeEach(() => {
+    // Um teste anterior do arquivo espiona a trava do parecer; sem restaurar,
+    // ela vazaria para cá e nenhuma review seria publicada.
+    vi.restoreAllMocks()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-30T12:00:30Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('(a) [A pendente, B verde sem parecer]: julga B, não encerra por causa de A', async () => {
+    const f = fakeFetch([
+      { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+      { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: VERDE },
+    ])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const registradas: string[] = []
+    const execute = vi.fn(async () => APPROVE)
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute,
+      sessoes: [
+        linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' }),
+        linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+      ],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBeUndefined()
+    expect(r.output).toContain('PR #11')
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(execute).toHaveBeenCalledTimes(1)
+    // A continua com a marca de "visto pendente" — pular não apaga a contagem.
+    expect(registradas).toEqual(['sessions/a'])
+  })
+
+  it('(b) só A pendente: noOp citando A, e a primeira vez pendente é registrada', async () => {
+    const f = fakeFetch([{ number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+    const registradas: string[] = []
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('não deveria julgar com verificação pendente')
+      },
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' })],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #10 não julgado')
+    expect(r.output).toContain('verificação em pending')
+    expect(posted.reviews).toHaveLength(0)
+    expect(registradas).toEqual(['sessions/a'])
+  })
+
+  it('(c) A pendente além do teto, B verde: avisa a demora de A (uma vez) E julga B', async () => {
+    const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
+    const avisos: string[] = []
+    const marcas: Array<{ sessionName: string; hash: string }> = []
+    const rodar = async (answeredHash: string | null) => {
+      const f = fakeFetch([
+        { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+        { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: VERDE },
+      ])
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+      const r = await runQaMissionViaRails({
+        prisma: novoPrisma(),
+        projectId: 'proj',
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [
+          linha({
+            issueNumber: 50,
+            pullRequestNumber: 10,
+            sessionName: 'sessions/a',
+            pendingSince,
+            answeredHash,
+          }),
+          linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+        ],
+        avisarDono: async (mensagem) => {
+          avisos.push(mensagem)
+          return true
+        },
+        registrarAvisoDeDemora: async (args) => {
+          marcas.push(args)
+        },
+        fetchImpl: f,
+      })
+      return { r, posted }
+    }
+
+    const primeira = await rodar(null)
+    expect(primeira.r.noOp).toBeUndefined()
+    expect(primeira.r.output).toContain('PR #11')
+    expect(primeira.posted.reviews).toHaveLength(1)
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('#10')
+    expect(marcas).toHaveLength(1)
+    expect(marcas[0]!.sessionName).toBe('sessions/a')
+
+    // Próxima acordada, mesmo head de A já avisado: NÃO repete o aviso, e B
+    // (agora sem parecer de novo no mock) continua sendo julgado.
+    const segunda = await rodar(marcas[0]!.hash)
+    expect(segunda.r.output).toContain('PR #11')
+    expect(avisos).toHaveLength(1)
+  })
+
+  it('(d) [A verde já julgado neste head, B pendente]: A segue pulado e o noOp cita B', async () => {
+    const f = fakeFetch([
+      {
+        number: 10,
+        user: 'jules[bot]',
+        headSha: 'sha-a',
+        checkRuns: VERDE,
+        existingReviews: [{ body: '<!-- gitorch:qa -->\nparecer', commit_id: 'sha-a' }],
+      },
+      { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: PENDENTE },
+    ])
+    const posted = (f as unknown as { posted: { reviews: unknown[]; checkRunReads: string[] } })
+      .posted
+    const registradas: string[] = []
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('A já foi julgado e B está pendente: ninguém a julgar')
+      },
+      sessoes: [
+        linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' }),
+        linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+      ],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #11 não julgado')
+    expect(posted.reviews).toHaveLength(0)
+    expect(registradas).toEqual(['sessions/b'])
+    // B foi lido e virou a razão do noOp (A, já julgado, segue pelo caminho
+    // de antes — inclusive a leitura única do legado).
+    expect(posted.checkRunReads).toContain('sha-b')
+  })
+
+  it('(e) o teto de candidatos lidos é respeitado: só MAX leituras de verificação por missão', async () => {
+    const total = MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS + 3
+    const numeros = Array.from({ length: total }, (_, i) => 10 + i)
+    const f = fakeFetch(
+      numeros.map((n) => ({
+        number: n,
+        user: 'jules[bot]',
+        headSha: `sha-${n}`,
+        checkRuns: PENDENTE,
+      }))
+    )
+    const posted = (f as unknown as { posted: { checkRunReads: string[] } }).posted
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('todos pendentes: ninguém a julgar')
+      },
+      sessoes: numeros.map((n) =>
+        linha({ issueNumber: 50, pullRequestNumber: n, sessionName: `sessions/${n}` })
+      ),
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(posted.checkRunReads).toHaveLength(MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS)
+    // A ordem da fila (mais antigo primeiro) manda: os lidos são os primeiros.
+    expect(posted.checkRunReads).toEqual(
+      numeros.slice(0, MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS).map((n) => `sha-${n}`)
+    )
+    // O motivo cita o PRIMEIRO pendente da fila.
+    expect(r.output).toContain('PR #10 não julgado')
+  })
+
+  it('o teto é 16 (cobre a fila típica de ~15 PRs abertos do Jardim)', () => {
+    expect(MAX_CANDIDATOS_COM_LEITURA_DE_CHECKS).toBe(16)
+  })
+})
+
+// Fome por causa do teto (30/09/2026, Jardim): ~14 PRs abertos, quase todos com
+// CI pendente num runner só. O #4046 (14/14 verde, delegado) era o 11º da
+// ordem; as 6 leituras iam todas para os mais antigos, pendentes, e a missão
+// devolvia "não julgado" sem nunca chegar nele. Duas defesas: teto maior e um
+// cache curto do resultado PENDENTE (por head), que não gasta a cota.
+describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () => {
+  const PENDENTE = [{ name: 'ci', status: 'in_progress' }]
+  const VERDE = [{ name: 'ci', conclusion: 'success', status: 'completed' }]
+  const VERMELHO = [{ name: 'ci', conclusion: 'failure', status: 'completed' }]
+  const novoPrisma = () =>
+    ({
+      repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    }) as unknown as import('@prisma/client').PrismaClient
+
+  /** Relógio do cache nas mãos do teste (o `Date` da missão é outro assunto). */
+  const relogio = { agora: 0 }
+  const novoCache = () =>
+    criarCacheDeVerificacaoPendente({ agora: () => relogio.agora, maxEntradas: 50 })
+
+  const NUMERO_DO_VERDE = 21
+  /** 10 PRs pendentes (#10..#19 -> 10 candidatos) e o verde na 11ª posição. */
+  const filaComVerdeNaOnzena = (
+    verde: Array<{ conclusion?: string; status?: string; name?: string }> = VERDE
+  ) => [
+    ...Array.from({ length: 10 }, (_, i) => ({
+      number: 10 + i,
+      user: 'jules[bot]',
+      headSha: `sha-${10 + i}`,
+      checkRuns: PENDENTE,
+    })),
+    {
+      number: NUMERO_DO_VERDE,
+      user: 'jules[bot]',
+      headSha: `sha-${NUMERO_DO_VERDE}`,
+      checkRuns: verde,
+    },
+  ]
+  const sessoesDaFila = (numeros: number[]) =>
+    numeros.map((n) =>
+      linha({ issueNumber: 50, pullRequestNumber: n, sessionName: `sessions/${n}` })
+    )
+
+  const missao = async (
+    prs: ReturnType<typeof filaComVerdeNaOnzena>,
+    extra: Partial<Parameters<typeof runQaMissionViaRails>[0]> = {}
+  ) => {
+    const f = fakeFetch(prs)
+    const posted = (
+      f as unknown as { posted: { reviews: Array<{ event?: string }>; checkRunReads: string[] } }
+    ).posted
+    const execute = vi.fn(async () => APPROVE)
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute,
+      sessoes: sessoesDaFila(prs.map((p) => p.number)),
+      fetchImpl: f,
+      ...extra,
+    })
+    return { r, posted, execute }
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    relogio.agora = 0
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-30T12:00:30Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('(a) 10 pendentes à frente e 1 verde sem parecer na 11ª posição: julga o verde', async () => {
+    const { r, posted, execute } = await missao(filaComVerdeNaOnzena(), {
+      cacheDeVerificacaoPendente: novoCache(),
+    })
+    expect(r.noOp).toBeUndefined()
+    expect(r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(execute).toHaveBeenCalledTimes(1)
+    // Sem cache, o custo é 1 leitura por candidato até chegar no verde.
+    expect(posted.checkRunReads).toHaveLength(11)
+  })
+
+  it('(b) segunda missão com os mesmos heads pendentes NÃO relê os pendentes e ainda julga o verde', async () => {
+    const cache = novoCache()
+    const primeira = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(primeira.posted.checkRunReads).toHaveLength(11)
+    expect(cache.tamanho()).toBe(10)
+
+    // O dublê do GitHub é novo a cada missão: o verde volta a estar sem parecer.
+    relogio.agora += 60_000
+    const segunda = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(segunda.posted.checkRunReads).toEqual([`sha-${NUMERO_DO_VERDE}`])
+    expect(segunda.r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
+    expect(segunda.posted.reviews).toHaveLength(1)
+    expect(segunda.posted.reviews[0]!.event).toBe('APPROVE')
+  })
+
+  it('(b2) o pendente vindo do cache não gasta a cota: com 19 pendentes em cache o verde da 20ª ainda é lido', async () => {
+    const cache = novoCache()
+    const pendentes = Array.from({ length: 19 }, (_, i) => ({
+      number: 10 + i,
+      user: 'jules[bot]',
+      headSha: `sha-${10 + i}`,
+      checkRuns: PENDENTE,
+    }))
+    const verde = { number: 40, user: 'jules[bot]', headSha: 'sha-40', checkRuns: VERDE }
+    // Primeira missão: o teto (16) corta antes do verde; os 16 lidos viram cache.
+    const primeira = await missao([...pendentes, verde], { cacheDeVerificacaoPendente: cache })
+    expect(primeira.r.noOp).toBe(true)
+    expect(primeira.posted.checkRunReads).toHaveLength(16)
+    // Segunda: os 16 já estão em cache e saem de graça; sobra cota para os
+    // 3 restantes e para o verde.
+    const segunda = await missao([...pendentes, verde], { cacheDeVerificacaoPendente: cache })
+    expect(segunda.r.noOp).toBeUndefined()
+    expect(segunda.r.output).toContain('PR #40')
+    expect(segunda.posted.checkRunReads).toEqual(['sha-26', 'sha-27', 'sha-28', 'sha-40'])
+  })
+
+  it('(c) o cache expira depois do TTL (relógio injetado) e a missão relê', async () => {
+    const cache = novoCache()
+    await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+
+    relogio.agora += TTL_DA_VERIFICACAO_PENDENTE_MS - 1
+    const dentro = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(dentro.posted.checkRunReads).toHaveLength(1)
+
+    relogio.agora += 2
+    const fora = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(fora.posted.checkRunReads).toHaveLength(11)
+    expect(fora.r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
+  })
+
+  it('(d) head novo invalida: chave nova, relê os check-runs', async () => {
+    const cache = novoCache()
+    await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+
+    const fila = filaComVerdeNaOnzena()
+    fila[0] = { ...fila[0]!, headSha: 'sha-10-novo' }
+    const segunda = await missao(fila, { cacheDeVerificacaoPendente: cache })
+    // Só o #10 (head novo) é relido, mais o verde; os outros 9 vêm do cache.
+    expect(segunda.posted.checkRunReads).toEqual(['sha-10-novo', `sha-${NUMERO_DO_VERDE}`])
+  })
+
+  it('(e) verde e vermelho nunca entram no cache: sempre relê', async () => {
+    const cache = novoCache()
+    const verde = [{ number: 10, user: 'jules[bot]', headSha: 'sha-v', checkRuns: VERDE }]
+    const v1 = await missao(verde, { cacheDeVerificacaoPendente: cache })
+    const v2 = await missao(verde, { cacheDeVerificacaoPendente: cache })
+    expect(v1.posted.checkRunReads).toEqual(['sha-v'])
+    expect(v2.posted.checkRunReads).toEqual(['sha-v'])
+    expect(cache.ler(chaveDaVerificacao('o/r', 10, 'sha-v'))).toBeUndefined()
+
+    const vermelho = [{ number: 11, user: 'jules[bot]', headSha: 'sha-r', checkRuns: VERMELHO }]
+    const r1 = await missao(vermelho, { cacheDeVerificacaoPendente: cache })
+    const r2 = await missao(vermelho, { cacheDeVerificacaoPendente: cache })
+    expect(r1.posted.checkRunReads).toEqual(['sha-r'])
+    expect(r2.posted.checkRunReads).toEqual(['sha-r'])
+    expect(cache.ler(chaveDaVerificacao('o/r', 11, 'sha-r'))).toBeUndefined()
+    expect(cache.tamanho()).toBe(0)
+  })
+
+  it('(e2) um head que estava pendente e ficou verde depois do TTL é julgado e sai do cache', async () => {
+    const cache = novoCache()
+    const pendente = [{ number: 10, user: 'jules[bot]', headSha: 'sha-x', checkRuns: PENDENTE }]
+    const m1 = await missao(pendente, { cacheDeVerificacaoPendente: cache })
+    expect(m1.r.noOp).toBe(true)
+    expect(cache.tamanho()).toBe(1)
+
+    relogio.agora += TTL_DA_VERIFICACAO_PENDENTE_MS
+    const verdeAgora = [{ number: 10, user: 'jules[bot]', headSha: 'sha-x', checkRuns: VERDE }]
+    const m2 = await missao(verdeAgora, { cacheDeVerificacaoPendente: cache })
+    expect(m2.posted.reviews).toHaveLength(1)
+    expect(cache.tamanho()).toBe(0)
+  })
+
+  it('(f) o cache da missão não cresce além do limite', async () => {
+    const cache = criarCacheDeVerificacaoPendente({ agora: () => relogio.agora, maxEntradas: 4 })
+    await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
+    expect(cache.tamanho()).toBe(4)
+    // Ficaram os 4 pendentes mais NOVOS lidos (#16..#19).
+    expect(cache.ler(chaveDaVerificacao('o/r', 10, 'sha-10'))).toBeUndefined()
+    expect(cache.ler(chaveDaVerificacao('o/r', 19, 'sha-19'))).toBe('pending')
+  })
+
+  it('(g) a primeira vez pendente é registrada mesmo quando o pendente vem do cache', async () => {
+    const cache = novoCache()
+    // A missão 1 lê o pendente sem saber de sessão nenhuma (linha ainda não existia).
+    const f1 = fakeFetch([
+      { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+    ])
+    await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [],
+      fetchImpl: f1,
+      cacheDeVerificacaoPendente: cache,
+    })
+    expect(cache.tamanho()).toBe(1)
+
+    // A missão 2 já tem a linha: o pendente vem do cache (zero leitura) e a
+    // marca de "primeira vez pendente" precisa ser gravada assim mesmo.
+    const registradas: string[] = []
+    const f2 = fakeFetch([
+      { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+    ])
+    const posted2 = (f2 as unknown as { posted: { checkRunReads: string[] } }).posted
+    const r = await runQaMissionViaRails({
+      prisma: novoPrisma(),
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('pendente: ninguém a julgar')
+      },
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 10, sessionName: 'sessions/a' })],
+      registrarPendencia: async (args) => {
+        registradas.push(args.sessionName)
+      },
+      fetchImpl: f2,
+      cacheDeVerificacaoPendente: cache,
+    })
+    expect(posted2.checkRunReads).toEqual([])
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #10 não julgado')
+    expect(registradas).toEqual(['sessions/a'])
+  })
+
+  it('(g2) o aviso de demora continua saindo (uma vez por head) com o pendente vindo do cache', async () => {
+    const cache = novoCache()
+    const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
+    const avisos: string[] = []
+    const marcas: Array<{ sessionName: string; hash: string }> = []
+    const rodar = (answeredHash: string | null) =>
+      missao(
+        [
+          { number: 10, user: 'jules[bot]', headSha: 'sha-a', checkRuns: PENDENTE },
+          { number: 11, user: 'jules[bot]', headSha: 'sha-b', checkRuns: VERDE },
+        ],
+        {
+          cacheDeVerificacaoPendente: cache,
+          sessoes: [
+            linha({
+              issueNumber: 50,
+              pullRequestNumber: 10,
+              sessionName: 'sessions/a',
+              pendingSince,
+              answeredHash,
+            }),
+            linha({ issueNumber: 51, pullRequestNumber: 11, sessionName: 'sessions/b' }),
+          ],
+          avisarDono: async (mensagem) => {
+            avisos.push(mensagem)
+            return true
+          },
+          registrarAvisoDeDemora: async (args) => {
+            marcas.push(args)
+          },
+        }
+      )
+
+    const primeira = await rodar(null)
+    expect(primeira.posted.checkRunReads).toContain('sha-a')
+    expect(avisos).toHaveLength(1)
+
+    // Segunda missão: #10 sai do cache (não relê), o aviso já foi dado neste head.
+    const segunda = await rodar(marcas[0]!.hash)
+    expect(segunda.posted.checkRunReads).toEqual(['sha-b'])
+    expect(avisos).toHaveLength(1)
+
+    // Terceira: marca ainda não gravada -> o aviso ainda sai, mesmo vindo do cache.
+    const terceira = await rodar(null)
+    expect(terceira.posted.checkRunReads).toEqual(['sha-b'])
+    expect(avisos).toHaveLength(2)
   })
 })
