@@ -6,6 +6,7 @@ packages:
   - 'packages/github-sync'
   - 'packages/graph-rag'
   - 'packages/pipeline-core'
+  - 'packages/pipeline-intelligence'
   - 'packages/synapse'
   - 'packages/workspace-engine'
   - 'apps/control-plane'
