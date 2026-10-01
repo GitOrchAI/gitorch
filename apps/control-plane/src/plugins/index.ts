@@ -4,6 +4,7 @@ import fastifyHelmet from '@fastify/helmet'
 import fastifySwagger from '@fastify/swagger'
 import fastifySwaggerUi from '@fastify/swagger-ui'
 import fastifyUnderPressure from '@fastify/under-pressure'
+import fastifyMultipart from '@fastify/multipart'
 import { Env } from '../config/env.js'
 import { API_PREFIX } from '../config/constants.js'
 import { parseRateLimitAllowList } from './rate-limit-keys.js'
@@ -100,6 +101,12 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
       deepLinking: true,
     },
     staticCSP: true,
+  })
+
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: 10 * 1024 * 1024, // 10MB
+    },
   })
 
   // Register custom plugins

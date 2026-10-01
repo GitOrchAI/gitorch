@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import crypto from 'node:crypto'
 import Fastify, { FastifyInstance } from 'fastify'
 import { loadEnv } from './config/env.js'
 import { registerPlugins } from './plugins/index.js'
@@ -149,6 +150,122 @@ export async function buildApp(): Promise<FastifyInstance> {
   })
 
   await app.register(webStaticPlugin)
+
+  app.post('/api/v1/pedidos', async (request, reply) => {
+    const user = request.user
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+
+    const ALLOWED_MIME_TYPES = new Set([
+      'application/pdf',
+      'text/markdown',
+      'text/plain',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ])
+
+    const parts = request.parts()
+    const fields: Record<string, string | string[]> = {}
+    const attachmentsToCreate = []
+
+    try {
+      for await (const part of parts) {
+        if (part.type === 'file') {
+          if (!ALLOWED_MIME_TYPES.has(part.mimetype)) {
+            return reply.code(400).send({ error: `File type not allowed: ${part.mimetype}` })
+          }
+
+          const buffer = await part.toBuffer()
+          const fileHash = crypto.createHash('sha256').update(buffer).digest('hex')
+          const sizeBytes = buffer.length
+          let textContent = null
+
+          if (part.mimetype === 'text/plain' || part.mimetype === 'text/markdown') {
+            textContent = buffer.toString('utf-8')
+          }
+
+          attachmentsToCreate.push({
+            fileName: part.filename,
+            mimeType: part.mimetype,
+            sizeBytes,
+            fileHash,
+            textContent,
+          })
+        } else {
+          const value = part.value as string
+          if (fields[part.fieldname]) {
+            if (Array.isArray(fields[part.fieldname])) {
+              ;(fields[part.fieldname] as string[]).push(value)
+            } else {
+              fields[part.fieldname] = [fields[part.fieldname] as string, value]
+            }
+          } else {
+            fields[part.fieldname] = value
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
+        return reply.code(400).send({ error: 'File size limit exceeded' })
+      }
+      throw e
+    }
+
+    const payload = (fields['payload'] as string) || ''
+    const source = (fields['source'] as string) || 'web'
+    let targetRepositoryIds: string[] = []
+    if (fields['targetRepositoryIds']) {
+      if (Array.isArray(fields['targetRepositoryIds'])) {
+        targetRepositoryIds = fields['targetRepositoryIds']
+      } else {
+        targetRepositoryIds = [fields['targetRepositoryIds'] as string]
+      }
+    }
+    const isCrossRepo = fields['isCrossRepo'] === 'true'
+
+    if (!payload) {
+      return reply.code(400).send({ error: 'Payload is required' })
+    }
+
+    const item = await app.prisma.wishlistItem.create({
+      data: {
+        userId: user.id,
+        payload,
+        source,
+        targetRepositoryIds,
+        isCrossRepo,
+        attachments: {
+          create: attachmentsToCreate,
+        },
+      },
+      include: { attachments: true },
+    })
+
+    return reply.code(201).send(item)
+  })
+
+  app.get<{ Params: { id: string } }>('/api/v1/pedidos/:id/anexos', async (request, reply) => {
+    const user = request.user
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+
+    const { id } = request.params
+    const wish = await app.prisma.wishlistItem.findUnique({
+      where: { id },
+    })
+
+    if (!wish) {
+      return reply.code(404).send({ error: 'Pedido não encontrado.' })
+    }
+
+    if (wish.userId !== user.id) {
+      return reply.code(403).send({ error: 'Forbidden' })
+    }
+
+    const anexos = await app.prisma.wishAttachment.findMany({
+      where: { wishId: id },
+    })
+
+    return reply.send({ anexos })
+  })
 
   return app
 }
