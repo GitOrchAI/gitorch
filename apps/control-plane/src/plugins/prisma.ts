@@ -155,3 +155,16 @@ export async function approveGuestInDatabase(projectId: string, guestId: string,
     },
   })
 }
+
+export async function incrementGuestUsedQuota(
+  guestId: string,
+  delta: number = 1,
+  prismaClient: PrismaClient = prisma
+) {
+  return prismaClient.projectInvitation.update({
+    where: { id: guestId },
+    data: {
+      usedQuota: { increment: delta },
+    },
+  })
+}

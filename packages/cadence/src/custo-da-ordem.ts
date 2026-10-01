@@ -73,9 +73,15 @@ export interface CandidatoDeTroca {
   razao: number
 }
 
-export type AnaliseDeCustoDaOrdem =
-  | { custaCaro: true; candidato: CandidatoDeTroca }
+export type AnaliseDeCustoDaOrdem = (
+  | { custaCaro: true; candidato: CandidatoDeTroca; motivo?: string }
   | { custaCaro: false; candidato: null; motivo: string }
+) & { aprovado?: boolean }
+
+export interface ParametrosCustoOrdem {
+  guestQuota?: number
+  usedQuota?: number
+}
 
 export interface MetricasDeExecucaoCI {
   duracaoSegundos: number
@@ -178,15 +184,33 @@ function esperasNaOrdem(fila: readonly PedidoNaFila[]): Map<number, number> {
  * decide o que fazer com o resultado é quem chama esta função.
  */
 export function analisarCustoDaOrdem(
-  filaNaOrdemEscolhida: readonly PedidoNaFila[]
+  filaNaOrdemEscolhida: readonly PedidoNaFila[],
+  parametros?: ParametrosCustoOrdem
 ): AnaliseDeCustoDaOrdem {
+  let aprovado = true
+  let motivoQuota = ''
+
+  if (parametros?.guestQuota !== undefined && parametros?.usedQuota !== undefined) {
+    if (
+      !verificarQuotaDisponivel({
+        usedQuota: parametros.usedQuota,
+        limitQuota: parametros.guestQuota,
+      })
+    ) {
+      aprovado = false
+      motivoQuota = 'Quota de convidado excedida'
+    }
+  }
+
   if (filaNaOrdemEscolhida.length < MIN_PEDIDOS_PARA_AVALIAR) {
     return {
       custaCaro: false,
       candidato: null,
-      motivo:
-        `menos de ${MIN_PEDIDOS_PARA_AVALIAR} pedidos na fila — não há o que otimizar; ` +
-        `com uma fila tão rasa o dono já vê a ordem inteira sem ajuda.`,
+      motivo: aprovado
+        ? `menos de ${MIN_PEDIDOS_PARA_AVALIAR} pedidos na fila — não há o que otimizar; ` +
+          `com uma fila tão rasa o dono já vê a ordem inteira sem ajuda.`
+        : motivoQuota,
+      aprovado,
     }
   }
 
@@ -226,12 +250,41 @@ export function analisarCustoDaOrdem(
     return {
       custaCaro: false,
       candidato: null,
-      motivo: melhor
-        ? `o pior caso (#${melhor.pedido}, perda ${melhor.perda}, razão ${melhor.razao.toFixed(2)}) ` +
-          `fica abaixo do limiar (perda ≥ ${LIMIAR_PONTOS_MINIMOS} e razão ≥ ${LIMIAR_RAZAO}) — diferença pequena, silêncio.`
-        : 'a ordem escolhida já é a que minimiza a espera de todo mundo.',
+      motivo: !aprovado
+        ? motivoQuota
+        : melhor
+          ? `o pior caso (#${melhor.pedido}, perda ${melhor.perda}, razão ${melhor.razao.toFixed(2)}) ` +
+            `fica abaixo do limiar (perda ≥ ${LIMIAR_PONTOS_MINIMOS} e razão ≥ ${LIMIAR_RAZAO}) — diferença pequena, silêncio.`
+          : 'a ordem escolhida já é a que minimiza a espera de todo mundo.',
+      aprovado,
     }
   }
 
-  return { custaCaro: true, candidato: melhor }
+  return {
+    custaCaro: true,
+    candidato: melhor,
+    aprovado,
+    ...(aprovado ? {} : { motivo: motivoQuota }),
+  }
+}
+
+/**
+ * Valida de forma puramente funcional se o convidado ainda tem quota disponível
+ * para executar a ordem de trabalho atual. A responsabilidade de extrair e
+ * gerenciar essa informação é do control-plane; a cadence só aplica a regra
+ * de negócio (o fato).
+ */
+export function verificarQuotaDisponivel(fatosDaEntrega: {
+  usedQuota: number
+  limitQuota: number
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any
+}): boolean {
+  if (
+    typeof fatosDaEntrega.usedQuota !== 'number' ||
+    typeof fatosDaEntrega.limitQuota !== 'number'
+  ) {
+    return false
+  }
+  return fatosDaEntrega.usedQuota < fatosDaEntrega.limitQuota
 }
