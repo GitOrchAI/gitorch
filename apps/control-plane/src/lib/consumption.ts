@@ -14,8 +14,9 @@ export interface Consumption {
  * negativa (ex.: reset diário da quota no meio) → tokensUsed null (honesto,
  * não inventa número).
  */
-import { precificarSpan } from '@gitorch/cadence'
+import { precificarSpan, verificarQuotaDisponivel } from '@gitorch/cadence'
 import type { PrismaClient } from '@prisma/client'
+import { incrementGuestUsedQuota } from '../plugins/prisma.js'
 
 export async function atualizarSaldoDaOrdem(
   span: { usage: { promptTokens: number; completionTokens: number } },
@@ -51,4 +52,45 @@ export function computeConsumption(
     tokensUsed = delta >= 0 ? delta : null
   }
   return { quotaBefore: before, quotaAfter: after, tokensUsed }
+}
+
+export async function verificarQuotaDoConvidado(
+  guestProfileId: string,
+  prisma: PrismaClient
+): Promise<boolean> {
+  const invitation = await prisma.projectInvitation.findUnique({
+    where: { id: guestProfileId },
+  })
+  if (!invitation) return false
+
+  const limits = invitation.executionLimits as { maxQuota?: number } | null
+  const limitQuota = limits?.maxQuota
+
+  if (typeof limitQuota !== 'number' || limitQuota <= 0) {
+    // Sem limite = aprova
+    return true
+  }
+
+  return verificarQuotaDisponivel({ usedQuota: invitation.usedQuota, limitQuota })
+}
+
+export async function recordGuestConsumption(
+  guestProfileId: string,
+  prisma: PrismaClient,
+  delta: number = 1
+): Promise<{ usedQuota: number; guestQuota: number | null; proportion: number | null }> {
+  const updatedInvitation = await incrementGuestUsedQuota(guestProfileId, delta, prisma)
+
+  const limits = updatedInvitation.executionLimits as { maxQuota?: number } | null
+  const guestQuota = limits?.maxQuota ?? null
+  const proportion =
+    typeof guestQuota === 'number' && guestQuota > 0
+      ? updatedInvitation.usedQuota / guestQuota
+      : null
+
+  return {
+    usedQuota: updatedInvitation.usedQuota,
+    guestQuota,
+    proportion,
+  }
 }
