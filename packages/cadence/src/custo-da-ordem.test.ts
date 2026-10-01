@@ -175,6 +175,47 @@ describe('analisarCustoDaOrdem — diferença pequena é silêncio (limiar de ru
   })
 })
 
+describe('analisarCustoDaOrdem — integracao com quota de convidado', () => {
+  const fila: PedidoNaFila[] = [
+    { pedido: 101, peso: 13 },
+    { pedido: 102, peso: 1 },
+    { pedido: 103, peso: 2 },
+  ]
+
+  it('retorna aprovado=true se parametros de quota nao sao fornecidos', () => {
+    const analise = analisarCustoDaOrdem(fila)
+    expect(analise.aprovado).toBe(true)
+    expect(analise.custaCaro).toBe(true)
+  })
+
+  it('retorna aprovado=true se usedQuota < guestQuota', () => {
+    const analise = analisarCustoDaOrdem(fila, { usedQuota: 50, guestQuota: 100 })
+    expect(analise.aprovado).toBe(true)
+    expect(analise.custaCaro).toBe(true)
+  })
+
+  it('retorna aprovado=false e motivo apropriado se usedQuota >= guestQuota (custaCaro=true)', () => {
+    const analise = analisarCustoDaOrdem(fila, { usedQuota: 100, guestQuota: 100 })
+    expect(analise.aprovado).toBe(false)
+    expect(analise.motivo).toBe('Quota de convidado excedida')
+    expect(analise.custaCaro).toBe(true)
+    if (analise.custaCaro) {
+      expect(analise.candidato.pedido).toBe(102)
+    }
+  })
+
+  it('retorna aprovado=false e motivo apropriado se usedQuota >= guestQuota (custaCaro=false)', () => {
+    const filaCurta: PedidoNaFila[] = [
+      { pedido: 601, peso: 13 },
+      { pedido: 602, peso: 1 },
+    ]
+    const analise = analisarCustoDaOrdem(filaCurta, { usedQuota: 100, guestQuota: 100 })
+    expect(analise.aprovado).toBe(false)
+    expect(analise.motivo).toBe('Quota de convidado excedida')
+    expect(analise.custaCaro).toBe(false)
+  })
+})
+
 describe('precificarSpan', () => {
   it('calcula o custo correto para o modelo claude', () => {
     const custo = precificarSpan({ promptTokens: 1_000_000, completionTokens: 1_000_000 }, 'claude')

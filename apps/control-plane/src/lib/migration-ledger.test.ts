@@ -62,6 +62,7 @@ describe('MIGRATION_LEDGER', () => {
       'multi-repo-wishlist-migration.sql',
       'guest-profile-migration.sql',
       'repo-item-vinculos-migration.sql',
+      'project-invitation-used-quota-migration.sql',
     ])
   })
 })
