@@ -90,6 +90,7 @@ export function buscar<T>(caminho: string, deps: PedirDeps = {}): Promise<T> {
 interface EnviarPedidoArgs {
   projectId: string
   texto: string
+  arquivos?: File[]
   fetchImpl?: typeof fetch
 }
 
@@ -102,12 +103,28 @@ export type EnviarPedidoResultado =
  */
 export async function enviarPedido(args: EnviarPedidoArgs): Promise<EnviarPedidoResultado> {
   try {
+    let body: BodyInit
+    const headers: Record<string, string> = {}
+
+    if (args.arquivos && args.arquivos.length > 0) {
+      const fd = new FormData()
+      fd.append('projectId', args.projectId)
+      fd.append('texto', args.texto)
+      for (const f of args.arquivos) {
+        fd.append('arquivos', f)
+      }
+      body = fd
+    } else {
+      body = JSON.stringify({ projectId: args.projectId, texto: args.texto })
+      headers['Content-Type'] = 'application/json'
+    }
+
     const r = await pedir<{ numero: number; endereco: string }>(
       ROTAS.desejo,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: args.projectId, texto: args.texto }),
+        headers,
+        body,
       },
       { fetchImpl: args.fetchImpl }
     )

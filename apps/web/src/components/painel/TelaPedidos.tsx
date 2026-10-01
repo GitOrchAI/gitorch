@@ -33,6 +33,7 @@ import { Card, Estado, Chips, Cabeca } from './PainelUI'
 import { Estados } from './PainelEstados'
 import { linhasVisiveis, alternar, andamentoDoNo, NIVEL } from './arvore-pedido'
 import type { NoDaArvore } from './painel-tipos'
+import { UploadDeAnexos } from './UploadDeAnexos'
 
 /** Um pedido como a rota devolve (espelha PedidoDoPainel do control-plane). */
 interface PedidoView {
@@ -91,6 +92,7 @@ type Filtro = 'todos' | 'andando' | 'fechado'
 
 export function TelaPedidos() {
   const [texto, setTexto] = useState('')
+  const [arquivos, setArquivos] = useState<File[]>([])
   const [repo, setRepo] = useState('')
   const [pri, setPri] = useState<Prioridade>('P1')
   const [enviando, setEnviando] = useState(false)
@@ -152,10 +154,11 @@ export function TelaPedidos() {
     }
     setEnviando(true)
     setAviso(null)
-    const r = await enviarPedido({ projectId: alvo, texto })
+    const r = await enviarPedido({ projectId: alvo, texto, arquivos })
     setEnviando(false)
     if (r.ok) {
       setTexto('')
+      setArquivos([])
       setAviso({ numero: r.numero, endereco: r.endereco })
     } else {
       setAviso({ erro: r.erro })
@@ -250,6 +253,9 @@ export function TelaPedidos() {
           }}
           placeholder="Quando um pagamento falhar duas vezes, quero avisar o cliente por e-mail."
         />
+
+        <UploadDeAnexos arquivos={arquivos} onChange={setArquivos} />
+
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 18 }}>
           <div style={{ minWidth: 210, flex: 1 }}>
             <span className="pn-label">Onde</span>
