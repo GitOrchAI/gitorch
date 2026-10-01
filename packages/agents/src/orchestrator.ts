@@ -22,7 +22,6 @@ import type {
   AgentMission,
   MissionPlan,
   MissionPlanItem,
-  RuntimeOverrides,
 } from './types'
 import { primeWorkspace } from './workspace-priming'
 import { checkMissionLimits } from './execution-limits'
