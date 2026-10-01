@@ -13,8 +13,5 @@
     "composite": true
   },
   "include": ["src"],
-  "references": [
-    { "path": "../cgc" },
-    { "path": "../cortex" }
-  ]
+  "references": [{ "path": "../cgc" }, { "path": "../cortex" }]
 }

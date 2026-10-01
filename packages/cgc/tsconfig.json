@@ -3,7 +3,15 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022", "ES2015.Promise", "ES2017.Object", "ES2015.Collection", "ES2015.Iterable", "ES2015.Symbol", "DOM"],
+    "lib": [
+      "ES2022",
+      "ES2015.Promise",
+      "ES2017.Object",
+      "ES2015.Collection",
+      "ES2015.Iterable",
+      "ES2015.Symbol",
+      "DOM"
+    ],
     "declaration": true,
     "declarationMap": true,
     "outDir": "./dist",

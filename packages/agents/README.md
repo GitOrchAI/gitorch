@@ -12,11 +12,11 @@ It introduces runtime-independent internal agents for:
 The same role can run on Codex CLI, Claude Code CLI, or Antigravity CLI. The MVP default mapping is:
 
 | Role | Default runtime |
-|---|---|
-| PO | Codex CLI |
-| RA | Claude Code CLI |
-| SM | Antigravity CLI |
-| QA | Antigravity CLI |
+| ---- | --------------- |
+| PO   | Codex CLI       |
+| RA   | Claude Code CLI |
+| SM   | Antigravity CLI |
+| QA   | Antigravity CLI |
 
 F6 keeps Jules separate. Jules is the async development executor, triggered and monitored through GitHub work items and PRs.
 
