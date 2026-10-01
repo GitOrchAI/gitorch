@@ -26,6 +26,12 @@ export const guestExecutionLimitsSchema = z.object({
 
 export type GuestExecutionLimits = z.infer<typeof guestExecutionLimitsSchema>
 
+/** Limite global de tokens (estimados) permitidos para todos os anexos de um único pedido. */
+export const MAX_ATTACHMENT_TOKENS_PER_WISH = 24000
+
+/** Limite de tokens (estimados) permitidos para um único documento anexado. */
+export const MAX_TOKENS_PER_DOCUMENT = 8000
+
 export interface ExecutionLimits {
   /** Ex.: '2G'. Vira `-p MemoryMax=<memoryMax>` do systemd-run. */
   memoryMax: string

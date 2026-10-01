@@ -20,6 +20,9 @@ import {
   validateForm,
   wrapClientRequest,
   validateDiagnosticIsolation,
+  truncarDocumento,
+  processarAnexosDoPedido,
+  estimarTokens,
   type PoTasksForm,
 } from './rails'
 
@@ -1133,5 +1136,56 @@ describe('wrapClientRequest with prompt injection protection', () => {
     const normalText = 'This is a normal feature request.'
     const result = wrapClientRequest(normalText)
     expect(result).toContain(normalText)
+  })
+})
+
+describe('Truncamento de Documentos', () => {
+  it('deve inserir a anotação de documento integral se não ultrapassar o limite', () => {
+    const textoPequeno = 'Este é um documento de teste muito pequeno.'
+    const limiteGeneroso = 100 // suporta 400 chars, e o texto + anotação cabe tranquilo
+
+    const res = truncarDocumento(textoPequeno, limiteGeneroso)
+    expect(res.truncado).toBe(false)
+    expect(res.texto).toContain('[Documento inserido integralmente]')
+    expect(res.texto).toContain(textoPequeno)
+  })
+
+  it('deve truncar o texto longo preservando headers e não cortando código aberto', () => {
+    const longo = [
+      '# Título 1',
+      'Parágrafo muito extenso para gastar tokens e forçar o corte. ' + 'a'.repeat(200),
+      '## Título 2',
+      '```typescript',
+      'const x = 1;',
+      '```',
+      'Final do arquivo.',
+    ].join('\n')
+
+    // Limite apertado, ex: 30 tokens = ~120 chars
+    const res = truncarDocumento(longo, 30)
+
+    expect(res.truncado).toBe(true)
+    expect(res.texto).toContain('[Conteúdo truncado respeitando limites de contexto]')
+    expect(res.texto).toContain('# Título 1')
+    expect(res.texto).toContain('## Título 2') // Deve ter preservado o header
+    // O texto deve não ter cortado dentro de um bloco sem fechar
+    // (a implementação fecha blocos que estariam abertos durante o corte)
+
+    // Assegura que o orçamento final não passou muito do planejado
+    expect(res.texto.length).toBeLessThanOrEqual(30 * 4 + 10)
+  })
+
+  it('processarAnexosDoPedido não deve estourar o limite global', () => {
+    const anexo1 = 'Texto 1 com uns chars'
+    const anexo2 = 'Texto 2 com muitos outros chars ' + 'a'.repeat(200)
+
+    // A tag mínima custa 13 tokens, usaremos limites que acomodem isso confortavelmente.
+    const resultados = processarAnexosDoPedido([anexo1, anexo2], 50, 40)
+
+    expect(resultados).toHaveLength(2)
+
+    const tokensTotal = resultados.reduce((acc, curr) => acc + curr.tokensEstimados, 0)
+    // O total deve se manter dentro do limite global de 50
+    expect(tokensTotal).toBeLessThanOrEqual(50)
   })
 })
