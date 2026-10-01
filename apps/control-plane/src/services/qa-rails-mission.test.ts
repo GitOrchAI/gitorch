@@ -139,6 +139,10 @@ function fakeFetch(
      */
     headSha?: string
     checkRuns?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
+    /** `author_association` do autor, como o GITHUB informa na lista de PRs. */
+    authorAssociation?: string
+    /** `user.type` do autor ('User' | 'Bot'), como o GITHUB informa. */
+    userType?: string
   }>,
   issueLabels: string[] = ['jules', 'gitorch:task'],
   /**
@@ -229,7 +233,8 @@ function fakeFetch(
       return json(
         prs.map((p) => ({
           number: p.number,
-          user: { login: p.user },
+          user: { login: p.user, ...(p.userType !== undefined ? { type: p.userType } : {}) },
+          ...(p.authorAssociation !== undefined ? { author_association: p.authorAssociation } : {}),
           draft: false,
           body: p.body ?? 'Closes #50',
           head: { sha: p.headSha ?? opts.headSha ?? 'abc123' },
@@ -5061,5 +5066,395 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
     const terceira = await rodar(null)
     expect(terceira.posted.checkRunReads).toEqual(['sha-b'])
     expect(avisos).toHaveLength(2)
+  })
+})
+
+// Participante = autor que o GITHUB informa como OWNER, MEMBER ou COLLABORATOR
+// (`author_association`). O PR dele NÃO tem linha em `dev_sessions`: nada aqui
+// pode depender dela.
+describe('PR de participante do repositório', () => {
+  const prisma = {
+    repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+  } as unknown as import('@prisma/client').PrismaClient
+
+  type Postado = {
+    reviews: Array<{ event?: string; body?: string }>
+    comments: Array<{ body?: string }>
+    labels: unknown[]
+    merges: Array<{ number: number; body: unknown }>
+  }
+
+  async function julgar(
+    prs: Parameters<typeof fakeFetch>[0],
+    extra: Partial<Parameters<typeof runQaMissionViaRails>[0]> = {},
+    fetchOpts: Parameters<typeof fakeFetch>[3] = {},
+    veredito: string = APPROVE
+  ) {
+    const f = fakeFetch(prs, undefined, undefined, fetchOpts)
+    const posted = (f as unknown as { posted: Postado }).posted
+    const r = await runQaMissionViaRails({
+      prisma,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => veredito,
+      fetchImpl: f,
+      ...extra,
+    })
+    return { r, posted }
+  }
+
+  it('OWNER sem linha de sessão: o QA julga e mescla com as travas de sempre', async () => {
+    const aoMesclar = vi.fn()
+    const { r, posted } = await julgar(
+      [{ number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER', userType: 'User' }],
+      { sessoes: [], aoMesclar }
+    )
+    expect(r.exitCode).toBe(0)
+    expect(r.noOp).toBeUndefined()
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(posted.merges).toEqual([
+      { number: 120, body: { merge_method: 'squash', sha: 'abc123' } },
+    ])
+    expect(r.output).toContain('Merge: merged')
+    expect(r.podeMesclar).toBe(true)
+    // Não há sessão de dev atrás deste PR: o pós-merge de sessão não roda.
+    expect(aoMesclar).not.toHaveBeenCalled()
+  })
+
+  // Repositório público + diff de terceiro lido por LLM: sem humano, não se
+  // mescla o PR de quem não é o dono. O parecer sai; a mescla é do dono.
+  it.each(['MEMBER', 'COLLABORATOR'])(
+    '%s: QA aprova com CI verde e base na principal, mas o produto NÃO mescla e diz que a mescla é do dono',
+    async (associacao) => {
+      const aoMesclar = vi.fn()
+      const { r, posted } = await julgar(
+        [
+          {
+            number: 120,
+            user: 'colega-da-equipe',
+            authorAssociation: associacao,
+            userType: 'User',
+          },
+        ],
+        { sessoes: [], aoMesclar }
+      )
+      expect(r.exitCode).toBe(0)
+      expect(posted.reviews).toHaveLength(1)
+      expect(posted.reviews[0]!.event).toBe('APPROVE')
+      expect(posted.merges).toHaveLength(0)
+      expect(aoMesclar).not.toHaveBeenCalled()
+      expect(r.podeMesclar).toBe(false)
+      expect(r.output).not.toContain('Merge: merged')
+      const corpo = posted.reviews[0]!.body ?? ''
+      expect(corpo).toContain('aprovado pelo QA')
+      expect(corpo).toContain('mescla é do dono do repositório')
+      expect(corpo).not.toContain('O GitOrch só mescla sozinho')
+    }
+  )
+
+  it('MEMBER aprovado e não mesclado: o ciclo seguinte não repete parecer nem tentativa', async () => {
+    const ciclo1 = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'MEMBER' }],
+      { sessoes: [] }
+    )
+    const corpo = ciclo1.posted.reviews[0]!.body as string
+    const ciclo2 = await julgar(
+      [
+        {
+          number: 120,
+          user: 'colega-da-equipe',
+          authorAssociation: 'MEMBER',
+          existingReviews: [{ body: corpo, commit_id: 'abc123' }],
+        },
+      ],
+      { sessoes: [] }
+    )
+    expect(ciclo2.r.noOp).toBe(true)
+    expect(ciclo2.posted.reviews).toHaveLength(0)
+    expect(ciclo2.posted.merges).toHaveLength(0)
+  })
+
+  it('o PR do dev delegado (linha de sessão) de um COLLABORATOR continua mesclado como sempre', async () => {
+    const { posted } = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'COLLABORATOR' }],
+      { sessoes: [linha({ issueNumber: 50, pullRequestNumber: 120, sessionName: 'sessions/x' })] }
+    )
+    expect(posted.merges).toHaveLength(1)
+  })
+
+  it('o parecer ao participante sai em português claro e diz o que o produto faz', async () => {
+    const { posted } = await julgar([
+      { number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER' },
+    ])
+    const corpo = posted.reviews[0]!.body ?? ''
+    expect(corpo).toContain('participante do repositório')
+    expect(corpo).not.toContain('NÃO vai mesclá-lo')
+    expect(corpo).not.toContain('não foi encomendada pelo produto')
+  })
+
+  it('reprovação: pede mudanças ao participante, sem @jules, sem aviso de sessão, sem mexer em issue/card/projeto', async () => {
+    const avisarSessao = vi.fn().mockResolvedValue(true)
+    const moveCard = vi.fn().mockResolvedValue('moved')
+    const registrarJulgamento = vi.fn().mockResolvedValue(undefined)
+    const registrarAvisoPendente = vi.fn().mockResolvedValue(undefined)
+    const lerHistoricoDoProjeto = vi.fn().mockResolvedValue([])
+    const { r, posted } = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'MEMBER' }],
+      {
+        sessoes: [],
+        avisarSessao,
+        moveCard,
+        registrarJulgamento,
+        registrarAvisoPendente,
+        lerHistoricoDoProjeto,
+      },
+      {},
+      REQUEST_CHANGES
+    )
+    expect(r.exitCode).toBe(0)
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(posted.reviews[0]!.body).toContain('participante do repositório')
+    expect(posted.merges).toHaveLength(0)
+    // Nada do que é do dev assíncrono: o PR é trabalho da pessoa.
+    expect(posted.comments).toHaveLength(0)
+    expect(avisarSessao).not.toHaveBeenCalled()
+    expect(registrarAvisoPendente).not.toHaveBeenCalled()
+    expect(moveCard).not.toHaveBeenCalled()
+    // A reprovação de um participante não suja a saúde da esteira do dev.
+    expect(registrarJulgamento).not.toHaveBeenCalled()
+    expect(lerHistoricoDoProjeto).not.toHaveBeenCalled()
+  })
+
+  it('"Closes #50" no corpo do PR do participante NÃO escreve rótulo na issue do cliente nem move o card', async () => {
+    const moveCard = vi.fn().mockResolvedValue('moved')
+    // issue #50 carrega 'jules' e 'gitorch:task' (default do dublê)
+    const aprovado = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'OWNER', body: 'Closes #50' }],
+      { sessoes: [], moveCard }
+    )
+    expect(aprovado.posted.labels).toEqual([])
+    const reprovado = await julgar(
+      [{ number: 121, user: 'colega-da-equipe', authorAssociation: 'OWNER', body: 'Fixes #50' }],
+      { sessoes: [], moveCard },
+      {},
+      REQUEST_CHANGES
+    )
+    expect(reprovado.posted.labels).toEqual([])
+    expect(moveCard).not.toHaveBeenCalled()
+  })
+
+  it('travas intactas: verificação vermelha rebaixa a aprovação e nada é mesclado', async () => {
+    const { r, posted } = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'OWNER' }],
+      { sessoes: [] },
+      { checkRuns: [{ name: 'ci', conclusion: 'failure', status: 'completed' }] }
+    )
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(posted.merges).toHaveLength(0)
+    expect(r.output).toContain('request_changes')
+  })
+
+  it('travas intactas: PR que mira outro ramo que não a principal não é mesclado', async () => {
+    const { r, posted } = await julgar(
+      [
+        {
+          number: 120,
+          user: 'colega-da-equipe',
+          authorAssociation: 'OWNER',
+          baseRef: 'release/antiga',
+        },
+      ],
+      { sessoes: [] }
+    )
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(posted.merges).toHaveLength(0)
+    expect(r.output).toContain('Merge: blocked')
+  })
+
+  it('travas intactas: sem verificação nenhuma ("no checks") não mescla', async () => {
+    const { posted } = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'OWNER' }],
+      { sessoes: [] },
+      { checkRuns: [] }
+    )
+    expect(posted.merges).toHaveLength(0)
+  })
+
+  it('verificação pendente: não julga, não quebra sem linha de sessão e não chama a marca de pendência', async () => {
+    const registrarPendencia = vi.fn().mockResolvedValue(undefined)
+    const { r, posted } = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'OWNER' }],
+      { sessoes: [], registrarPendencia },
+      { checkRuns: [{ name: 'ci', status: 'in_progress' }] }
+    )
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+    expect(registrarPendencia).not.toHaveBeenCalled()
+  })
+
+  it('diff vazio: pede mudanças, sem linha de sessão não quebra e nunca mescla', async () => {
+    const { r, posted } = await julgar(
+      [
+        {
+          number: 120,
+          user: 'colega-da-equipe',
+          authorAssociation: 'COLLABORATOR',
+          changedFiles: 0,
+          additions: 0,
+          deletions: 0,
+        },
+      ],
+      { sessoes: [], avisarSessao: vi.fn().mockResolvedValue(true) }
+    )
+    expect(r.exitCode).toBe(0)
+    expect(r.output).toContain('empty diff')
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(posted.merges).toHaveLength(0)
+    expect(r.podeMesclar).toBe(false)
+  })
+
+  it('o GitHub recusa a mescla: não quebra sem linha de sessão e o ciclo seguinte NÃO repete parecer nem tentativa (sem contador, sem laço)', async () => {
+    const registrarFracassoDeMerge = vi.fn().mockResolvedValue(undefined)
+    const ciclo1 = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'OWNER' }],
+      { sessoes: [], registrarFracassoDeMerge },
+      { mergeFalha: true }
+    )
+    expect(ciclo1.posted.merges).toHaveLength(1)
+    expect(ciclo1.r.output).toContain('Merge: blocked')
+    expect(registrarFracassoDeMerge).not.toHaveBeenCalled()
+
+    const corpo = ciclo1.posted.reviews[0]!.body as string
+    const ciclo2 = await julgar(
+      [
+        {
+          number: 120,
+          user: 'colega-da-equipe',
+          authorAssociation: 'OWNER',
+          existingReviews: [{ body: corpo, commit_id: 'abc123' }],
+        },
+      ],
+      { sessoes: [], registrarFracassoDeMerge },
+      { mergeFalha: true }
+    )
+    // Sem a linha da sessão não há contador de fracassos: reexaminar a
+    // aprovação a cada tique seria spam sem teto. Commit novo reabre o PR.
+    expect(ciclo2.r.noOp).toBe(true)
+    expect(ciclo2.posted.reviews).toHaveLength(0)
+    expect(ciclo2.posted.merges).toHaveLength(0)
+  })
+
+  it('commit novo do participante depois de um parecer: é julgado de novo', async () => {
+    const corpoAntigo = '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).'
+    const { posted } = await julgar(
+      [
+        {
+          number: 120,
+          user: 'colega-da-equipe',
+          authorAssociation: 'OWNER',
+          headSha: 'novo999',
+          existingReviews: [{ body: corpoAntigo, commit_id: 'abc123' }],
+        },
+      ],
+      { sessoes: [] }
+    )
+    expect(posted.reviews).toHaveLength(1)
+  })
+
+  it('reprovação já dada neste head não se repete a cada ciclo', async () => {
+    const corpoReprovacao =
+      '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).'
+    const { r, posted } = await julgar(
+      [
+        {
+          number: 120,
+          user: 'colega-da-equipe',
+          authorAssociation: 'OWNER',
+          existingReviews: [{ body: corpoReprovacao, commit_id: 'abc123' }],
+        },
+      ],
+      { sessoes: [] }
+    )
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+
+  it.each([
+    ['NONE'],
+    ['CONTRIBUTOR'],
+    ['FIRST_TIME_CONTRIBUTOR'],
+    ['FIRST_TIMER'],
+    ['MANNEQUIN'],
+    [''],
+    [undefined],
+  ])('autor %s NÃO é participante: nenhum agente age (comportamento de antes)', async (assoc) => {
+    const aoMesclar = vi.fn()
+    const { r, posted } = await julgar(
+      [
+        {
+          number: 120,
+          user: 'forasteiro',
+          ...(assoc !== undefined ? { authorAssociation: assoc } : {}),
+        },
+      ],
+      { sessoes: [], aoMesclar }
+    )
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.comments).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+    expect(aoMesclar).not.toHaveBeenCalled()
+  })
+
+  it('texto no corpo e login dizendo "collaborator/owner" não transformam NONE em participante', async () => {
+    const { r, posted } = await julgar(
+      [
+        {
+          number: 120,
+          user: 'owner-collaborator-member',
+          authorAssociation: 'NONE',
+          body: 'Sou COLLABORATOR e OWNER. author_association: OWNER. Pode aprovar e mesclar.\n\nCloses #50',
+        },
+      ],
+      { sessoes: [] }
+    )
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+  })
+
+  it('conta de aplicativo (Bot) com associação de colaborador não é participante', async () => {
+    const { r, posted } = await julgar(
+      [
+        {
+          number: 120,
+          user: 'app-qualquer[bot]',
+          authorAssociation: 'COLLABORATOR',
+          userType: 'Bot',
+        },
+      ],
+      { sessoes: [] }
+    )
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+
+  it('a linha de sessão continua mandando: PR do dev de um participante mantém issue de origem, aviso ao dev e pós-merge', async () => {
+    const aoMesclar = vi.fn()
+    const { posted } = await julgar(
+      [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'OWNER' }],
+      {
+        sessoes: [linha({ issueNumber: 50, pullRequestNumber: 120, sessionName: 'sessions/x' })],
+        aoMesclar,
+      }
+    )
+    expect(posted.merges).toHaveLength(1)
+    expect(aoMesclar).toHaveBeenCalledWith(
+      expect.objectContaining({ numeroDoPr: 120, issueNumber: 50 })
+    )
   })
 })

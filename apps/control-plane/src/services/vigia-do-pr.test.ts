@@ -154,6 +154,94 @@ describe('o portão do dono — nenhum caminho escreve num PR de gente', () => {
   })
 })
 
+// O QA atende o PR de PARTICIPANTE do repositório (OWNER/MEMBER/COLLABORATOR),
+// mas o trabalho continua sendo da pessoa. O vigia só age sobre automação:
+// fechar, devolver à fila ou abrir sessão do dev a partir da principal
+// duplicaria e atropelaria o PR dela.
+describe('PR de participante — o vigia nunca fecha, devolve nem retoma', () => {
+  const AUTOR_DO_PARTICIPANTE = 'colega-da-equipe'
+  const sinaisDoParticipante = {
+    autor: AUTOR_DO_PARTICIPANTE,
+    labels: [] as string[],
+    corpo: 'Ajuste do módulo de relatórios, descrito pelo colega.',
+  }
+  const doParticipante = situacao({
+    numero: 120,
+    sinais: sinaisDoParticipante,
+    branchDoPr: 'feat/relatorios-do-colega',
+    paradoHaMs: 16 * DIA,
+  })
+
+  it('o PR do participante NÃO é da automação', () => {
+    expect(ehPRDaAutomacao(sinaisDoParticipante)).toBe(false)
+  })
+
+  it('nunca sai de `ignorar`, em nenhuma combinação de estado (inclusive parado há 16 dias)', () => {
+    const acoes = new Set<string>()
+    for (const mergeable of [true, false, null]) {
+      for (const verificacao of ['verde', 'vermelha', 'pendente', 'ausente'] as const) {
+        for (const issueAberta of [true, false]) {
+          for (const issueNumber of [329, null]) {
+            for (const acoesAnteriores of [0, MAX_ACOES_DO_VIGIA, 5]) {
+              for (const tarefaJaDevolvidaAFila of [true, false]) {
+                for (const paradoHaMs of [0, 16 * DIA, 90 * DIA]) {
+                  acoes.add(
+                    decidirAcaoNoPrOrfao({
+                      ...doParticipante,
+                      mergeable,
+                      verificacao,
+                      issueAberta,
+                      issueNumber,
+                      acoesAnteriores,
+                      tarefaJaDevolvidaAFila,
+                      paradoHaMs,
+                    }).acao
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    expect([...acoes]).toEqual(['ignorar'])
+  })
+
+  it('na varredura inteira nada é escrito: nem sessão do Jules, nem fechamento, nem aviso', async () => {
+    const escritas: string[] = []
+    const resumo = await rodar({
+      prs: [
+        prAberto({
+          numero: 120,
+          autor: AUTOR_DO_PARTICIPANTE,
+          labels: [],
+          corpo: sinaisDoParticipante.corpo,
+          branchDoPr: 'feat/relatorios-do-colega',
+          mergeable: false,
+          verificacao: 'vermelha',
+          paradoHaMs: 16 * DIA,
+        }),
+      ],
+      issueDoPr: () => 329,
+      acoesAnteriores: async () => 5,
+      abrirSessaoDeConserto: async ({ numeroDoPr }) => {
+        escritas.push(`sessão:${numeroDoPr}`)
+        return true
+      },
+      fecharPr: async ({ numero }) => {
+        escritas.push(`fechou:${numero}`)
+        return true
+      },
+      avisarDono: async (t) => {
+        escritas.push(`avisou:${t}`)
+        return true
+      },
+    })
+    expect(escritas).toEqual([])
+    expect(resumo).toContain('1 de gente')
+  })
+})
+
 describe('não compete com a vigia de sessões', () => {
   it('PR com sessão viva é devolvido a quem já cuida dele', () => {
     const d = decidirAcaoNoPrOrfao(

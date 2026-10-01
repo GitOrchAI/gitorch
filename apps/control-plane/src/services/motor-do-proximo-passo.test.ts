@@ -156,3 +156,55 @@ describe('motor-do-proximo-passo (escalar)', () => {
     expect(d.acao).not.toBe('escalar')
   })
 })
+
+// O QA atende o PR de participante do repositório (OWNER/MEMBER/COLLABORATOR),
+// mas o motor do vigia continua só acompanhando — retomar, fechar, devolver à
+// fila, escalar ou mesclar é coisa da automação.
+describe('decidirProximoPasso — PR de participante do repositório', () => {
+  const PARTICIPANTE = {
+    autor: 'colega-da-equipe',
+    labels: [] as string[],
+    corpo: 'Ajuste do colega',
+  }
+  const configs = [
+    { jules: 'sim', assistente: 'sim', pessoa: 'sim', dependabot: 'sim' },
+    { jules: 'perguntar', assistente: 'perguntar', pessoa: 'perguntar', dependabot: 'perguntar' },
+    PADRAO_DE_CUIDADO,
+  ] as const
+
+  it('só acompanha, em qualquer origem, configuração ou estado (parado 16 dias, com parecer)', () => {
+    const acoes = new Set<string>()
+    for (const cuidaPorOrigem of configs) {
+      for (const origem of ['pessoa', 'jules', 'jules_gitorch', 'desconhecido', 'assistente']) {
+        for (const mergeable of [true, false, null]) {
+          for (const verificacao of ['verde', 'vermelha', 'pendente'] as const) {
+            for (const issueNumber of [10, null]) {
+              for (const acoesAnteriores of [0, 5]) {
+                acoes.add(
+                  decidirProximoPasso({
+                    ...base(),
+                    sinais: PARTICIPANTE,
+                    cuidaPorOrigem,
+                    origem,
+                    mergeable,
+                    verificacao,
+                    issueNumber,
+                    acoesAnteriores,
+                    paradoHaMs: 16 * 24 * 60 * 60 * 1000,
+                    vereditoDoQa: 'approve',
+                    entendimentoCompleto: true,
+                    ultimoParecerQa: {
+                      body: 'Pedir mudanças: falta teste.',
+                      timestamp: new Date('2026-09-15T10:00:00Z'),
+                    },
+                  }).acao
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+    expect([...acoes]).toEqual(['so-acompanhar'])
+  })
+})

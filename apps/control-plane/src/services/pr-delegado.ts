@@ -11,11 +11,20 @@
 // desta mudança e o dia em que o serviço externo mudar de comportamento.
 
 import type { LinhaDeSessao } from './dev-session-store.js'
+import { associacaoDeParticipante, type AssociacaoDeParticipante } from './participante-do-repo.js'
 
 export interface ResultadoPrDelegado {
   delegado: boolean
   /** A tarefa de origem, quando dá para saber. */
   issueNumber: number | null
+  /**
+   * Só presente quando o PR é julgável por ser de um PARTICIPANTE do
+   * repositório (e não por ser entrega do dev assíncrono): quem consome não
+   * pode assumir sessão, issue de origem nem o dev para retrabalhar.
+   */
+  origem?: 'participante'
+  /** Só com `origem: 'participante'`: a associação que o GitHub informou (decide quem pode mesclar). */
+  associacao?: AssociacaoDeParticipante
 }
 
 export function ehPrDelegado(args: {
@@ -26,6 +35,10 @@ export function ehPrDelegado(args: {
   sessoes: LinhaDeSessao[]
   /** Consulta se a issue carrega a etiqueta de delegação. */
   issueComEtiquetaDeDelegacao: (issueNumber: number) => boolean
+  /** `author_association` que o GITHUB informou para o autor do PR (nunca texto do corpo). */
+  authorAssociation?: string | null | undefined
+  /** `user.type` do autor segundo o GitHub ('Bot' fica fora). */
+  tipoDoAutor?: string | null | undefined
 }): ResultadoPrDelegado {
   // 1) A linha guardada — autoritativa.
   const porLinha = args.sessoes.find((s) => s.pullRequestNumber === args.numeroDoPr)
@@ -60,6 +73,16 @@ export function ehPrDelegado(args: {
     if (houveSessaoParaEssaIssue && args.issueComEtiquetaDeDelegacao(n)) {
       return { delegado: true, issueNumber: n }
     }
+  }
+
+  // 4) PARTICIPANTE do repositório: quem o dono deixou orquestrar tem o PR
+  // julgado como o do dev delegado, mesmo sem linha de sessão. A decisão vem SÓ do `author_association` informado pelo GitHub —
+  // texto do corpo ou login não contam (repositório público). É o ÚLTIMO recuo
+  // de propósito: qualquer prova de delegação de verdade (linha, jules, ligação)
+  // ganha e mantém a issue de origem.
+  const associacao = associacaoDeParticipante(args.authorAssociation, args.tipoDoAutor)
+  if (associacao !== null) {
+    return { delegado: true, issueNumber: null, origem: 'participante', associacao }
   }
 
   return { delegado: false, issueNumber: null }
