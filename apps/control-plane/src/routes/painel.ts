@@ -63,6 +63,7 @@ import {
   ORIGENS,
   POLITICAS_DE_CUIDADO,
 } from '../services/cuidado-por-origem.js'
+import { tudoSobreOItem } from '../services/tudo-sobre-o-item.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -1797,6 +1798,33 @@ export const painelRoutes = async (
       })
 
       return reply.send({ cuidaPorOrigem, janelaEmConstrucaoHoras })
+    }
+  )
+
+  // GET /api/v1/painel/repositorio/:projectId/tudo/:numero — issue #877: a
+  // ficha + o grafo completo de vínculos (hierarquia, milestone, campos do
+  // quadro, labels, PRs ligados, sessões do Jules e — só PR — CI/parecer do
+  // QA) de UM item, direto de `tudoSobreOItem` (tudo-sobre-o-item.ts).
+  app.get<{ Params: { projectId: string; numero: string } }>(
+    '/api/v1/painel/repositorio/:projectId/tudo/:numero',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const { projectId } = request.params
+      const numero = Number(request.params.numero)
+      if (!Number.isInteger(numero) || numero <= 0) {
+        return reply.code(400).send({ error: 'Número inválido.' })
+      }
+      const row = await app.prisma.project.findFirst({
+        where: { id: projectId, userId: ownerId, isActive: true },
+        select: { id: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      const item = await tudoSobreOItem({ prisma: app.prisma, projectId: row.id, numero })
+      if (!item) return reply.code(404).send({ error: 'Item não encontrado.' })
+      return reply.send(item)
     }
   )
 

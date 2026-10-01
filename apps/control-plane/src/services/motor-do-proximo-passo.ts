@@ -11,6 +11,7 @@ import {
   ehAutomacaoQueOVigiaNaoConserta,
   branchParaRetomar,
   MAX_ACOES_DO_VIGIA,
+  motivoDeDevolverAFila,
   IDADE_MINIMA_DE_ORFANDADE_MS,
   type SinaisDePR,
   type RamoDoPr,
@@ -30,9 +31,11 @@ export type AcaoDoMotor =
       motivo: string
     }
   | { acao: 'fechar-vazio'; motivo: string }
+  | { acao: 'devolver-a-fila'; issueNumber: number; motivo: string }
   | { acao: 'mesclar'; motivo: string }
   | { acao: 'perguntar-se-cuida'; motivo: string }
   | { acao: 'escalar'; motivo: string }
+  | { acao: 'pedir-julgamento'; motivo: string }
 
 export interface MotorDoProximoPassoDeps extends RamoDoPr {
   numero: number
@@ -44,6 +47,8 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
   verificacao: EstadoDaVerificacao
   paradoHaMs: number
   acoesAnteriores: number
+  /** A tarefa já foi devolvida à fila pelo vigia (uma vez por tarefa)? */
+  tarefaJaDevolvidaAFila: boolean
   podeAbrirSessao: boolean
   origem: string
   cuidaPorOrigem: CuidaPorOrigem
@@ -55,10 +60,11 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
   /** Presentes só quando há veredito do QA para considerar (item já
    *  julgado) — ausentes, o motor nunca decide "mesclar". */
   entendimentoCompleto?: boolean
-  vereditoDoQa?: 'approve' | 'request_changes'
+  vereditoDoQa?: 'approve' | 'request_changes' | undefined
   ultimoParecerQa?: { body: string; timestamp: Date } | null
   temDuvidaPendente?: boolean
   ultimoEscalonamentoEm?: Date | null
+  diffTruncado?: boolean
   /** Fase 5.5: true quando o plano do GitHub não permite a melhoria paga E
    *  a alternativa gratuita ainda não está instalada no repositório. O motor
    *  degrada a decisão de 'mesclar' para 'perguntar-se-cuida' para exigir
@@ -145,7 +151,7 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
   if (causa === null) {
     // Nada para consertar. Pronto para julgar/mesclar — ou perguntar, ou
     // acompanhar, conforme a configuração. NUNCA "escalar" primeiro.
-    if (deps.vereditoDoQa === 'approve' && deps.entendimentoCompleto) {
+    if (deps.vereditoDoQa === 'approve') {
       if (deps.exigeRevisaoDeSeguranca) {
         return {
           acao: 'perguntar-se-cuida',
@@ -157,9 +163,27 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
         motivo: `#${deps.numero}: critérios batidos, mesclando conforme "${politica}"`,
       }
     }
+
+    if (deps.vereditoDoQa === undefined && politica === 'sim') {
+      return {
+        acao: 'pedir-julgamento',
+        motivo: `#${deps.numero}: aguardando julgamento, QA acionado`,
+      }
+    }
     return politica === 'perguntar'
       ? { acao: 'perguntar-se-cuida', motivo: `#${deps.numero} está pronto — cuido deste pedido?` }
       : { acao: 'so-acompanhar', motivo: `#${deps.numero}: aguardando julgamento` }
+  }
+
+  // Limite de tentativas estourado com algo ainda para consertar: em vez de
+  // insistir ou desistir calado, fecha o PR antigo e devolve a tarefa à fila —
+  // UMA vez por tarefa. Se já foi feito, segue o caminho de sempre.
+  if (deps.acoesAnteriores >= MAX_ACOES_DO_VIGIA && !deps.tarefaJaDevolvidaAFila) {
+    return {
+      acao: 'devolver-a-fila',
+      issueNumber: deps.issueNumber,
+      motivo: motivoDeDevolverAFila(deps.numero),
+    }
   }
 
   const branch = branchParaRetomar(deps)

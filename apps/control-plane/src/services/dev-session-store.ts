@@ -434,6 +434,9 @@ export interface LinhaParaCicloTerminal {
    * quando ela é `escalada:` (`ehMarcaDeEscalada`), independente de `state`.
    */
   answeredHash: string | null
+  /** Mescla já registrada pela esteira (`registrarMescla`): mesmo com `state`
+   *  velho, a linha entra no ciclo terminal para confirmar e fechar. */
+  mergeCommitSha: string | null
 }
 
 /**
@@ -460,6 +463,7 @@ export async function linhasVivasParaCicloTerminal(deps: {
       analysisDoneAt: true,
       devAccountId: true,
       answeredHash: true,
+      mergeCommitSha: true,
     },
   })) as unknown as LinhaParaCicloTerminal[]
 }

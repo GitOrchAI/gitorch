@@ -20,9 +20,11 @@ import { ehTerminal } from './estados-de-sessao.js'
 import { ehMarcaDeEscalada } from './pergunta-sem-resposta.js'
 import type { MotivoDeFechamento } from './dev-session-store.js'
 
-/** Quanto tempo esperar um PR aberto-e-reprovado ganhar commit novo antes de
- *  desistir dele. O dev pode legitimamente demorar a retrabalhar. */
-export const HORAS_ATE_DESISTIR_DO_PR_REJEITADO = 12
+/** Quanto esperar, com a sessão do dev já terminal, antes de retomar um PR
+ *  aberto-e-reprovado. Sessão terminal + parecer do QA = ninguém está atrás do
+ *  PR (medido 30/09: PRs #4038-#4041 parados 12h à toa). 1h só dá margem a uma
+ *  leitura duplicada de estado. */
+export const HORAS_ATE_DESISTIR_DO_PR_REJEITADO = 1
 
 /** Na 2ª vez que a MESMA issue volta morta, roda a análise antes de tentar de
  *  novo. `requeueCount` conta quantas vezes a issue já foi redelegada. */
@@ -74,7 +76,7 @@ export function decidirSessaoTerminal(args: {
    * L4-T5: o ramo do PR reprovado, quando dá para retomar nele
    * (`branchParaRetomar`, vigia-do-pr.ts — `null` para fork ou ramo
    * desconhecido). Só é OLHADO quando `situacaoDoPr === 'aberto-rejeitado-parado'`
-   * e as 12h já passaram; `undefined` (chamador que ainda não sabe o ramo)
+   * e a espera já passou; `undefined` (chamador que ainda não sabe o ramo)
    * preserva o comportamento antigo (fecha e redelega, nunca retoma no mesmo
    * PR) — nenhum chamador existente quebra por não conhecer este campo.
    */
@@ -84,15 +86,23 @@ export function decidirSessaoTerminal(args: {
    */
   answeredHash?: string | null
 }): DecisaoTerminal {
-  if (!ehTerminal(args.estado)) return { acao: 'manter' }
+  // Estado gravado velho não segura sessão de PR mesclado: a mescla registrada
+  // pela esteira tira a linha da vigia pré-merge, e o estado fica parado em
+  // IN_PROGRESS (achado 30/09: Jardim #4000/#3718, 10h ocupando vaga). Só o
+  // merge fecha uma sessão que o Jules ainda não deu como terminada.
+  if (!ehTerminal(args.estado)) {
+    return args.situacaoDoPr === 'mesclado'
+      ? { acao: 'fechar-concluido', motivo: 'merged' }
+      : { acao: 'manter' }
+  }
 
   // Caminho feliz e caminho "ainda no QA": nada a fazer aqui.
   if (args.situacaoDoPr === 'mesclado') return { acao: 'fechar-concluido', motivo: 'merged' }
   if (args.situacaoDoPr === 'aberto-vivo') return { acao: 'manter' }
 
   // PR aberto e reprovado: se a dúvida foi escalada ao dono, mantém a sessão
-  // aguardando a decisão do dono. Caso contrário, dá tempo do dev retrabalhar
-  // antes de tentar retomar no mesmo PR ou fechar.
+  // aguardando a decisão do dono. Caso contrário, só uma margem curta (1h) de
+  // leitura duplicada de estado antes de retomar no mesmo PR ou fechar.
   if (args.situacaoDoPr === 'aberto-rejeitado-parado') {
     if (ehMarcaDeEscalada(args.answeredHash)) return { acao: 'manter' }
     if (args.horasNoTerminal < HORAS_ATE_DESISTIR_DO_PR_REJEITADO) {

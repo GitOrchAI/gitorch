@@ -634,6 +634,280 @@ export class ProjectV2Client {
     return nodes.map((n) => n.number)
   }
 
+  /**
+   * O grafo completo de vínculos de uma ISSUE numa ÚNICA chamada GraphQL —
+   * hierarquia, milestone, campos do Project v2, labels/assignees e PRs
+   * ligados. Issue #877: a coleta original fazia 5-6 chamadas separadas por
+   * item (um método por pedaço) e isso estourou o rate limit da installation
+   * do GitHub App em produção (5.969 respostas 403 em 24h, medido 28/09/2026).
+   * Consolidado aqui em UMA query — `statusCheckRollup`/`qaReview` ficam
+   * sempre `null` (são conceito de PR, não de issue; `getGrafoCompletoDoPr`
+   * cobre isso).
+   */
+  async getGrafoCompletoDaIssue(input: {
+    owner: string
+    repo: string
+    number: number
+  }): Promise<GrafoCompletoDoItem> {
+    interface NoDoPai {
+      number: number
+      title: string
+      state: string
+      parent: NoDoPai | null
+    }
+    const response = await this.request<{
+      repository: {
+        issue: {
+          parent: NoDoPai | null
+          subIssues: { nodes: Array<{ number: number; title: string; state: string }> }
+          milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+          projectItems: {
+            nodes: Array<{
+              project: { id: string; title: string }
+              fieldValues: { nodes: CampoDoProjeto[] }
+            }>
+          }
+          labels: { nodes: Array<{ name: string }> }
+          assignees: { nodes: Array<{ login: string }> }
+          closedByPullRequestsReferences: { nodes: Array<{ number: number }> }
+          timelineItems: { nodes: NoDaTimeline[] }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetGrafoCompletoDaIssue($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $number) {
+                parent {
+                  number title state
+                  parent {
+                    number title state
+                    parent {
+                      number title state
+                      parent { number title state }
+                    }
+                  }
+                }
+                subIssues(first: 100) { nodes { number title state } }
+                milestone { title number dueOn state }
+                projectItems(first: 10) {
+                  nodes {
+                    project { id title }
+                    fieldValues(first: 20) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          name
+                        }
+                        ... on ProjectV2ItemFieldIterationValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          title startDate duration
+                        }
+                        ... on ProjectV2ItemFieldNumberValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          number
+                        }
+                        ... on ProjectV2ItemFieldTextValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          text
+                        }
+                      }
+                    }
+                  }
+                }
+                labels(first: 20) { nodes { name } }
+                assignees(first: 10) { nodes { login } }
+                closedByPullRequestsReferences(first: 10) { nodes { number } }
+                timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
+                  nodes {
+                    __typename
+                    ... on CrossReferencedEvent { source { __typename ... on PullRequest { number } } }
+                    ... on ConnectedEvent { subject { __typename ... on PullRequest { number } } }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const issue = unwrap(response).repository?.issue
+    if (!issue) {
+      return {
+        hierarquia: { parents: [], subIssues: [] },
+        milestone: null,
+        projectFields: [],
+        labelsAndAssignees: { labels: [], assignees: [] },
+        prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+        statusCheckRollup: null,
+        qaReview: null,
+      }
+    }
+
+    const parents: Array<{ number: number; title: string; state: string }> = []
+    let atual: NoDoPai | null = issue.parent
+    while (atual) {
+      parents.push({ number: atual.number, title: atual.title, state: atual.state })
+      atual = atual.parent
+    }
+    const subIssues = issue.subIssues.nodes.map((n) => ({
+      number: n.number,
+      title: n.title,
+      state: n.state,
+    }))
+
+    return {
+      hierarquia: { parents, subIssues },
+      milestone: issue.milestone,
+      projectFields: parseProjectFields(issue.projectItems.nodes),
+      labelsAndAssignees: {
+        labels: issue.labels.nodes.map((n) => n.name),
+        assignees: issue.assignees.nodes.map((n) => n.login),
+      },
+      prsLigados: parseCrossReferences(
+        issue.timelineItems.nodes,
+        issue.closedByPullRequestsReferences.nodes
+      ),
+      statusCheckRollup: null,
+      qaReview: null,
+    }
+  }
+
+  /**
+   * O grafo completo de vínculos de um PR numa ÚNICA chamada GraphQL —
+   * milestone, campos do Project v2, labels/assignees, referências cruzadas
+   * (sem `closedByPullRequestsReferences`, que é só de issue), CI e o último
+   * parecer do QA do GitOrch. Issue #877 (mesma motivação de
+   * `getGrafoCompletoDaIssue` — consolidar as chamadas por rate limit).
+   */
+  async getGrafoCompletoDoPr(input: {
+    owner: string
+    repo: string
+    number: number
+    marcaDoParecer: string
+  }): Promise<GrafoCompletoDoItem> {
+    const response = await this.request<{
+      repository: {
+        pullRequest: {
+          milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+          projectItems: {
+            nodes: Array<{
+              project: { id: string; title: string }
+              fieldValues: { nodes: CampoDoProjeto[] }
+            }>
+          }
+          labels: { nodes: Array<{ name: string }> }
+          assignees: { nodes: Array<{ login: string }> }
+          timelineItems: { nodes: NoDaTimeline[] }
+          commits: { nodes: Array<{ commit: { statusCheckRollup: { state: string } | null } }> }
+          reviews: {
+            nodes: Array<{
+              state: string
+              body: string | null
+              submittedAt: string | null
+              commit: { oid: string } | null
+            }>
+          }
+        } | null
+      } | null
+    }>(
+      {
+        query: `
+          query GetGrafoCompletoDoPr($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                milestone { title number dueOn state }
+                projectItems(first: 10) {
+                  nodes {
+                    project { id title }
+                    fieldValues(first: 20) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          name
+                        }
+                        ... on ProjectV2ItemFieldIterationValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          title startDate duration
+                        }
+                        ... on ProjectV2ItemFieldNumberValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          number
+                        }
+                        ... on ProjectV2ItemFieldTextValue {
+                          field { ... on ProjectV2FieldCommon { name } }
+                          text
+                        }
+                      }
+                    }
+                  }
+                }
+                labels(first: 20) { nodes { name } }
+                assignees(first: 10) { nodes { login } }
+                timelineItems(first: 50, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
+                  nodes {
+                    __typename
+                    ... on CrossReferencedEvent { source { __typename ... on PullRequest { number } } }
+                    ... on ConnectedEvent { subject { __typename ... on PullRequest { number } } }
+                  }
+                }
+                commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+                reviews(last: 30) { nodes { state body submittedAt commit { oid } } }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, number: input.number },
+      },
+      this.token
+    )
+
+    const pr = unwrap(response).repository?.pullRequest
+    if (!pr) {
+      return {
+        hierarquia: { parents: [], subIssues: [] },
+        milestone: null,
+        projectFields: [],
+        labelsAndAssignees: { labels: [], assignees: [] },
+        prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+        statusCheckRollup: null,
+        qaReview: null,
+      }
+    }
+
+    const statusCheckRollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state ?? null
+    const nossasReviews = pr.reviews.nodes.filter(
+      (r) => typeof r.body === 'string' && r.body.includes(input.marcaDoParecer)
+    )
+    const ultima = nossasReviews.at(-1) ?? null
+
+    return {
+      hierarquia: { parents: [], subIssues: [] },
+      milestone: pr.milestone,
+      projectFields: parseProjectFields(pr.projectItems.nodes),
+      labelsAndAssignees: {
+        labels: pr.labels.nodes.map((n) => n.name),
+        assignees: pr.assignees.nodes.map((n) => n.login),
+      },
+      prsLigados: parseCrossReferences(pr.timelineItems.nodes),
+      statusCheckRollup,
+      qaReview: ultima
+        ? {
+            state: ultima.state,
+            headSha: ultima.commit?.oid ?? null,
+            resumo: (ultima.body ?? '').slice(0, 2000),
+            submittedAt: ultima.submittedAt,
+          }
+        : null,
+    }
+  }
+
   // Igual ao findProjectId, mas LANÇA quando o board não existe: os fluxos do PO
   // e do SM operam um board que TEM que existir, então "não encontrado" ali é
   // um erro de verdade (não um sinal para criar). Contrato estrito de sempre —
@@ -1631,6 +1905,126 @@ export class ProjectV2Client {
       this.token
     )
     return unwrap(response).node?.subIssues?.nodes ?? []
+  }
+}
+
+/** Um campo do Project v2 de um item, já achatado (issue #877). */
+interface CampoDoProjeto {
+  __typename: string
+  field?: { name: string } | null
+  name?: string
+  number?: number
+  text?: string
+  title?: string
+  startDate?: string
+  duration?: number
+}
+
+/** Um nó de timelineItems (CrossReferencedEvent ou ConnectedEvent), cru. */
+interface NoDaTimeline {
+  __typename: string
+  source?: { __typename: string; number?: number }
+  subject?: { __typename: string; number?: number }
+}
+
+/**
+ * O grafo completo de vínculos de UM item (issue ou PR) — forma unificada
+ * devolvida por `getGrafoCompletoDaIssue`/`getGrafoCompletoDoPr` (issue
+ * #877). Campos que não se aplicam ao tipo do item vêm vazios/`null` (uma
+ * issue nunca tem `statusCheckRollup`; um PR nunca tem `hierarquia`).
+ */
+export interface GrafoCompletoDoItem {
+  hierarquia: {
+    parents: Array<{ number: number; title: string; state: string }>
+    subIssues: Array<{ number: number; title: string; state: string }>
+  }
+  milestone: { title: string; number: number; dueOn: string | null; state: string } | null
+  projectFields: Array<{
+    project: { id: string; title: string }
+    status: string | null
+    iteration: { title: string; startDate: string; duration: number } | null
+    peso: number | null
+    fields: Array<{ name: string; value: string }>
+  }>
+  labelsAndAssignees: { labels: string[]; assignees: string[] }
+  prsLigados: { closedByPullRequests: number[]; crossReferencedPullRequests: number[] }
+  statusCheckRollup: string | null
+  qaReview: {
+    state: string
+    headSha: string | null
+    resumo: string
+    submittedAt: string | null
+  } | null
+}
+
+/**
+ * Achata os campos do Project v2 de um item — mesma lógica que
+ * `getProjectsV2Fields` usava antes da consolidação (issue #877): Status
+ * (single-select) e Peso/Sprint viram atalhos nomeados, o resto cai em
+ * `fields` genérico.
+ */
+function parseProjectFields(
+  nodes: Array<{ project: { id: string; title: string }; fieldValues: { nodes: CampoDoProjeto[] } }>
+): GrafoCompletoDoItem['projectFields'] {
+  return nodes.map((node) => {
+    let status: string | null = null
+    let iteration: { title: string; startDate: string; duration: number } | null = null
+    let peso: number | null = null
+    const fields: Array<{ name: string; value: string }> = []
+
+    for (const fv of node.fieldValues.nodes) {
+      const nomeDoCampo = fv.field?.name
+      if (!nomeDoCampo) continue
+
+      if (fv.__typename === 'ProjectV2ItemFieldSingleSelectValue' && fv.name) {
+        if (nomeDoCampo === 'Status') status = fv.name
+        else fields.push({ name: nomeDoCampo, value: fv.name })
+      } else if (fv.__typename === 'ProjectV2ItemFieldIterationValue' && fv.title) {
+        if (nomeDoCampo === 'Sprint' || nomeDoCampo === 'Iteration') {
+          iteration = { title: fv.title, startDate: fv.startDate ?? '', duration: fv.duration ?? 0 }
+        }
+        fields.push({ name: nomeDoCampo, value: fv.title })
+      } else if (fv.__typename === 'ProjectV2ItemFieldNumberValue' && fv.number !== undefined) {
+        if (nomeDoCampo === 'Peso' || nomeDoCampo === 'Weight') peso = fv.number
+        fields.push({ name: nomeDoCampo, value: String(fv.number) })
+      } else if (fv.__typename === 'ProjectV2ItemFieldTextValue' && fv.text) {
+        fields.push({ name: nomeDoCampo, value: fv.text })
+      }
+    }
+
+    return { project: node.project, status, iteration, peso, fields }
+  })
+}
+
+/**
+ * Os PRs ligados a partir de `timelineItems` (+ `closedByPullRequestsReferences`
+ * quando o chamador é uma issue) — mesma lógica que
+ * `getPullRequestCrossReferences` usava antes da consolidação (issue #877).
+ */
+function parseCrossReferences(
+  timelineNodes: NoDaTimeline[],
+  closedByNodes?: Array<{ number: number }>
+): GrafoCompletoDoItem['prsLigados'] {
+  const closedByPullRequests = closedByNodes?.map((n) => n.number) ?? []
+  const crossReferencedPullRequests: number[] = []
+  for (const node of timelineNodes) {
+    if (
+      node.__typename === 'CrossReferencedEvent' &&
+      node.source?.__typename === 'PullRequest' &&
+      node.source.number
+    ) {
+      crossReferencedPullRequests.push(node.source.number)
+    } else if (
+      node.__typename === 'ConnectedEvent' &&
+      node.subject?.__typename === 'PullRequest' &&
+      node.subject.number
+    ) {
+      crossReferencedPullRequests.push(node.subject.number)
+    }
+  }
+  return {
+    closedByPullRequests: [...new Set(closedByPullRequests)],
+    crossReferencedPullRequests: [...new Set(crossReferencedPullRequests)],
   }
 }
 

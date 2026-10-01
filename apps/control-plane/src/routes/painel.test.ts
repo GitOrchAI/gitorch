@@ -2858,6 +2858,95 @@ describe('Rotas do painel do owner', () => {
     })
   })
 
+  describe('GET /api/v1/painel/repositorio/:projectId/tudo/:numero (issue #877)', () => {
+    const FICHA_COM_VINCULOS = {
+      id: 'item-1',
+      projectId: 'proj_1',
+      tipo: 'pr',
+      numero: 580,
+      estado: { status: 'aberto' },
+      origem: 'jules_gitorch',
+      issueNumber: 200,
+      entendimento: null,
+      vinculos: {
+        hierarquia: { parents: [], subIssues: [] },
+        milestone: null,
+        projectFields: [],
+        labelsAndAssignees: { labels: ['bug'], assignees: [] },
+        prsLigados: { closedByPullRequests: [], crossReferencedPullRequests: [] },
+        sessoesJules: [],
+        qaReview: null,
+        statusCheckRollup: null,
+      },
+    }
+
+    test('200 com o item completo (ficha + grafo de vínculos)', async () => {
+      await build(
+        fakePrisma({
+          project: { findFirst: vi.fn().mockResolvedValue({ id: 'proj_1' }) },
+          repoItem: { findFirst: vi.fn().mockResolvedValue(FICHA_COM_VINCULOS) },
+        })
+      )
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio/proj_1/tudo/580',
+        headers: authHeaders,
+      })
+
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.numero).toBe(580)
+      expect(body.vinculos.labelsAndAssignees.labels).toEqual(['bug'])
+    })
+
+    test('sem sessão → 401', async () => {
+      await build()
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio/proj_1/tudo/580',
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('projeto de outro dono → 404', async () => {
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio/proj_1/tudo/580',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(404)
+    })
+
+    test('item inexistente → 404', async () => {
+      await build(
+        fakePrisma({
+          project: { findFirst: vi.fn().mockResolvedValue({ id: 'proj_1' }) },
+          repoItem: { findFirst: vi.fn().mockResolvedValue(null) },
+        })
+      )
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio/proj_1/tudo/580',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(404)
+    })
+
+    test(':numero não-numérico → 400', async () => {
+      await build(
+        fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue({ id: 'proj_1' }) } })
+      )
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio/proj_1/tudo/abc',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(400)
+    })
+  })
+
   describe('GET /api/v1/painel/repositorio (Fase 6.2 do plano do repositório inteiro)', () => {
     test('GET /api/v1/painel/repositorio junta ficha, origem e nota de segurança', async () => {
       const p = await build(

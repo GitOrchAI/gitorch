@@ -59,6 +59,10 @@ export async function atualizarFichaDoItem(deps: {
   numero: number
   estado: EstadoDoItem
   origem?: string | null
+  /** Issue #877 item 3: a issue de origem (ex. PR 583 → issue 580, achada
+   *  por `classificarOrigem`). Omitido = não mexe no que já estava gravado —
+   *  mesmo upsert PARCIAL que `origem` já usa acima. */
+  issueNumber?: number | null
   /** Fase 2.4: o formulário de entendimento, quando já existe. Omitido =
    *  não mexe no que já estava gravado (mesmo upsert PARCIAL de `origem`
    *  acima) — nunca apaga um entendimento anterior por engano. */
@@ -69,6 +73,7 @@ export async function atualizarFichaDoItem(deps: {
   }
   const update: Record<string, unknown> = { estado: deps.estado }
   if (deps.origem !== undefined) update['origem'] = deps.origem
+  if (deps.issueNumber !== undefined) update['issueNumber'] = deps.issueNumber
   if (deps.entendimento !== undefined) update['entendimento'] = deps.entendimento
 
   const linha = await deps.prisma.repoItem.upsert({
@@ -79,6 +84,7 @@ export async function atualizarFichaDoItem(deps: {
       numero: deps.numero,
       estado: deps.estado,
       origem: deps.origem ?? null,
+      issueNumber: deps.issueNumber ?? null,
       entendimento: deps.entendimento ?? null,
     },
     update,

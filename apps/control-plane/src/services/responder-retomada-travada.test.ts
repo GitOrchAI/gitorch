@@ -132,8 +132,7 @@ describe('aoResponderRetomadaTravada', () => {
       expect(criarSessaoDev).toHaveBeenCalledWith(
         expect.objectContaining({
           repository: 'loureng/patinhas-3d-crafts',
-          startingBranch: 'jules-3917-branch',
-          workingBranch: 'jules-3917-branch',
+          startingBranch: 'main',
         })
       )
       expect(registrarSessaoRetomada).toHaveBeenCalledWith({
