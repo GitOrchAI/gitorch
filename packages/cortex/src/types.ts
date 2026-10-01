@@ -43,3 +43,18 @@ export interface CortexWakeUpResult {
   drawers: CortexDrawer[]
   tokenBudget: number
 }
+
+export interface DocumentAttachment {
+  rawText: string
+  metadata?: Record<string, unknown>
+}
+
+export interface SanitizedDocumentContent {
+  cleanText: string
+  riskFlags: string[]
+  metadata?: Record<string, unknown>
+}
+
+export interface SanitizationResult {
+  content: SanitizedDocumentContent
+}
