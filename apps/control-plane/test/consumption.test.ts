@@ -14,7 +14,7 @@ vi.mock('../src/plugins/prisma.js', () => ({
 describe('recordGuestConsumption', () => {
   it('increments by delta and calculates proportion', async () => {
     const mockPrisma = {} as unknown as PrismaClient
-    const result = await recordGuestConsumption('guest-123', mockPrisma, 1)
+    const result = await recordGuestConsumption('guest-123', 1, mockPrisma)
 
     expect(result.usedQuota).toBe(15)
     expect(result.guestQuota).toBe(100)
