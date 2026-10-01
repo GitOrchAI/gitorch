@@ -30,6 +30,7 @@ import { listarIssuesAbertasReal, fecharIssueReal } from '../services/lote-de-su
 import { mintInstallationToken } from '../services/github-app-token.js'
 import { repoWorkspaceSlug } from '../services/free-diagnosis.js'
 import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
+import { pipelineRoutes } from './pipeline-routes.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -51,6 +52,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Projects CRUD endpoints
   await projectRoutes(app)
+
+  // Pipeline Intelligence endpoints
+  await app.register(pipelineRoutes)
 
   // Missions trigger and status endpoints
   await missionRoutes(app)
