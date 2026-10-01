@@ -1058,6 +1058,7 @@ model WishlistItem {
   createdAt DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attachments WishAttachment[]
 
   @@index([userId])
   @@map("wishlist_items")
@@ -1075,4 +1076,22 @@ model GuestProfile {
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@map("guest_profiles")
+}
+
+
+/// Anexo técnico de um pedido de desejo (wish).
+model WishAttachment {
+  id          String   @id @default(cuid())
+  wishId      String   @map("wish_id")
+  fileName    String   @map("file_name")
+  mimeType    String   @map("mime_type")
+  sizeBytes   Int      @map("size_bytes")
+  fileHash    String   @map("file_hash")
+  textContent String?  @map("text_content")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  wish        WishlistItem @relation(fields: [wishId], references: [id], onDelete: Cascade)
+
+  @@index([wishId])
+  @@map("wish_attachments")
 }
