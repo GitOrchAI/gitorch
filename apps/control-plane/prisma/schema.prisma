@@ -63,7 +63,7 @@ model ProjectInvitation {
   status         String   @default("pending") // pending | accepted | revoked | expired
   expiresAt      DateTime @map("expires_at")
   engineMapping  Json?    @map("engine_mapping")
-  executionLimits Json?   @map("execution_limits")
+    executionLimits Json?   @map("execution_limits")
   usedQuota      Int      @default(0) @map("used_quota")
 
   createdAt DateTime @default(now()) @map("created_at")
