@@ -369,6 +369,12 @@ export const locales = {
       invalidToken: 'Invalid or expired invitation.',
       acceptInvitation: 'Accept Invitation',
     },
+    upload: {
+      dropOrClick: 'Drop files here or click to select',
+      acceptedFormats: 'Accepted formats: PDF, MD, DOC',
+      sizeExceeded: 'File exceeds the size limit',
+      removeAttachment: 'Remove attachment',
+    },
   },
   pt: {
     nav: {
@@ -744,6 +750,12 @@ export const locales = {
       validateTitle: 'Validando convite...',
       invalidToken: 'Convite inválido ou expirado.',
       acceptInvitation: 'Aceitar Convite',
+    },
+    upload: {
+      dropOrClick: 'Arraste arquivos aqui ou clique para selecionar',
+      acceptedFormats: 'Formatos aceitos: PDF, MD, DOC',
+      sizeExceeded: 'Arquivo excede o limite de tamanho',
+      removeAttachment: 'Remover anexo',
     },
   },
   es: {
