@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { summarizeWorkspace } from './summarize-workspace'
+import { summarizeWorkspace, summarizeDiffContext } from './summarize-workspace'
 
 describe('summarizeWorkspace', () => {
   let dir: string
@@ -71,5 +71,33 @@ describe('summarizeWorkspace', () => {
   it('excludeFiles pula o arquivo indicado', async () => {
     const summary = await summarizeWorkspace(dir, { excludeFiles: ['src/main.ts'] })
     expect(summary).toContain('Indexed 1 source file(s)')
+  })
+})
+
+describe('summarizeDiffContext', () => {
+  it('processes a large amount of modified files bypassing maxFiles limitation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cgc-diff-'))
+    mkdirSync(join(dir, 'src'), { recursive: true })
+
+    const modifiedFiles: string[] = []
+
+    // Create 40 files
+    for (let i = 0; i < 40; i++) {
+      const fileName = `src/file${i}.ts`
+      writeFileSync(
+        join(dir, fileName),
+        `export function foo${i}() { return ${i}; }
+`
+      )
+      modifiedFiles.push(fileName)
+    }
+
+    // Call summarizeDiffContext with maxFiles: 5, expecting it to process all 40 because they are in modifiedFiles
+    const summary = await summarizeDiffContext(dir, modifiedFiles, { maxFiles: 5 })
+
+    // As they are not heavily called or shared, it will output "No specific architectural impacts detected"
+    expect(summary).toContain('No specific architectural impacts detected')
+
+    rmSync(dir, { recursive: true, force: true })
   })
 })

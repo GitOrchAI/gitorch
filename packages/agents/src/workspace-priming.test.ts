@@ -4,7 +4,11 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
-import { primeWorkspace, generateMultiRepoManifest } from './workspace-priming.js'
+import {
+  primeWorkspace,
+  generateMultiRepoManifest,
+  formatDiffWithCgcContext,
+} from './workspace-priming.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -155,5 +159,22 @@ describe('generateMultiRepoManifest', () => {
     expect(backEnv).toContain('FRONTEND_DIR=' + path.join(ws, 'repos/front')) // Merged safely
 
     await fs.rm(ws, { recursive: true, force: true })
+  })
+})
+
+describe('formatDiffWithCgcContext', () => {
+  test('formats large diffs with cgc context', () => {
+    const diff = '--- a/file.ts\n+++ b/file.ts\n@@ -1,1 +1,2 @@\n-a\n+b\n+c\n'.repeat(40)
+    const cgcContext = '- Cross-package impacts: src/a.ts -> src/b.ts.'
+
+    const result = formatDiffWithCgcContext({ diff, cgcContext })
+    expect(result).toContain('## PR Context (Code Graph)')
+    expect(result).toContain(cgcContext)
+    expect(result).toContain('## PR Diff')
+    expect(result).toContain('--- a/file.ts')
+
+    // Check that it preserves the entire diff without truncation
+    const occurrences = (result.match(/--- a\/file\.ts/g) || []).length
+    expect(occurrences).toBe(40)
   })
 })
