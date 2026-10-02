@@ -24,6 +24,7 @@ import {
   fraseDaOrdem,
   pedir,
   buscarArvoreDoPedido,
+  buscarAnexosDoPedido,
   type RespostaDaOrdem,
 } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
@@ -34,9 +35,11 @@ import { Estados } from './PainelEstados'
 import { linhasVisiveis, alternar, andamentoDoNo, NIVEL } from './arvore-pedido'
 import type { NoDaArvore } from './painel-tipos'
 import { UploadDeAnexos } from './UploadDeAnexos'
+import { useLanguage } from '../../LanguageContext'
 
 /** Um pedido como a rota devolve (espelha PedidoDoPainel do control-plane). */
 interface PedidoView {
+  id?: string
   numero: number
   titulo: string
   /** Estado da issue no GitHub. 'fechado' NÃO quer dizer aprovado na régua. */
@@ -114,6 +117,21 @@ export function TelaPedidos() {
   const [pedidosAbertos, setPedidosAbertos] = useState<ReadonlySet<string>>(new Set())
   const [nosAbertos, setNosAbertos] = useState<ReadonlySet<string>>(new Set())
   const [arvores, setArvores] = useState<Record<string, EstadoDaArvore>>({})
+  const [anexos, setAnexos] = useState<
+    Record<
+      string,
+      {
+        estado: 'carregando' | 'ok' | 'indisponivel'
+        arquivos?: Array<{
+          id: string
+          fileName: string
+          mimeType: string
+          sizeBytes: number
+          textContent: string | null
+        }>
+      }
+    >
+  >({})
 
   /** Expande/colapsa a árvore de UM pedido. Busca só na PRIMEIRA vez que abre
    *  (nunca junto da lista — ver o comentário no topo do arquivo). */
@@ -121,6 +139,14 @@ export function TelaPedidos() {
     const chave = chavePedido(p)
     const jaAberto = pedidosAbertos.has(chave)
     setPedidosAbertos((s) => alternar(s, chave))
+
+    if (!jaAberto && p.id && !anexos[chave]) {
+      setAnexos((m) => ({ ...m, [chave]: { estado: 'carregando' } }))
+      buscarAnexosDoPedido(p.id)
+        .then((arquivos) => setAnexos((m) => ({ ...m, [chave]: { estado: 'ok', arquivos } })))
+        .catch(() => setAnexos((m) => ({ ...m, [chave]: { estado: 'indisponivel' } })))
+    }
+
     if (jaAberto || arvores[chave]) return
     setArvores((m) => ({ ...m, [chave]: { estado: 'carregando' } }))
     buscarArvoreDoPedido(p.projeto, p.numero)
@@ -459,13 +485,18 @@ export function TelaPedidos() {
                             )}
                           </tr>
                           {aberto && (
-                            <LinhasDaArvore
-                              pedido={p}
-                              colSpan={numColunas}
-                              estado={arvores[chave]}
-                              nosAbertos={nosAbertos}
-                              onAlternarNo={(chaveNo) => setNosAbertos((s) => alternar(s, chaveNo))}
-                            />
+                            <>
+                              <LinhasDeAnexos colSpan={numColunas} estado={anexos[chave]} />
+                              <LinhasDaArvore
+                                pedido={p}
+                                colSpan={numColunas}
+                                estado={arvores[chave]}
+                                nosAbertos={nosAbertos}
+                                onAlternarNo={(chaveNo) =>
+                                  setNosAbertos((s) => alternar(s, chaveNo))
+                                }
+                              />
+                            </>
                           )}
                         </Fragment>
                       )
@@ -477,6 +508,98 @@ export function TelaPedidos() {
           }
         </Estados>
       </Card>
+    </>
+  )
+}
+
+function LinhasDeAnexos({
+  colSpan,
+  estado,
+}: {
+  colSpan: number
+  estado:
+    | {
+        estado: 'carregando' | 'ok' | 'indisponivel'
+        arquivos?: Array<{
+          id: string
+          fileName: string
+          mimeType: string
+          sizeBytes: number
+          textContent: string | null
+        }>
+      }
+    | undefined
+}) {
+  const { t } = useLanguage()
+
+  if (!estado) return null
+
+  if (estado.estado === 'carregando') {
+    return (
+      <tr>
+        <td colSpan={colSpan} className="pn-arv-msg">
+          Carregando anexos…
+        </td>
+      </tr>
+    )
+  }
+
+  if (estado.estado === 'indisponivel') {
+    return (
+      <tr>
+        <td colSpan={colSpan} className="pn-arv-msg">
+          (Não foi possível carregar os anexos)
+        </td>
+      </tr>
+    )
+  }
+
+  if (!estado.arquivos || estado.arquivos.length === 0) {
+    return null
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return bytes + ' B'
+    const kb = bytes / 1024
+    if (kb < 1024) return kb.toFixed(1) + ' KB'
+    const mb = kb / 1024
+    return mb.toFixed(1) + ' MB'
+  }
+
+  const getFormatIcon = (mimeType: string) => {
+    if (mimeType === 'application/pdf') return '📄'
+    if (mimeType === 'text/markdown') return '📝'
+    if (mimeType.includes('word') || mimeType.includes('msword')) return '📝'
+    return '📄'
+  }
+
+  return (
+    <>
+      {estado.arquivos.map((arq, i) => (
+        <tr key={arq.id || i} className="pn-arv-no ">
+          <td colSpan={colSpan} style={{ paddingLeft: '32px' }}>
+            <div className="">
+              <span style={{ marginRight: '8px' }}>{getFormatIcon(arq.mimeType)}</span>
+              <strong>{arq.fileName}</strong>
+              <span className="pn-arv-andamento" style={{ marginLeft: '12px' }}>
+                ({formatSize(arq.sizeBytes)})
+              </span>
+
+              <span className="pn-arv-nota" style={{ marginLeft: '12px' }}>
+                {arq.textContent || arq.mimeType === 'application/pdf'
+                  ? t('upload.statusProcessed')
+                  : t('upload.statusAnalyzing')}
+              </span>
+
+              {!arq.textContent && arq.mimeType !== 'application/pdf' && (
+                <span style={{ marginLeft: '12px', color: 'var(--gl-sev)', fontSize: '12px' }}>
+                  ⚠️ {t('upload.formatWarning')}
+                </span>
+              )}
+            </div>
+          </td>
+        </tr>
+      ))}
     </>
   )
 }
