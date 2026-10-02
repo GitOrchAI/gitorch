@@ -116,6 +116,10 @@ test('creates cli runtime adapter that passes prompt and runtime environment to 
         GITORCH_RUNTIME_MODEL: 'Gemini 3.1 Pro High',
         GITORCH_RUNTIME_REASONING: 'high',
       },
+      cwd: undefined,
+      encoding: 'utf8',
+      subPath: undefined,
+      timeoutMs: undefined,
     },
   ])
   expect(result).toMatchObject({

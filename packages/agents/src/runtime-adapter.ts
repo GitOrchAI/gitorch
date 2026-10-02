@@ -16,7 +16,7 @@ import {
   isQuotaExhaustedFailure,
   type ExecutionLimits,
 } from './execution-limits.js'
-import { getTracingEnvironment, BACKOFF_CONFIG } from './runtime-config.js'
+import { getTracingEnvironment, BACKOFF_CONFIG, applyRuntimeOverrides } from './runtime-config.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -48,6 +48,7 @@ export interface RuntimeExecutionRequest {
   subPath?: string
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
+  runtimeOverrides?: Record<string, unknown>
 }
 
 export interface RuntimeExecutionResult {
@@ -462,17 +463,22 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           : [...(options.promptSeparator ? [options.promptSeparator] : []), effectivePrompt]
 
       const startTime = Date.now()
-      const { result, error, failedStep } = await wrapExecutionStep('execute-runner', () =>
-        runner({
-          binary: options.binary,
-          args: [...baseArgs, ...modelArgs, ...effortArgs, ...workspaceArgs, ...promptArgs],
-          env,
-          cwd: request.cwd,
-          subPath: request.subPath,
-          timeoutMs: request.timeoutMs,
-          ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
-        })
-      )
+      const { result, error, failedStep } = await wrapExecutionStep('execute-runner', () => {
+        const runtimeOptions = applyRuntimeOverrides(
+          {
+            binary: options.binary,
+            args: [...baseArgs, ...modelArgs, ...effortArgs, ...workspaceArgs, ...promptArgs],
+            env,
+            cwd: request.cwd,
+            subPath: request.subPath,
+            timeoutMs: request.timeoutMs,
+            ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
+          },
+          request.runtimeOverrides
+        )
+
+        return runner({ encoding: 'utf8', ...runtimeOptions } as unknown as RuntimeCommandRequest)
+      })
       const endTime = Date.now()
 
       if (error) {
@@ -623,13 +629,22 @@ export function createPythonSdkRuntimeAdapter(
           : request.subPath
         : request.cwd
       try {
+        const runtimeOptions = applyRuntimeOverrides(
+          {
+            env: buildChildProcessEnv(geminiEnv),
+            cwd,
+            maxBuffer: 16 * 1024 * 1024,
+            timeout: request.timeoutMs,
+            killSignal: 'SIGKILL',
+          },
+          request.runtimeOverrides
+        )
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pending = execFileAsync(pythonBinary, args, {
-          env: buildChildProcessEnv(geminiEnv),
-          cwd,
-          maxBuffer: 16 * 1024 * 1024,
-          timeout: request.timeoutMs,
-          killSignal: 'SIGKILL',
-        })
+          encoding: 'utf8',
+          ...runtimeOptions,
+        } as unknown as import('child_process').ExecFileOptions)
         // Mesmo motivo do runner CLI: stdin aberto = processo esperando EOF.
         pending.child.stdin?.end()
         const { stdout, stderr } = await pending
@@ -640,7 +655,7 @@ export function createPythonSdkRuntimeAdapter(
           spanId: crypto.randomUUID(),
           name: request.role || 'execution',
           input: request.prompt,
-          output: stdout || stderr || '',
+          output: stdout?.toString() || stderr?.toString() || '',
           usage: { promptTokens: 0, completionTokens: 0 },
           startTime: start,
           endTime,
@@ -650,8 +665,8 @@ export function createPythonSdkRuntimeAdapter(
         return {
           missionId: request.missionId,
           runtime: options.runtime,
-          output: stdout,
-          stderr: stderr,
+          output: stdout.toString(),
+          stderr: stderr.toString(),
           exitCode: 0,
           durationMs: endTime - start,
           span,
@@ -674,7 +689,7 @@ export function createPythonSdkRuntimeAdapter(
           spanId: crypto.randomUUID(),
           name: request.role || 'execution',
           input: request.prompt,
-          output: err.stdout || errorMessage,
+          output: err.stdout?.toString() || errorMessage,
           usage: { promptTokens: 0, completionTokens: 0 },
           startTime: start,
           endTime,
@@ -686,7 +701,7 @@ export function createPythonSdkRuntimeAdapter(
           return {
             missionId: request.missionId,
             runtime: options.runtime,
-            output: err.stdout || '',
+            output: err.stdout?.toString() || '',
             stderr: errorMessage,
             exitCode: 0,
             durationMs: endTime - start,
@@ -699,7 +714,7 @@ export function createPythonSdkRuntimeAdapter(
         return {
           missionId: request.missionId,
           runtime: options.runtime,
-          output: err.stdout || '',
+          output: err.stdout?.toString() || '',
           stderr: errorMessage,
           exitCode: timedOut ? 124 : normalizeExitCode(err.code),
           durationMs: endTime - start,
