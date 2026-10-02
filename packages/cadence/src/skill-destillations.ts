@@ -173,7 +173,7 @@ export const GSTACK_SKILL_CATALOG: Record<string, GstackSkillDefinition> = {
   review: {
     name: 'review',
     description:
-      'Code review em nível Staff Engineer: análise de segurança, SQL safety e efeitos colaterais.',
+      'QA Code Review: inspecionar qualidade técnica, segurança, testes e dataflow em vez de gerar rejeições burocráticas.',
     role: 'qa',
     type: 'rail',
     timeoutMs: 90000,
