@@ -52,8 +52,8 @@ export interface GitHubDeliveryEnvelope<TPayload = unknown> {
   payload: TPayload
   receivedAt: string
   body: string
-  mergedAt?: string
-  leadTime?: number
+  mergedAt?: string | Date | null
+  leadTime?: number | null
 }
 
 export interface GitHubWorkItem {
@@ -76,8 +76,8 @@ export interface GitHubWorkItem {
   projectItemIds: string[]
   linkedPullRequestNodeIds?: string[]
   wishCreatedAt?: string
-  mergedAt?: string | undefined
-  leadTime?: number
+  mergedAt?: string | Date | null
+  leadTime?: number | null
   milestone?: string | undefined
   assignees?: string[]
 }
@@ -118,8 +118,8 @@ export interface GitHubSyncEvent {
   dependency?: GitHubDependencyEdge
   hierarchy?: GitHubHierarchyEdge
   projectItem?: ProjectV2ItemSnapshot
-  mergedAt?: string | undefined
-  leadTime?: number
+  mergedAt?: string | Date | null
+  leadTime?: number | null
 }
 
 export interface AvailabilityDecision {
@@ -161,6 +161,6 @@ export interface GitHubSyncOperation {
   fieldName?: ProjectV2FieldName
   value?: string | number
   wishCreatedAt?: string
-  mergedAt?: string
+  mergedAt?: string | Date | null
   assignees?: string[]
 }
