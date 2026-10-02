@@ -460,6 +460,7 @@ model Project {
   increments     Increment[]
   catalogoDeDuvidas CatalogoDeDuvidas[]
   repoItems         RepoItem[]
+  pipelineConfig    PipelineConfig?
 
   // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
   // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
@@ -981,6 +982,52 @@ model RepoItem {
   @@unique([projectId, tipo, numero])
   @@index([projectId, tipo])
   @@map("repo_items")
+}
+
+// Configuração e Governança de CI/CD do Projeto
+model PipelineConfig {
+  id               String   @id @default(cuid())
+  projectId        String   @unique @map("project_id")
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Tipo de runner preferencial: 'hosted' | 'self_hosted' | 'auto'
+  runnerPreference String   @default("auto") @map("runner_preference")
+
+  // Última pontuação calculada pelo Risk Engine (0 a 100)
+  lastScore        Int?     @map("last_score")
+  lastAuditedAt    DateTime? @map("last_audited_at")
+  detectedStack    Json?    @map("detected_stack")
+
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  evidences        PipelineEvidence[]
+
+  @@map("pipeline_configs")
+}
+
+// Registro Imutável de Evidências Coletadas do CI/CD (CDEvents / Compliance)
+model PipelineEvidence {
+  id               String   @id @default(cuid())
+  pipelineConfigId String   @map("pipeline_config_id")
+  pipelineConfig   PipelineConfig @relation(fields: [pipelineConfigId], references: [id], onDelete: Cascade)
+
+  commitHash       String   @map("commit_hash")
+  branch           String
+  eventSource      String   @map("event_source") // github_actions
+  runId            String   @map("run_id")       // GitHub Actions Run ID
+
+  // Status consolidado da esteira efêmera: 'passed' | 'failed' | 'timeout'
+  status           String
+
+  // Evidências estruturadas (testes, cobertura, SAST, lint)
+  evidenceSummary  Json     @map("evidence_summary")
+
+  collectedAt      DateTime @default(now()) @map("collected_at")
+
+  @@index([pipelineConfigId, commitHash])
+  @@index([commitHash])
+  @@map("pipeline_evidences")
 }
 
 /// Grafo completo de vínculos do RepoItem (issue #877): hierarquia (parent/

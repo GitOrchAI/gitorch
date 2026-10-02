@@ -1,0 +1,17 @@
+{
+  "score": 100,
+  "coveredCapabilities": [
+    "testing",
+    "quality",
+    "security",
+    "database",
+    "build"
+  ],
+  "missingCapabilities": [],
+  "findings": [],
+  "recommendedStages": [
+    "CD"
+  ],
+  "timestamp": "2026-10-02T15:16:25.960Z",
+  "compliant": true
+}
