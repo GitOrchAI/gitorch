@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import jwt from 'jsonwebtoken'
 
 export interface RecordEvidenceOptions {
   apiUrl?: string
@@ -9,6 +10,7 @@ export interface RecordEvidenceOptions {
   evidenceSummary?: Record<string, unknown>
   eventSource?: string
   runId?: string
+  token?: string
 }
 
 export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}) {
@@ -30,6 +32,23 @@ export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}
     ephemeralStaging: 'passed',
     unitTests: 'passed',
     securityScan: 'passed',
+  }
+
+  let authToken = options.token || process.env.GITORCH_API_TOKEN
+  if (!authToken && process.env.JWT_SECRET) {
+    try {
+      authToken = jwt.sign(
+        { userId: 'ci-service-user', wingId: 'GitOrchAI/gitorch' },
+        process.env.JWT_SECRET
+      )
+    } catch (tokenErr) {
+      console.warn('[recordPipelineEvidence] Erro ao assinar JWT com JWT_SECRET:', tokenErr)
+    }
+  }
+
+  const authHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
   }
 
   // Se DATABASE_URL estiver configurada, garante que o projeto exista para a rota /analyze
@@ -57,7 +76,8 @@ export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}
   const analyzeEndpoint = `${apiUrl}/api/v1/projects/${projectId}/pipelines/analyze`
   const analyzeRes = await fetch(analyzeEndpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders,
+    body: JSON.stringify({}),
   })
 
   if (!analyzeRes.ok) {
@@ -78,9 +98,7 @@ export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}
 
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: authHeaders,
     body: JSON.stringify(payload),
   })
 

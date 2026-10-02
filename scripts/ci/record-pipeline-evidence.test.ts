@@ -23,11 +23,20 @@ describe('Record Pipeline Evidence Helper', () => {
       },
     }
 
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 201,
-      json: vi.fn().mockResolvedValue(mockEvidenceResponse),
-    } as unknown as Response)
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/analyze')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ config: { id: 'cfg_123' } }),
+        } as unknown as Response)
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 201,
+        json: () => Promise.resolve(mockEvidenceResponse),
+      } as unknown as Response)
+    })
 
     const result = await recordPipelineEvidence({
       apiUrl: 'http://127.0.0.1:4012',
@@ -36,6 +45,7 @@ describe('Record Pipeline Evidence Helper', () => {
       branch: 'feat/test',
       status: 'passed',
       evidenceSummary: { coverage: 95 },
+      token: 'test-token',
     })
 
     expect(result).toEqual(mockEvidenceResponse)
@@ -43,17 +53,29 @@ describe('Record Pipeline Evidence Helper', () => {
       'http://127.0.0.1:4012/api/v1/projects/proj_123/pipelines/evidence',
       expect.objectContaining({
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test-token',
+        }),
       })
     )
   })
 
   it('should throw error when endpoint returns failure status', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-      text: vi.fn().mockResolvedValue('PipelineConfig not found for project'),
-    } as unknown as Response)
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/analyze')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        } as unknown as Response)
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        text: () => Promise.resolve('PipelineConfig not found for project'),
+      } as unknown as Response)
+    })
 
     await expect(
       recordPipelineEvidence({
