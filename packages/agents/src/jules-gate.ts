@@ -1,8 +1,4 @@
-import type {
-  CiConclusion,
-  GateCheckResult,
-  JulesPrGateResult,
-} from './types'
+import type { CiConclusion, GateCheckResult, JulesPrGateResult } from './types'
 
 export interface DecideJulesPrGateInput {
   prNumber: number
@@ -37,10 +33,7 @@ export function decideJulesPrGate(input: DecideJulesPrGateInput): JulesPrGateRes
     }
   }
 
-  if (
-    input.qaOnly === 'failed' ||
-    input.review === 'failed'
-  ) {
+  if (input.qaOnly === 'failed' || input.review === 'failed') {
     const unmetCriteria = input.unmetCriteria?.length
       ? input.unmetCriteria
       : ['Technical review identified missing or incorrect implementations']

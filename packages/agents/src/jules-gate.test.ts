@@ -162,8 +162,8 @@ test('provides technical feedback even for large PRs (simulating >35 files)', ()
       review: 'passed',
       unmetCriteria: [
         'Missing unit tests for edge cases',
-        'Performance bottleneck in data processing loop'
-      ]
+        'Performance bottleneck in data processing loop',
+      ],
     })
   ).toEqual({
     decision: 'request-jules-adjustments',
