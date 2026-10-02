@@ -3,7 +3,7 @@ export { TreeSitterManager, WasmPoisonError } from './parser/tree-sitter-manager
 export { CodeGraphIndexer } from './core/indexer'
 export { ImpactAnalyzer } from './core/impact-analyzer'
 export type { ImpactResult } from './core/impact-analyzer'
-export { summarizeWorkspace, PoisonedFileError } from './summarize-workspace'
+export { summarizeWorkspace, summarizeDiffContext, PoisonedFileError } from './summarize-workspace'
 export type { SummarizeOptions } from './summarize-workspace'
 export { diagnoseWorkspaceStructural, diagnoseCrossRepoIntegrity } from './diagnose-workspace'
 export type { StructuralDiagnosis } from './diagnose-workspace'

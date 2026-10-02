@@ -43,6 +43,8 @@ export interface SummarizeOptions {
   maxFileBytes?: number
   /** Arquivos (relPath) a pular — ex.: já identificados como veneno do parser. */
   excludeFiles?: string[]
+  /** Arquivos modificados no PR. Eles não sofrem o truncamento por maxFiles. */
+  modifiedFiles?: string[]
 }
 
 /**
@@ -77,7 +79,8 @@ export function isTestLike(relPath: string): boolean {
 export function collectSourceFiles(
   root: string,
   maxFiles: number,
-  maxFileBytes: number
+  maxFileBytes: number,
+  modifiedFiles?: string[]
 ): SourceFile[] {
   // 1ª passada: só caminhos (barato). O conteúdo é lido apenas dos escolhidos.
   const candidates: Array<{ relPath: string; language: string; full: string }> = []
@@ -133,13 +136,17 @@ export function collectSourceFiles(
   })
 
   const files: SourceFile[] = []
-  for (const c of candidates.slice(0, maxFiles)) {
+  const modifiedSet = new Set(modifiedFiles ?? [])
+  let added = 0
+  for (const c of candidates) {
+    if (added >= maxFiles && !modifiedSet.has(c.relPath)) continue
     try {
       files.push({
         relPath: c.relPath,
         language: c.language,
         content: readFileSync(c.full, 'utf8'),
       })
+      if (!modifiedSet.has(c.relPath)) added++
     } catch {
       /* arquivo ilegível: ignora */
     }
@@ -181,9 +188,12 @@ export async function analyzeWorkspace(
   let client: KuzuClient | undefined
   let manager: TreeSitterManager | undefined
   try {
-    const sources = collectSourceFiles(workspacePath, maxFiles, maxFileBytes).filter(
-      (f) => !excluded.has(f.relPath)
-    )
+    const sources = collectSourceFiles(
+      workspacePath,
+      maxFiles,
+      maxFileBytes,
+      options.modifiedFiles
+    ).filter((f) => !excluded.has(f.relPath))
     if (sources.length === 0) return null
 
     client = new KuzuClient(':memory:')
@@ -469,6 +479,71 @@ export async function summarizeWorkspace(
   lines.push(
     '- Use this to focus your reading on the core symbols; note that files not listed may still matter.'
   )
+
+  return lines.join('\n')
+}
+
+export async function summarizeDiffContext(
+  workspacePath: string,
+  modifiedFiles: string[],
+  options: SummarizeOptions = {}
+): Promise<string> {
+  const analysis = await analyzeWorkspace(workspacePath, { ...options, modifiedFiles })
+  if (!analysis) return ''
+
+  const lines: string[] = ['Code graph context for modified files:']
+
+  // Filter most called to only include modified files
+  const modifiedSet = new Set(modifiedFiles)
+  const relevantMostCalled = analysis.mostCalled.filter((c) => modifiedSet.has(c.file))
+  if (relevantMostCalled.length > 0) {
+    lines.push(
+      `- Modified functions called frequently: ${relevantMostCalled
+        .map((c) => `${c.name} [${c.file}] x${c.callCount}`)
+        .join(', ')}.`
+    )
+  }
+
+  const relevantCrossPackage = analysis.crossPackageDependencies.filter(
+    (d) => modifiedSet.has(d.source) || modifiedSet.has(d.target)
+  )
+  if (relevantCrossPackage.length > 0) {
+    lines.push(
+      `- Cross-package impacts: ${relevantCrossPackage
+        .map((d) => `${d.source} -> ${d.target}`)
+        .join(', ')}.`
+    )
+  }
+
+  if (analysis.sharedRoutes && analysis.sharedRoutes.length > 0) {
+    const relevantSharedRoutes = analysis.sharedRoutes.filter(
+      (r) => modifiedSet.has(r.backendFile) || modifiedSet.has(r.frontendFile)
+    )
+    if (relevantSharedRoutes.length > 0) {
+      lines.push(
+        `- Shared routes (cross-repo API calls): ${relevantSharedRoutes
+          .map((r) => `${r.method} ${r.path} (${r.frontendFile} -> ${r.backendFile})`)
+          .join(', ')}.`
+      )
+    }
+  }
+
+  if (analysis.sharedModels && analysis.sharedModels.length > 0) {
+    const relevantSharedModels = analysis.sharedModels.filter(
+      (m) => modifiedSet.has(m.backendFile) || modifiedSet.has(m.dbFile)
+    )
+    if (relevantSharedModels.length > 0) {
+      lines.push(
+        `- Shared models (database entities): ${relevantSharedModels
+          .map((m) => `${m.model} (${m.backendFile} -> ${m.dbFile})`)
+          .join(', ')}.`
+      )
+    }
+  }
+
+  if (lines.length === 1) {
+    lines.push('- No specific architectural impacts detected for these files.')
+  }
 
   return lines.join('\n')
 }

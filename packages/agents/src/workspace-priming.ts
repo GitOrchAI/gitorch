@@ -248,3 +248,19 @@ export async function generateMultiRepoManifest(
     await mergeEnvFile(localEnvPath, globalEnvVars)
   }
 }
+
+export interface FormatDiffWithCgcContextInput {
+  diff: string
+  cgcContext: string
+}
+
+export function formatDiffWithCgcContext(input: FormatDiffWithCgcContextInput): string {
+  const parts: string[] = []
+  if (input.cgcContext && input.cgcContext.trim() !== '') {
+    parts.push('## PR Context (Code Graph)\n\n' + input.cgcContext.trim())
+  }
+
+  parts.push('## PR Diff\n\n' + (input.diff || '(empty diff)'))
+
+  return parts.join('\n\n')
+}
