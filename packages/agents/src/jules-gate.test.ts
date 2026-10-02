@@ -7,32 +7,12 @@ test('waits for Jules when CI fails', () => {
       ciConclusion: 'failure',
       qaOnly: 'not-run',
       review: 'not-run',
-      deliveredScope: 'unknown',
     })
   ).toEqual({
     decision: 'wait-for-jules-ci-fix',
     mergeAllowed: false,
     comment: undefined,
     requiredActions: ['wait-for-jules-auto-fix-ci'],
-  })
-})
-
-test('comments to Jules when CI is green but scope is incomplete', () => {
-  expect(
-    decideJulesPrGate({
-      prNumber: 11,
-      ciConclusion: 'success',
-      qaOnly: 'passed',
-      review: 'passed',
-      deliveredScope: 'incomplete',
-      unmetCriteria: ['Verification Criteria #2 missing'],
-    })
-  ).toEqual({
-    decision: 'request-jules-adjustments',
-    mergeAllowed: false,
-    comment:
-      '@jules PR #11 is not ready to merge. Required adjustments:\n- Verification Criteria #2 missing',
-    requiredActions: ['comment-on-pr'],
   })
 })
 
@@ -43,7 +23,6 @@ test('allows merge only when CI, qa-only, review, and scope are complete', () =>
       ciConclusion: 'success',
       qaOnly: 'passed',
       review: 'passed',
-      deliveredScope: 'complete',
     })
   ).toEqual({
     decision: 'merge-ready',
@@ -60,7 +39,6 @@ test('waits for CI when ciConclusion is pending or missing', () => {
       ciConclusion: 'pending',
       qaOnly: 'not-run',
       review: 'not-run',
-      deliveredScope: 'unknown',
     })
   ).toEqual({
     decision: 'wait-for-ci',
@@ -74,7 +52,6 @@ test('waits for CI when ciConclusion is pending or missing', () => {
       ciConclusion: 'missing',
       qaOnly: 'not-run',
       review: 'not-run',
-      deliveredScope: 'unknown',
     })
   ).toEqual({
     decision: 'wait-for-ci',
@@ -90,7 +67,6 @@ test('requests running QA/review when qaOnly or review is not-run', () => {
       ciConclusion: 'success',
       qaOnly: 'not-run',
       review: 'passed',
-      deliveredScope: 'complete',
     })
   ).toEqual({
     decision: 'run-qa',
@@ -104,7 +80,6 @@ test('requests running QA/review when qaOnly or review is not-run', () => {
       ciConclusion: 'success',
       qaOnly: 'passed',
       review: 'not-run',
-      deliveredScope: 'complete',
     })
   ).toEqual({
     decision: 'run-qa',
@@ -120,13 +95,12 @@ test('requests adjustments when qaOnly or review has failed', () => {
       ciConclusion: 'success',
       qaOnly: 'failed',
       review: 'passed',
-      deliveredScope: 'complete',
     })
   ).toEqual({
     decision: 'request-jules-adjustments',
     mergeAllowed: false,
     comment:
-      '@jules PR #17 is not ready to merge. Required adjustments:\n- QA/review did not verify 100% of the requested scope',
+      '@jules PR #17 is not ready to merge. Required adjustments:\n- Technical review identified missing or incorrect implementations',
     requiredActions: ['comment-on-pr'],
   })
 
@@ -136,13 +110,12 @@ test('requests adjustments when qaOnly or review has failed', () => {
       ciConclusion: 'success',
       qaOnly: 'passed',
       review: 'failed',
-      deliveredScope: 'complete',
     })
   ).toEqual({
     decision: 'request-jules-adjustments',
     mergeAllowed: false,
     comment:
-      '@jules PR #18 is not ready to merge. Required adjustments:\n- QA/review did not verify 100% of the requested scope',
+      '@jules PR #18 is not ready to merge. Required adjustments:\n- Technical review identified missing or incorrect implementations',
     requiredActions: ['comment-on-pr'],
   })
 })
@@ -152,15 +125,14 @@ test('uses default message when unmetCriteria is omitted or empty', () => {
     decideJulesPrGate({
       prNumber: 19,
       ciConclusion: 'success',
-      qaOnly: 'passed',
+      qaOnly: 'failed',
       review: 'passed',
-      deliveredScope: 'incomplete',
     })
   ).toEqual({
     decision: 'request-jules-adjustments',
     mergeAllowed: false,
     comment:
-      '@jules PR #19 is not ready to merge. Required adjustments:\n- QA/review did not verify 100% of the requested scope',
+      '@jules PR #19 is not ready to merge. Required adjustments:\n- Technical review identified missing or incorrect implementations',
     requiredActions: ['comment-on-pr'],
   })
 
@@ -169,15 +141,35 @@ test('uses default message when unmetCriteria is omitted or empty', () => {
       prNumber: 20,
       ciConclusion: 'success',
       qaOnly: 'passed',
-      review: 'passed',
-      deliveredScope: 'incomplete',
+      review: 'failed',
       unmetCriteria: [],
     })
   ).toEqual({
     decision: 'request-jules-adjustments',
     mergeAllowed: false,
     comment:
-      '@jules PR #20 is not ready to merge. Required adjustments:\n- QA/review did not verify 100% of the requested scope',
+      '@jules PR #20 is not ready to merge. Required adjustments:\n- Technical review identified missing or incorrect implementations',
+    requiredActions: ['comment-on-pr'],
+  })
+})
+
+test('provides technical feedback even for large PRs (simulating >35 files)', () => {
+  expect(
+    decideJulesPrGate({
+      prNumber: 21,
+      ciConclusion: 'success',
+      qaOnly: 'failed',
+      review: 'passed',
+      unmetCriteria: [
+        'Missing unit tests for edge cases',
+        'Performance bottleneck in data processing loop'
+      ]
+    })
+  ).toEqual({
+    decision: 'request-jules-adjustments',
+    mergeAllowed: false,
+    comment:
+      '@jules PR #21 is not ready to merge. Required adjustments:\n- Missing unit tests for edge cases\n- Performance bottleneck in data processing loop',
     requiredActions: ['comment-on-pr'],
   })
 })

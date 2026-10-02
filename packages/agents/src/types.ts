@@ -94,7 +94,6 @@ export interface ProjectOnboardingPlan {
 
 export type CiConclusion = 'success' | 'failure' | 'pending' | 'missing'
 export type GateCheckResult = 'passed' | 'failed' | 'not-run'
-export type DeliveredScopeResult = 'complete' | 'incomplete' | 'unknown'
 
 export type JulesPrGateDecision =
   | 'wait-for-ci'

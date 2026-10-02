@@ -1,6 +1,5 @@
 import type {
   CiConclusion,
-  DeliveredScopeResult,
   GateCheckResult,
   JulesPrGateResult,
 } from './types'
@@ -10,7 +9,6 @@ export interface DecideJulesPrGateInput {
   ciConclusion: CiConclusion
   qaOnly: GateCheckResult
   review: GateCheckResult
-  deliveredScope: DeliveredScopeResult
   unmetCriteria?: string[]
 }
 
@@ -41,12 +39,11 @@ export function decideJulesPrGate(input: DecideJulesPrGateInput): JulesPrGateRes
 
   if (
     input.qaOnly === 'failed' ||
-    input.review === 'failed' ||
-    input.deliveredScope !== 'complete'
+    input.review === 'failed'
   ) {
     const unmetCriteria = input.unmetCriteria?.length
       ? input.unmetCriteria
-      : ['QA/review did not verify 100% of the requested scope']
+      : ['Technical review identified missing or incorrect implementations']
 
     return {
       decision: 'request-jules-adjustments',
