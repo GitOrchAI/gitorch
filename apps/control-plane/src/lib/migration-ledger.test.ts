@@ -63,6 +63,7 @@ describe('MIGRATION_LEDGER', () => {
       'guest-profile-migration.sql',
       'repo-item-vinculos-migration.sql',
       'anexo-pedido-migration.sql',
+      'guest-quota-migration.sql',
     ])
   })
 })

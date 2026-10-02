@@ -181,15 +181,7 @@ export async function checkGuestQuotaAvailable(guestId: string, projectId: strin
   const limits = invitation.executionLimits as { maxQuota?: number; maxStepsPerMission?: number }
   if (limits.maxQuota == null || limits.maxQuota <= 0) return
 
-  const usedQuota = await prisma.mission.count({
-    where: {
-      projectId: projectId,
-      payload: {
-        path: ['guestId'],
-        equals: guestId,
-      },
-    },
-  })
+  const usedQuota = invitation.usedQuota || 0
 
   const appEmit = (globalThis as unknown as { appEmitter?: { emit: Function } }).appEmitter
   if (appEmit && limits.maxQuota > 0) {
@@ -213,7 +205,8 @@ export async function checkGuestQuotaAvailable(guestId: string, projectId: strin
     }
   }
 
-  if (usedQuota >= limits.maxQuota) {
+  const { checkGuestQuotaLimit } = await import('@gitorch/cadence')
+  if (!checkGuestQuotaLimit(usedQuota, limits.maxQuota)) {
     throw new GuestQuotaExceededError(`Quota excedida para o convidado ${guestId}`)
   }
 }
@@ -228,15 +221,7 @@ export async function assertGuestQuotaAvailable(guestId: string, projectId: stri
   const limits = invitation.executionLimits as { maxQuota?: number; maxStepsPerMission?: number }
   if (limits.maxQuota == null || limits.maxQuota <= 0) return
 
-  const usedQuota = await prisma.mission.count({
-    where: {
-      projectId: projectId,
-      payload: {
-        path: ['guestId'],
-        equals: guestId,
-      },
-    },
-  })
+  const usedQuota = invitation.usedQuota || 0
 
   const appEmit = (globalThis as unknown as { appEmitter?: { emit: Function } }).appEmitter
   if (appEmit && limits.maxQuota > 0) {
@@ -260,7 +245,8 @@ export async function assertGuestQuotaAvailable(guestId: string, projectId: stri
     }
   }
 
-  if (usedQuota >= limits.maxQuota) {
+  const { checkGuestQuotaLimit } = await import('@gitorch/cadence')
+  if (!checkGuestQuotaLimit(usedQuota, limits.maxQuota)) {
     throw new QuotaExcedidaError(`Quota excedida para o convidado ${guestId}`)
   }
 }
