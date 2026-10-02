@@ -181,3 +181,6 @@ export function avaliarProntoMultiRepo(
     porRepositorio,
   }
 }
+
+// Export QA Code Review definition per instruction
+export { GSTACK_SKILL_CATALOG } from './skill-destillations'

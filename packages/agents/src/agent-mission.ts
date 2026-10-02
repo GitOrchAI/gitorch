@@ -10,6 +10,7 @@ import type {
   MissionState,
 } from './types'
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
+import { GSTACK_SKILL_CATALOG } from '@gitorch/cadence'
 import { buildPrimingPreamble } from './prompts/priming.js'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 import type { StateNode } from './types'
@@ -44,6 +45,16 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     )
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let limits: any = input.executionLimits
+  if (input.role === 'qa' && limits && limits.maxStepsPerMission) {
+    limits = {
+      ...limits,
+      maxStepsPerMission: limits.maxStepsPerMission * 3,
+      maxPromptArgBytes: 256 * 1024,
+    }
+  }
+
   return {
     id: input.id,
     projectId: input.projectId,
@@ -67,6 +78,7 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     },
     evidenceRefs: [...(input.evidenceRefs ?? [])],
     userId: input.userId,
+    executionLimits: limits,
   }
 }
 
@@ -162,7 +174,12 @@ function buildPrompt(
   subPath?: string
 ): string {
   const contextBlock = context.length > 0 ? context.map((line) => `- ${line}`).join('\n') : '- none'
-  const systemPrompt = AGENT_SYSTEM_PROMPTS[role] || ''
+  let systemPrompt = AGENT_SYSTEM_PROMPTS[role] || ''
+
+  if (role === 'qa') {
+    systemPrompt +=
+      '\n\nQA Skill Guidelines: ' + (GSTACK_SKILL_CATALOG['review']?.description || '')
+  }
 
   const subPathInstructions = subPath
     ? `\nWorking Directory: You are working in a multi-repo workspace. Your target repository is located at /workspace${

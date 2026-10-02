@@ -25,6 +25,7 @@ import type {
 } from './types'
 import { primeWorkspace } from './workspace-priming'
 import { checkMissionLimits } from './execution-limits'
+import { GSTACK_SKILL_CATALOG } from '@gitorch/cadence'
 
 /**
  * Enriquece o CONTEXTO da missão com CONHECIMENTO do projeto, depois que o
@@ -142,7 +143,7 @@ export class QualityAnalystNode extends BaseAgentNode {
             ...transition.state.mission,
             prompt:
               transition.state.mission.prompt +
-              `\n\n### QA Rework Instructions (Attempt ${transition.state.qaRetries}):\n${JSON.stringify(qaComment, null, 2)}`,
+              `\n\n### QA Rework Instructions (Attempt ${transition.state.qaRetries}):\nQA Skill Guidelines: ${GSTACK_SKILL_CATALOG['review']?.description || ''}\n${JSON.stringify(qaComment, null, 2)}`,
           }
         }
       }
@@ -291,10 +292,16 @@ export class AgentOrchestrator {
     }
 
     let result: RuntimeExecutionResult | undefined
+    // Scale timeoutMs for QA missions to handle large diffs
+    let timeoutMs = input.timeoutMs
+    if (mission.role === 'qa' && timeoutMs) {
+      timeoutMs = timeoutMs * 3
+    }
+
     let currentState: MissionState = {
       mission,
       workspacePath: allocation?.path,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: timeoutMs,
     }
     let currentRole: string | 'done' | 'failed' = mission.role
     let stepCount = 0
@@ -306,7 +313,7 @@ export class AgentOrchestrator {
           executionStartTimeMs,
           stepCount,
           mission.executionLimits,
-          input.timeoutMs
+          currentState.timeoutMs
         )
 
         if (limitsCheck.interrupted) {

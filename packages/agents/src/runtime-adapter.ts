@@ -445,7 +445,11 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
       // comando (promptArgName ou posicional); pelo stdin não há esse teto
       // do SO, então não cortamos ali.
       const goesViaArgv = !(options.promptViaStdin && !options.promptArgName)
-      const cappedPrompt = goesViaArgv ? capPromptForArgv(request.prompt) : undefined
+      const currentMaxBytes =
+        request.role === 'qa' ? MAX_PROMPT_ARG_BYTES * 3 : MAX_PROMPT_ARG_BYTES
+      const cappedPrompt = goesViaArgv
+        ? capPromptForArgv(request.prompt, currentMaxBytes)
+        : undefined
       if (cappedPrompt?.truncated) {
         // Sem logger injetado nesta camada (biblioteca pura, sem FastifyInstance);
         // console é o mesmo fallback já usado em outros pontos do backend sem
