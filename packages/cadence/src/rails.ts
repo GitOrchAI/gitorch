@@ -1551,6 +1551,155 @@ export interface MultiRepoDoDResult {
   errors: string[]
 }
 
+// ---------------------------------------------------------------------------
+// Truncamento Inteligente de Anexos
+// ---------------------------------------------------------------------------
+
+export interface ResultadoTruncamento {
+  texto: string
+  truncado: boolean
+  tokensEstimados: number
+}
+
+/**
+ * Estimativa conservadora de tokens baseada em caracteres (~4 caracteres latinos/ingleses por token).
+ */
+export function estimarTokens(texto: string): number {
+  return Math.ceil(texto.length / 4)
+}
+
+/**
+ * Trunca um documento preservando sua estrutura (títulos Markdown) e evitando a
+ * quebra de blocos de código. Adiciona a anotação correspondente informando se
+ * o arquivo foi truncado ou inserido integralmente.
+ */
+export function truncarDocumento(texto: string, maxTokens: number): ResultadoTruncamento {
+  const maxChars = maxTokens * 4
+  const marcadorTruncado = '\n[Conteúdo truncado respeitando limites de contexto]\n'
+  const marcadorIntegral = '[Documento inserido integralmente]\n'
+
+  if (texto.length <= maxChars) {
+    const textoAnotado = marcadorIntegral + texto
+    return {
+      texto: textoAnotado,
+      truncado: false,
+      tokensEstimados: estimarTokens(textoAnotado),
+    }
+  }
+
+  const linhas = texto.split('\n')
+  let dentroDeBloco = false
+  const isCodeBlock = (l: string) => l !== undefined && l.trim().startsWith('```')
+
+  // Identifica títulos Markdown que devem ser preservados
+  const indicesHeaders = new Set<number>()
+  // Reserva de até 40% dos tokens para manter a estrutura de headers
+  let headerBudget = Math.floor(maxChars * 0.4)
+
+  for (let i = 0; i < linhas.length; i++) {
+    const l = linhas[i]
+    if (l === undefined) continue
+    if (isCodeBlock(l)) {
+      dentroDeBloco = !dentroDeBloco
+      continue
+    }
+    if (!dentroDeBloco && /^#+\s/.test(l.trim())) {
+      const custo = l.length + 1 // +1 pro newline
+      if (headerBudget >= custo) {
+        indicesHeaders.add(i)
+        headerBudget -= custo
+      }
+    }
+  }
+
+  // O restante dos caracteres disponíveis (subtraindo o espaço fixo para a marcação de truncamento e os headers já reservados)
+  let textBudget = maxChars - marcadorTruncado.length - 10
+  for (const idx of indicesHeaders) {
+    const headerLine = linhas[idx]
+    if (headerLine !== undefined) {
+      textBudget -= headerLine.length + 1
+    }
+  }
+
+  let resultado = ''
+  dentroDeBloco = false
+  let truncou = false
+
+  for (let i = 0; i < linhas.length; i++) {
+    const linha = linhas[i]
+    if (linha === undefined) continue
+    const isCodigo = isCodeBlock(linha)
+    const custo = linha.length + 1
+
+    // Sempre preserva as linhas de título identificadas
+    if (indicesHeaders.has(i)) {
+      resultado += linha + '\n'
+      continue
+    }
+
+    // Se ainda não truncou e há orçamento, adiciona a linha
+    if (!truncou) {
+      if (textBudget >= custo) {
+        if (isCodigo) {
+          dentroDeBloco = !dentroDeBloco
+        }
+        resultado += linha + '\n'
+        textBudget -= custo
+      } else {
+        // Se a quebra acontecer dentro de um bloco de código, fecha o bloco antes de truncar
+        if (dentroDeBloco) {
+          resultado += '```\n'
+          dentroDeBloco = false
+        }
+        resultado += marcadorTruncado
+        truncou = true
+      }
+    }
+  }
+
+  const textoFinal = resultado.trim()
+  return {
+    texto: textoFinal,
+    truncado: true,
+    tokensEstimados: estimarTokens(textoFinal),
+  }
+}
+
+/**
+ * Processa uma lista de textos anexados, distribuindo o limite global
+ * para não ultrapassar a cota de tokens por pedido.
+ */
+export function processarAnexosDoPedido(
+  anexos: string[],
+  limiteGlobalTokens: number = 24000,
+  limitePorDocTokens: number = 8000
+): ResultadoTruncamento[] {
+  let tokensDisponiveis = limiteGlobalTokens
+  const resultados: ResultadoTruncamento[] = []
+  const baseTruncado = '[Conteúdo truncado respeitando limites de contexto]'
+  const minTokens = estimarTokens(baseTruncado)
+
+  for (const anexo of anexos) {
+    const maxTokensParaEste = Math.min(limitePorDocTokens, Math.max(0, tokensDisponiveis))
+
+    // Se já nem sequer comporta o aviso de truncamento
+    if (maxTokensParaEste < minTokens) {
+      resultados.push({
+        texto: baseTruncado,
+        truncado: true,
+        tokensEstimados: minTokens,
+      })
+      continue
+    }
+
+    const res = truncarDocumento(anexo, maxTokensParaEste)
+    resultados.push(res)
+    tokensDisponiveis -= res.tokensEstimados
+  }
+
+  return resultados
+}
+
 export async function validarRailsMultiRepo(
   targets: MultiRepoRailTarget[],
   options?: {
