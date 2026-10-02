@@ -117,6 +117,18 @@ export function precificarSpan(
 }
 
 /**
+ * Checa se o convidado ainda possui saldo dentro da quota permitida, incluindo o custo estimado.
+ *
+ * @param usedQuota Quanto da quota já foi consumido.
+ * @param maxQuota O limite máximo da quota ofertada.
+ * @param estimatedCost Custo estimado ou consumido a ser somado.
+ */
+export function checkGuestQuotaLimit(usedQuota: number, maxQuota: number, estimatedCost: number = 0): boolean {
+  return usedQuota + estimatedCost <= maxQuota
+}
+
+
+/**
  * Abaixo disto, não há fila para otimizar: com 1 ou 2 pedidos o dono já vê a
  * ordem inteira de relance, e qualquer troca é óbvia sem ajuda nenhuma. O
  * valor deste cálculo está em achar o candidato que NÃO salta aos olhos numa
