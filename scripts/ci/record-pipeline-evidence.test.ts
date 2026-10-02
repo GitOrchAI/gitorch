@@ -3,13 +3,18 @@ import { recordPipelineEvidence } from './record-pipeline-evidence.js'
 
 describe('Record Pipeline Evidence Helper', () => {
   const originalFetch = globalThis.fetch
+  const originalDbUrl = process.env.DATABASE_URL
 
   beforeEach(() => {
     vi.restoreAllMocks()
+    delete process.env.DATABASE_URL
   })
 
   afterEach(() => {
     globalThis.fetch = originalFetch
+    if (originalDbUrl !== undefined) {
+      process.env.DATABASE_URL = originalDbUrl
+    }
   })
 
   it('should post pipeline evidence to control-plane endpoint and return evidence record', async () => {

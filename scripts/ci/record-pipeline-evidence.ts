@@ -15,7 +15,9 @@ export interface RecordEvidenceOptions {
 
 export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}) {
   const apiUrl = options.apiUrl || process.env.GITORCH_API_URL || 'http://127.0.0.1:4012'
-  const projectId = options.projectId || process.env.PROJECT_ID || 'proj_ci_staging'
+  let targetProjectId = options.projectId || process.env.PROJECT_ID || 'proj_ci_staging'
+  let targetUserId = 'ci-service-user'
+
   const commitHash =
     options.commitHash || process.env.GITHUB_SHA || process.env.COMMIT_HASH || 'local-test-commit'
   const branch =
@@ -34,11 +36,58 @@ export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}
     securityScan: 'passed',
   }
 
+  // Se DATABASE_URL estiver configurada, seleciona ou prepara o projeto compatível com tenant isolation
+  if (process.env.DATABASE_URL) {
+    const prisma = new PrismaClient()
+    try {
+      const existingProject = await prisma.project.findFirst({
+        orderBy: { id: 'desc' },
+      })
+
+      if (existingProject && !options.projectId) {
+        targetProjectId = existingProject.id
+        if (existingProject.userId) {
+          targetUserId = existingProject.userId
+        }
+      } else {
+        const user = await prisma.user.upsert({
+          where: { email: 'ci@gitorch.ai' },
+          create: {
+            id: targetUserId,
+            email: 'ci@gitorch.ai',
+            name: 'CI Staging User',
+            githubLogin: `gitorch-ci-${Date.now()}`,
+          },
+          update: {},
+        })
+        targetUserId = user.id
+
+        const project = await prisma.project.upsert({
+          where: { id: targetProjectId },
+          create: {
+            id: targetProjectId,
+            wingId: `GitOrchAI/gitorch-ci-${Date.now()}`,
+            name: 'GitOrch CI Staging',
+            userId: targetUserId,
+          },
+          update: {
+            userId: targetUserId,
+          },
+        })
+        targetProjectId = project.id
+      }
+    } catch (dbErr) {
+      console.warn('[recordPipelineEvidence] Aviso ao checar banco direto:', dbErr)
+    } finally {
+      await prisma.$disconnect()
+    }
+  }
+
   let authToken = options.token || process.env.GITORCH_API_TOKEN
   if (!authToken && process.env.JWT_SECRET) {
     try {
       authToken = jwt.sign(
-        { userId: 'ci-service-user', wingId: 'GitOrchAI/gitorch' },
+        { userId: targetUserId, wingId: 'GitOrchAI/gitorch' },
         process.env.JWT_SECRET
       )
     } catch (tokenErr) {
@@ -51,29 +100,8 @@ export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}
     ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
   }
 
-  // Se DATABASE_URL estiver configurada, garante que o projeto exista para a rota /analyze
-  if (process.env.DATABASE_URL) {
-    const prisma = new PrismaClient()
-    try {
-      const existing = await prisma.project.findUnique({ where: { id: projectId } })
-      if (!existing) {
-        await prisma.project.create({
-          data: {
-            id: projectId,
-            wingId: 'GitOrchAI/gitorch',
-            name: 'GitOrch CI Staging',
-          },
-        })
-      }
-    } catch (dbErr) {
-      console.warn('[recordPipelineEvidence] Aviso ao checar banco direto:', dbErr)
-    } finally {
-      await prisma.$disconnect()
-    }
-  }
-
   // Aciona primeiro /analyze para inicializar ou atualizar o PipelineConfig
-  const analyzeEndpoint = `${apiUrl}/api/v1/projects/${projectId}/pipelines/analyze`
+  const analyzeEndpoint = `${apiUrl}/api/v1/projects/${targetProjectId}/pipelines/analyze`
   const analyzeRes = await fetch(analyzeEndpoint, {
     method: 'POST',
     headers: authHeaders,
@@ -86,7 +114,7 @@ export async function recordPipelineEvidence(options: RecordEvidenceOptions = {}
   }
 
   // Aciona o endpoint de registro de evidência
-  const endpoint = `${apiUrl}/api/v1/projects/${projectId}/pipelines/evidence`
+  const endpoint = `${apiUrl}/api/v1/projects/${targetProjectId}/pipelines/evidence`
   const payload = {
     commitHash,
     branch,

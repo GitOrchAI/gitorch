@@ -270,7 +270,6 @@ jobs:
         run: pnpm exec tsx scripts/ci/record-pipeline-evidence.ts
         env:
           GITORCH_API_URL: http://127.0.0.1:4012
-          PROJECT_ID: proj_ci_staging
 
       - name: Server logs (on failure)
         if: failure()
