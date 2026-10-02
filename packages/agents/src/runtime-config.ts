@@ -91,3 +91,26 @@ export function getTracingEnvironment(): TracingEnvironment {
     ...(process.env['TELEMETRY_ENABLED'] === '1' ? { TELEMETRY_ENABLED: '1' } : {}),
   }
 }
+
+export function applyRuntimeOverrides<T extends Record<string, unknown>>(
+  baseOptions: T,
+  overrides?: Record<string, unknown>
+): T {
+  if (!overrides) return baseOptions
+  const result = { ...baseOptions, ...overrides } as unknown as T
+
+  if (baseOptions['env'] && overrides['env']) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(result as any).env = {
+      ...(baseOptions['env'] as Record<string, string>),
+      ...(overrides['env'] as Record<string, string>),
+    }
+  }
+
+  if (Array.isArray(baseOptions['args']) && Array.isArray(overrides['args'])) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(result as any).args = [...baseOptions['args'], ...overrides['args']]
+  }
+
+  return result
+}
