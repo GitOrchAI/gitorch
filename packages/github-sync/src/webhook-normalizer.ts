@@ -96,7 +96,11 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
   const organization = optionalOrganization(payload)
   const pullRequest = requiredRecord(payload, 'pull_request')
   const pullRequestNodeId = requiredString(pullRequest, 'node_id')
-  const mergedAt = optionalString(pullRequest, 'merged_at')
+  const actionName = action(payload, envelope.headers.eventName)
+  const mergedAt =
+    actionName === 'closed' && pullRequest['merged'] === true
+      ? optionalString(pullRequest, 'merged_at')
+      : undefined
 
   return {
     id: eventId(envelope, pullRequestNodeId),
