@@ -50,6 +50,7 @@ export const ROTAS = {
   respostasAoDev: '/api/v1/painel/respostas-ao-dev', // NOVA (D69) — o que o time respondeu ao dev em nome do dono
   corrigirRespostaAoDev: (id: string): string => `/api/v1/painel/respostas-ao-dev/${id}/corrigir`, // NOVA (D69) — POST
   devCota: '/api/v1/painel/dev-cota', // existe — cota do dev assíncrono (Jules), por conta (DJ-T5)
+  anexos: (id: string): string => `/api/v1/pedidos/${id}/anexos`,
 } as const
 
 /**
@@ -151,6 +152,19 @@ export async function buscarArvoreDoPedido(
   const qs = `?projeto=${encodeURIComponent(projeto)}&numero=${numero}`
   const r = await pedir<ArvorePayload>(ROTAS.arvoreDoPedido + qs, {}, deps)
   return r.nos
+}
+
+export async function buscarAnexosDoPedido(id: string, deps: PedirDeps = {}) {
+  const r = await pedir<{
+    anexos: Array<{
+      id: string
+      fileName: string
+      mimeType: string
+      sizeBytes: number
+      textContent: string | null
+    }>
+  }>(ROTAS.anexos(id), {}, deps)
+  return r.anexos
 }
 
 /** Traduz o erro de POST /api/v1/desejos para a frase do produto (verbatim). */
