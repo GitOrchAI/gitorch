@@ -123,10 +123,13 @@ export function precificarSpan(
  * @param maxQuota O limite máximo da quota ofertada.
  * @param estimatedCost Custo estimado ou consumido a ser somado.
  */
-export function checkGuestQuotaLimit(usedQuota: number, maxQuota: number, estimatedCost: number = 0): boolean {
+export function checkGuestQuotaLimit(
+  usedQuota: number,
+  maxQuota: number,
+  estimatedCost: number = 0
+): boolean {
   return usedQuota + estimatedCost <= maxQuota
 }
-
 
 /**
  * Abaixo disto, não há fila para otimizar: com 1 ou 2 pedidos o dono já vê a
