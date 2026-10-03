@@ -309,6 +309,7 @@ import {
   ultimaMensagemDoDevJules,
   houveAtividadeDoDevDesde,
 } from '../services/jules-client.js'
+import { verificarOuGerarAgentsMd } from '../services/onboarding-agents-generator.js'
 import { vigiarSessoes } from '../services/session-watch.js'
 import {
   CADENCIA_DA_VARREDURA_MS,
@@ -4001,17 +4002,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 onWarn: (m) => app.log.warn(m),
               })
             },
-            criarSessaoDev: async ({ repository, titulo, prompt }) =>
-              criarSessaoJules({
+            criarSessaoDev: async ({ repository, titulo, prompt }) => {
+              const defaultBranch =
+                project.defaultBranch ?? process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main'
+
+              const agentsCheck = await verificarOuGerarAgentsMd({
+                repository,
+                defaultBranch,
+                token: railsToken as string,
+                fetchImpl: fetchDoQuadro(project),
+                onWarn: (m) => app.log.warn(m),
+              })
+
+              if (!agentsCheck.existe) {
+                app.log.warn(
+                  `[scheduler] Bloqueio pelo portão de prontidão: AGENTS.md ausente em ${repository} e não pôde ser gerado: ${agentsCheck.motivo ?? 'motivo desconhecido'}`
+                )
+                return {
+                  situacao: 'falhou',
+                  motivo: 'AGENTS.md ausente na branch padrão e não pôde ser gerado',
+                }
+              }
+
+              return criarSessaoJules({
                 // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
                 apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
-                startingBranch:
-                  project.defaultBranch ?? process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
+                startingBranch: defaultBranch,
                 titulo,
                 prompt,
                 onWarn: (m) => app.log.warn(m),
-              }),
+              })
+            },
             // Guardar a ligação é o que permite julgar o PR depois: ele chega
             // com o autor da conta da instalação e sem palavra de ligação no
             // corpo, então o GitHub sozinho não conta de quem é o trabalho.
