@@ -204,3 +204,9 @@ export function wrapWithLimits(
     ],
   }
 }
+
+/**
+ * Limites de tokens para anexos de pedidos, evitando estouro da janela de contexto.
+ */
+export const MAX_ATTACHMENT_TOKENS_PER_WISH = 8000
+export const MAX_TOKENS_PER_DOCUMENT = 4000
