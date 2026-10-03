@@ -1604,3 +1604,202 @@ export async function validarRailsMultiRepo(
     errors: globalErrors,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Document Truncation Helpers
+// ---------------------------------------------------------------------------
+
+export interface DocumentBlock {
+  type: 'header' | 'paragraph' | 'code' | 'list'
+  content: string
+}
+
+export function parseBlocks(text: string): DocumentBlock[] {
+  const blocks: DocumentBlock[] = []
+  const lines = text.split('\n')
+  let currentBlockType: DocumentBlock['type'] | null = null
+  let currentContent: string[] = []
+
+  const commitBlock = () => {
+    if (currentBlockType && currentContent.length > 0) {
+      blocks.push({ type: currentBlockType, content: currentContent.join('\n') })
+    }
+    currentContent = []
+    currentBlockType = null
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+
+    if (line.startsWith('```')) {
+      if (currentBlockType === 'code') {
+        currentContent.push(line)
+        commitBlock()
+        continue
+      } else {
+        commitBlock()
+        currentBlockType = 'code'
+        currentContent.push(line)
+        continue
+      }
+    }
+
+    if (currentBlockType === 'code') {
+      currentContent.push(line)
+      continue
+    }
+
+    if (line.match(/^#+\s/)) {
+      commitBlock()
+      blocks.push({ type: 'header', content: line })
+      continue
+    }
+
+    if (line.match(/^[-*]\s/) || line.match(/^\d+\.\s/)) {
+      if (currentBlockType !== 'list') commitBlock()
+      currentBlockType = 'list'
+      currentContent.push(line)
+      continue
+    }
+
+    if (line.trim() === '') {
+      if (currentBlockType !== 'paragraph' && currentBlockType !== 'list') {
+        commitBlock()
+      } else {
+        currentContent.push(line)
+      }
+      continue
+    }
+
+    if (!currentBlockType) currentBlockType = 'paragraph'
+    currentContent.push(line)
+  }
+
+  commitBlock()
+
+  return blocks
+}
+
+export function truncateAtWordBoundary(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text
+  const truncated = text.slice(0, maxLength)
+  const lastSpace = truncated.lastIndexOf(' ')
+  if (lastSpace > 0) {
+    return truncated.slice(0, lastSpace)
+  }
+  return truncated
+}
+
+export function truncateDocument(text: string, maxTokens: number): string {
+  const maxChars = maxTokens * 4
+  if (text.length <= maxChars) return text
+
+  const marker = '\n\n[Conteúdo truncado respeitando limites de contexto]'
+  const blocks = parseBlocks(text)
+
+  let remainingChars = maxChars - marker.length
+
+  // Prioritize headers to ensure document structure is preserved if possible.
+  let outputBlocks: { index: number; content: string }[] = []
+  let headerBlocks = blocks.map((b, i) => ({ ...b, index: i })).filter((b) => b.type === 'header')
+  let otherBlocks = blocks.map((b, i) => ({ ...b, index: i })).filter((b) => b.type !== 'header')
+
+  for (const block of headerBlocks) {
+    if (remainingChars <= 0) break
+    if (block.content.length <= remainingChars) {
+      outputBlocks.push({ index: block.index, content: block.content })
+      remainingChars -= block.content.length + 2
+    } else {
+      outputBlocks.push({
+        index: block.index,
+        content: truncateAtWordBoundary(block.content, remainingChars),
+      })
+      remainingChars = 0
+    }
+  }
+
+  for (const block of otherBlocks) {
+    if (remainingChars <= 0) break
+
+    // Attempt to insert other blocks in their original position
+    if (block.type === 'code') {
+      if (block.content.length <= remainingChars) {
+        outputBlocks.push({ index: block.index, content: block.content })
+        remainingChars -= block.content.length + 2
+      } else {
+        let codeTruncated = truncateAtWordBoundary(block.content, Math.max(0, remainingChars - 4))
+        if (!codeTruncated.endsWith('```')) {
+          if (codeTruncated.lastIndexOf('\n') > 0) {
+            codeTruncated = codeTruncated.slice(0, codeTruncated.lastIndexOf('\n'))
+          }
+          codeTruncated += '\n```'
+        }
+        outputBlocks.push({ index: block.index, content: codeTruncated })
+        remainingChars = 0
+      }
+    } else {
+      if (block.content.length <= remainingChars) {
+        outputBlocks.push({ index: block.index, content: block.content })
+        remainingChars -= block.content.length + 2
+      } else {
+        outputBlocks.push({
+          index: block.index,
+          content: truncateAtWordBoundary(block.content, remainingChars),
+        })
+        remainingChars = 0
+      }
+    }
+  }
+
+  outputBlocks.sort((a, b) => a.index - b.index)
+
+  return outputBlocks.map((b) => b.content).join('\n\n') + marker
+}
+
+export interface ProcessedAttachment {
+  name: string
+  content: string
+  truncatedByTokens: boolean
+}
+
+export function processAttachmentsTokens(
+  attachments: { name: string; content: string }[],
+  maxTotalTokens: number,
+  maxDocTokens: number
+): ProcessedAttachment[] {
+  let remainingGlobalTokens = maxTotalTokens
+  const processed: ProcessedAttachment[] = []
+
+  for (const att of attachments) {
+    if (remainingGlobalTokens <= 0) {
+      // If we have completely exhausted the global token limit, subsequent files are purely truncated to a marker or excluded
+      processed.push({
+        name: att.name,
+        content: '[Conteúdo truncado respeitando limites de contexto]',
+        truncatedByTokens: true,
+      })
+      continue
+    }
+
+    const currentDocTokensAllowed = Math.min(maxDocTokens, remainingGlobalTokens)
+    const initialCharCount = att.content.length
+
+    const truncatedContent = truncateDocument(att.content, currentDocTokensAllowed)
+
+    // Calculate spent tokens based on the lightweight heuristic
+    const spentTokens = Math.ceil(truncatedContent.length / 4)
+    remainingGlobalTokens -= spentTokens
+
+    // Check if it was truncated, including when initial char count is less than marker size
+    const isTruncated =
+      initialCharCount > truncatedContent.length ||
+      truncatedContent.includes('[Conteúdo truncado respeitando limites de contexto]')
+    processed.push({
+      name: att.name,
+      content: truncatedContent,
+      truncatedByTokens: isTruncated,
+    })
+  }
+
+  return processed
+}
