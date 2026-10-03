@@ -216,7 +216,9 @@ export async function lerCredencialQueAlcancaOProjeto(deps: {
  * rotacionada) nunca lança, só resolve em `null` e cai para o próximo elo
  * da corrente (`engine_connections`).
  */
-function decodificarTokenDoClienteSeHouver(envelope: string | null): string | null {
+export function decodificarTokenDoClienteSeHouver(
+  envelope: string | null | undefined
+): string | null {
   if (!envelope) return null
   try {
     return decryptCredential(envelope)

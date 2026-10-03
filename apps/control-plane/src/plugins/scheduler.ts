@@ -377,6 +377,7 @@ import {
 import {
   lerCredencialDoProjeto,
   lerCredencialQueAlcancaOProjeto,
+  decodificarTokenDoClienteSeHouver,
 } from '../services/project-credential.js'
 import {
   avaliarCustoDaOrdemDosProjetos,
@@ -629,6 +630,133 @@ export function resolveRailsBoard(project: {
     if (owner) return `${owner}/${boardNumber}`
   }
   return undefined
+}
+
+export const resolverBoardDoProjeto = resolveRailsBoard
+
+export interface AutoRemediarQuadroDaSprintDeps {
+  project: {
+    id: string
+    wingId: string
+    runtimeConfig?: unknown
+    encryptedClientToken?: string | null
+  }
+  token: string
+  leitor: Pick<ProjectV2Client, 'findProjectId'> &
+    Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>
+  resolveOwnerId?: (owner: string, token: string) => Promise<ResolvedOwner>
+  resolveRepositoryId?: (repository: string, token: string) => Promise<string>
+  criarClienteAlternativo?: (
+    token: string
+  ) => Pick<ProjectV2Client, 'findProjectId'> &
+    Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>
+}
+
+/**
+ * Tenta auto-remediar um projeto cujo repositório não tem quadro linkado no GitHub,
+ * mas tem o quadro previamente configurado no runtimeConfig (ex: wizard/onboarding anterior).
+ * Localiza o projectId e tenta vincular ao repositório se possível.
+ */
+export async function tentarAutoRemediarQuadroDaSprint(
+  deps: AutoRemediarQuadroDaSprintDeps
+): Promise<DecisaoDeQuadro | null> {
+  const boardConfigurado = resolverBoardDoProjeto(deps.project)
+  if (!boardConfigurado) return null
+
+  const [bOwner, bNumStr] = boardConfigurado.split('/')
+  const bNum = Number.parseInt(bNumStr ?? '', 10)
+  if (!bOwner || !Number.isFinite(bNum)) return null
+
+  let resolvedOwner: ResolvedOwner | null = null
+  if (deps.resolveOwnerId) {
+    try {
+      resolvedOwner = await deps.resolveOwnerId(bOwner, deps.token)
+    } catch {
+      // segue com fallback
+    }
+  }
+  const ownerType = resolvedOwner?.type ?? 'organization'
+
+  let projectId = await deps.leitor
+    .findProjectId({
+      login: bOwner,
+      number: bNum,
+      ownerType,
+    })
+    .catch(() => null)
+
+  const clientToken = decodificarTokenDoClienteSeHouver(deps.project.encryptedClientToken)
+  let clienteAlternativo:
+    | (Pick<ProjectV2Client, 'findProjectId'> &
+        Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>)
+    | null = null
+
+  if (clientToken && deps.criarClienteAlternativo) {
+    clienteAlternativo = deps.criarClienteAlternativo(clientToken)
+  }
+
+  let clientUsadoParaLink = deps.leitor
+  if (!projectId && clienteAlternativo) {
+    projectId = await clienteAlternativo
+      .findProjectId({
+        login: bOwner,
+        number: bNum,
+        ownerType,
+      })
+      .catch(() => null)
+    if (projectId) {
+      clientUsadoParaLink = clienteAlternativo
+    }
+  }
+
+  if (!projectId) return null
+
+  // Tenta vincular ao repositório se possível
+  if (deps.resolveRepositoryId) {
+    let ligado = false
+    if (clientUsadoParaLink.linkProjectV2ToRepository) {
+      try {
+        const repoId = await deps.resolveRepositoryId(deps.project.wingId, deps.token)
+        await clientUsadoParaLink.linkProjectV2ToRepository({
+          projectId,
+          repositoryId: repoId,
+        })
+        ligado = true
+      } catch {
+        // tenta com credencial alternativa
+      }
+    }
+    if (
+      !ligado &&
+      clienteAlternativo?.linkProjectV2ToRepository &&
+      clientUsadoParaLink !== clienteAlternativo &&
+      clientToken
+    ) {
+      try {
+        const repoId = await deps.resolveRepositoryId(deps.project.wingId, clientToken)
+        await clienteAlternativo.linkProjectV2ToRepository({
+          projectId,
+          repositoryId: repoId,
+        })
+        ligado = true
+      } catch {
+        // falha no link não impede de usar o quadro
+      }
+    }
+  }
+
+  return {
+    acao: 'usar',
+    quadro: {
+      id: projectId,
+      number: bNum,
+      title: deps.project.wingId,
+      closed: false,
+      linkado: true,
+    },
+    precisaLigar: false,
+    motivo: 'quadro configurado no runtimeConfig auto-remediado com sucesso',
+  }
 }
 
 /**
@@ -11267,7 +11395,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
     const projetos = await app.prisma.project.findMany({
       where: { isActive: true },
-      select: { id: true, name: true, wingId: true, autonomia: true, userId: true },
+      select: {
+        id: true,
+        name: true,
+        wingId: true,
+        autonomia: true,
+        userId: true,
+        runtimeConfig: true,
+        encryptedClientToken: true,
+      },
     })
 
     // EM SÉRIE, pelo mesmo motivo da varredura irmã: dois projetos do mesmo
@@ -11303,9 +11439,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           owner: owner ?? '',
           repo: repo ?? '',
         })
-        const decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
+        let decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
         if (decisao.acao !== 'usar' || !decisao.quadro) {
-          await avisarQuadroIndefinido(p, decisao)
+          const remediado = await tentarAutoRemediarQuadroDaSprint({
+            project: p,
+            token,
+            leitor,
+            resolveOwnerId: (o, t) => resolveGithubOwnerId(o, t),
+            resolveRepositoryId: (r, t) => resolveGithubRepositoryId(r, t),
+            criarClienteAlternativo: (t) =>
+              new ProjectV2Client({
+                token: t,
+                fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+              }),
+          }).catch((err) => {
+            app.log.warn(
+              `[Scheduler] falha na auto-remediação do quadro de ${p.wingId}: ${(err as Error).message}`
+            )
+            return null
+          })
+
+          if (remediado) {
+            decisao = remediado
+          } else {
+            await avisarQuadroIndefinido(p, decisao)
+            continue
+          }
+        }
+
+        if (decisao.acao !== 'usar' || !decisao.quadro) {
           continue
         }
 

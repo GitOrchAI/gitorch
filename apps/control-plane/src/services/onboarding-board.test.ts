@@ -598,6 +598,45 @@ describe('ensureProjectBoard — descobre por evidência antes de criar', () => 
     })
   })
 
+  it('passo 2: quando acha por issues e o link falha com a credencial principal, faz fallback para a credencial do cliente', async () => {
+    const clienteDoProduto = clienteCompleto({
+      descobrirQuadrosPorIssues: vi.fn(async () => [
+        {
+          id: 'PVT_achado',
+          number: 9,
+          title: 'quadro existente',
+          closed: false,
+          issuesDesteRepo: 10,
+        },
+      ]),
+      linkProjectV2ToRepository: vi.fn(async () => {
+        throw new Error('Resource not accessible by integration')
+      }),
+    })
+    const clienteDoCliente = clienteCompleto({
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    })
+
+    const r = await ensureProjectBoard({
+      ...base,
+      client: clienteDoProduto as never,
+      clientToken: 'tok-do-cliente',
+      criarClienteAlternativo: () => clienteDoCliente as never,
+    })
+
+    expect(r).toEqual({ owner: 'dono', number: 9 })
+    expect(clienteDoProduto.createProjectV2).not.toHaveBeenCalled()
+    expect(clienteDoCliente.createProjectV2).not.toHaveBeenCalled()
+    expect(clienteDoProduto.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_achado',
+      repositoryId: 'R_repo',
+    })
+    expect(clienteDoCliente.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_achado',
+      repositoryId: 'R_repo',
+    })
+  })
+
   // Decisão do dono: vence o quadro com MAIS CAMPOS. Respeita quem investiu
   // trabalho no quadro à mão, em vez de preferir o mais novo — que costuma ser
   // justamente o que o próprio produto criou, e o mais pobre.
@@ -809,6 +848,39 @@ describe('ensureProjectBoard — 3) quadro avulso na conta pessoal (sem issue ai
     expect(r).toEqual({ owner: 'dono', number: 11 })
     expect(c.createProjectV2).not.toHaveBeenCalled()
     expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_avulso',
+      repositoryId: 'R_repo',
+    })
+  })
+
+  it('passo 3: quando acha quadro avulso na conta e o link falha com a credencial principal, faz fallback para a credencial do cliente', async () => {
+    const clienteDoProduto = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_avulso', number: 11, title: 'dono/repo', closed: false },
+      ]),
+      linkProjectV2ToRepository: vi.fn(async () => {
+        throw new Error('Resource not accessible by integration')
+      }),
+    })
+    const clienteDoCliente = clienteCompleto({
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    })
+
+    const r = await ensureProjectBoard({
+      ...base,
+      client: clienteDoProduto as never,
+      clientToken: 'tok-do-cliente',
+      criarClienteAlternativo: () => clienteDoCliente as never,
+    })
+
+    expect(r).toEqual({ owner: 'dono', number: 11 })
+    expect(clienteDoProduto.createProjectV2).not.toHaveBeenCalled()
+    expect(clienteDoCliente.createProjectV2).not.toHaveBeenCalled()
+    expect(clienteDoProduto.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_avulso',
+      repositoryId: 'R_repo',
+    })
+    expect(clienteDoCliente.linkProjectV2ToRepository).toHaveBeenCalledWith({
       projectId: 'PVT_avulso',
       repositoryId: 'R_repo',
     })
