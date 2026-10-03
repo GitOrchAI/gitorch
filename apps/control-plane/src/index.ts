@@ -1,6 +1,9 @@
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import crypto from 'node:crypto'
+import { truncateDocumentStructured, estimateTokens } from '@gitorch/cadence'
+import { MAX_TOKENS_PER_DOCUMENT, MAX_ATTACHMENT_TOKENS_PER_WISH } from '@gitorch/agents'
+
 import Fastify, { FastifyInstance } from 'fastify'
 import { loadEnv } from './config/env.js'
 import { registerPlugins } from './plugins/index.js'
@@ -166,6 +169,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     const parts = request.parts()
     const fields: Record<string, string | string[]> = {}
     const attachmentsToCreate = []
+    let totalTokensUsed = 0
 
     try {
       for await (const part of parts) {
@@ -181,6 +185,14 @@ export async function buildApp(): Promise<FastifyInstance> {
 
           if (part.mimetype === 'text/plain' || part.mimetype === 'text/markdown') {
             textContent = buffer.toString('utf-8')
+            const availableGlobalTokens = MAX_ATTACHMENT_TOKENS_PER_WISH - totalTokensUsed
+            const limitForThisDoc = Math.min(
+              MAX_TOKENS_PER_DOCUMENT,
+              Math.max(0, availableGlobalTokens)
+            )
+
+            textContent = truncateDocumentStructured(textContent, limitForThisDoc)
+            totalTokensUsed += estimateTokens(textContent)
           }
 
           attachmentsToCreate.push({

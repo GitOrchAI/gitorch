@@ -204,3 +204,6 @@ export function wrapWithLimits(
     ],
   }
 }
+
+export const MAX_ATTACHMENT_TOKENS_PER_WISH = 50000
+export const MAX_TOKENS_PER_DOCUMENT = 20000

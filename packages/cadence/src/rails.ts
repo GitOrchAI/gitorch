@@ -1604,3 +1604,52 @@ export async function validarRailsMultiRepo(
     errors: globalErrors,
   }
 }
+
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+
+export function truncateDocumentStructured(text: string, maxTokens: number): string {
+  const HEADER_INTEGRAL = '[Documento inserido integralmente]\n\n'
+  const HEADER_TRUNCADO = '[Documento truncado por cota de tokens]\n\n'
+  const TRUNCATION_MARKER = '\n\n[Conteúdo truncado respeitando limites de contexto]'
+
+  if (estimateTokens(HEADER_INTEGRAL + text) <= maxTokens) {
+    return HEADER_INTEGRAL + text
+  }
+
+  const limiteRestante = maxTokens - estimateTokens(HEADER_TRUNCADO + TRUNCATION_MARKER)
+  if (limiteRestante <= 0) {
+    return HEADER_TRUNCADO + TRUNCATION_MARKER.trimStart()
+  }
+
+  const blocks = text.split(/\n\n+/)
+  let currentTokens = 0
+  let truncatedBlocks: string[] = []
+  let inCodeBlock = false
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i]!
+
+    const codeTickCount = (block.match(/```/g) || []).length
+    if (codeTickCount % 2 !== 0) {
+      inCodeBlock = !inCodeBlock
+    }
+
+    const blockTokens = estimateTokens(block + (i > 0 ? '\n\n' : ''))
+
+    if (currentTokens + blockTokens > limiteRestante) {
+      break
+    }
+
+    truncatedBlocks.push(block)
+    currentTokens += blockTokens
+  }
+
+  let resultText = truncatedBlocks.join('\n\n')
+  if (inCodeBlock) {
+    resultText += '\n```'
+  }
+
+  return HEADER_TRUNCADO + resultText + TRUNCATION_MARKER
+}
