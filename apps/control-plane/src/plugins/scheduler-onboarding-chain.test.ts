@@ -91,6 +91,14 @@ describe('resolveRailsBoard (Crítico 2: sem fallback pro board global de outro 
     expect(resolveRailsBoard(projetoComBoard)).toBe('meu-dono/7')
   })
 
+  test('projeto COM githubBoardNumber no runtimeConfig: devolve dono/numero a partir do wingId', () => {
+    const projetoComWizardBoard = {
+      wingId: 'meu-dono/meu-repo',
+      runtimeConfig: { githubBoardNumber: 42 },
+    }
+    expect(resolveRailsBoard(projetoComWizardBoard)).toBe('meu-dono/42')
+  })
+
   test('sem NENHUMA env global setada, o comportamento é idêntico (a função nunca olha pro env)', () => {
     delete process.env['GITORCH_PROJECT_BOARD']
     const projetoSemBoard = { runtimeConfig: { envConfig: {} } }

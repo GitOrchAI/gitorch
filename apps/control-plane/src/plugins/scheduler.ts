@@ -3480,6 +3480,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     userId: string | null
     runtimeConfig?: unknown
     devPlan?: string | null
+    defaultBranch?: string | null
     /** BYOK: a impressão digital da conta do dev assíncrono deste cliente. */
     devAccountId?: string | null
     /**
@@ -3877,7 +3878,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
                 apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
-                startingBranch: process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
+                startingBranch:
+                  project.defaultBranch ?? process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
                 titulo,
                 prompt,
                 onWarn: (m) => app.log.warn(m),

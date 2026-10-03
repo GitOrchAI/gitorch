@@ -83,10 +83,13 @@ describe('WorkspaceManager', () => {
       errorDetails: String(error),
       recoveryAction: 'auto-rollback',
     })
-    expect(fs.rm).toHaveBeenCalledWith(`/var/lib/gitorch/workspaces/${userId}/${projectId}`, {
-      recursive: true,
-      force: true,
-    })
+    expect(fs.rm).toHaveBeenCalledWith(
+      path.resolve('/var/lib/gitorch/workspaces', userId, projectId),
+      {
+        recursive: true,
+        force: true,
+      }
+    )
   })
 
   it('should handle runtime failure explicitly via handleRuntimeFailure', () => {
@@ -171,7 +174,7 @@ describe('WorkspaceManager', () => {
 
       const calls = vi.mocked(execFile).mock.calls
       const frontCall = calls.find(
-        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/front')
+        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith(path.join('repos', 'front'))
       )
       expect(frontCall).toBeDefined()
       expect(frontCall![1]).toEqual([
@@ -184,15 +187,17 @@ describe('WorkspaceManager', () => {
       ])
 
       const backCall = calls.find(
-        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/back')
+        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith(path.join('repos', 'back'))
       )
       expect(backCall).toBeDefined()
 
-      const dbCall = calls.find((call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/db'))
+      const dbCall = calls.find(
+        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith(path.join('repos', 'db'))
+      )
       expect(dbCall).toBeDefined()
 
       const autoCall = calls.find(
-        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith('repos/automation')
+        (call) => call[0] === 'git' && call[1]?.[5]?.endsWith(path.join('repos', 'automation'))
       )
       expect(autoCall).toBeDefined()
     })

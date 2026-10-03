@@ -69,13 +69,13 @@ describe('cloneMultiRepos', () => {
       (call[0] as string[]).includes('https://github.com/org/front.git')
     )?.[0] as string[]
     expect(frontArgs).toBeDefined()
-    expect(frontArgs[frontArgs.length - 1]).toContain('repos/front')
+    expect(frontArgs[frontArgs.length - 1]).toContain(path.join('repos', 'front'))
 
     const autoArgs = calls.find((call) =>
       (call[0] as string[]).includes('https://github.com/org/auto.git')
     )?.[0] as string[]
     expect(autoArgs).toBeDefined()
-    expect(autoArgs[autoArgs.length - 1]).toContain('repos/automation')
+    expect(autoArgs[autoArgs.length - 1]).toContain(path.join('repos', 'automation'))
 
     await fs.rm(base, { recursive: true, force: true })
   })
@@ -110,7 +110,7 @@ describe('cloneMultiRepos', () => {
     expect(gitRunner).toHaveBeenCalledTimes(2)
 
     // Verification of rollback
-    const failedPath = path.posix.join(base, 'scheduler-user', 'project-1', 'repos', 'fail')
+    const failedPath = path.resolve(base, 'scheduler-user', 'project-1', 'repos', 'fail')
     expect(fs.rm).toHaveBeenCalledWith(failedPath, { recursive: true, force: true })
 
     vi.mocked(fs.rm).mockRestore()

@@ -150,9 +150,9 @@ export class WorkspaceManager extends EventEmitter {
     for (const repo of spec.repositories) {
       this.validateRepo(repo.url)
       this.validateInput(repo.targetDir)
-      const targetPath = path.posix.join(workspacePath, 'repos', repo.targetDir)
+      const targetPath = path.resolve(workspacePath, 'repos', repo.targetDir)
 
-      if (!targetPath.startsWith(path.resolve(workspacePath) + path.posix.sep)) {
+      if (!targetPath.startsWith(path.resolve(workspacePath) + path.sep)) {
         throw new Error('Caminho do repositório fora da raiz do workspace')
       }
 
@@ -243,7 +243,7 @@ export class WorkspaceManager extends EventEmitter {
     try {
       for (const repo of repos) {
         this.validateRepo(repo)
-        await execFileAsync('git', ['clone', '--', repo, path.posix.join(workspacePath, 'src')])
+        await execFileAsync('git', ['clone', '--', repo, path.join(workspacePath, 'src')])
       }
     } catch (err) {
       this.emit('workspace-error', {

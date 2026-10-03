@@ -122,10 +122,14 @@ describe('AssistedLoginService', () => {
       runDeviceLoginImpl,
     })
 
-    service.start('user-1', 'claude')
+    const states: unknown[] = []
+    const id = service.start('user-1', 'claude')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+
     emitStdout('Success! Your token:\nsk-ant-oat01-abc123XYZ\n')
     await vi.waitFor(() => {
       expect(engineConnections.captureFromHome).toHaveBeenCalledTimes(1)
+      expect(states.at(-1)).toEqual({ phase: 'connected' })
     })
     // kill() já é chamado 2x por uma captura bem-sucedida (finally de
     // captureClaudeToken + cleanup() disparado pelo setState para
