@@ -9,6 +9,7 @@ import {
   ultimaMensagemDoDevJules,
   houveAtividadeDoDevDesde,
   atividadesDeConversaJules,
+  extrairMotivoDaFalha,
 } from './jules-client.js'
 import * as julesClient from './jules-client.js'
 
@@ -160,6 +161,26 @@ describe('numeroDoPrDaSaida', () => {
   })
 })
 
+describe('extrairMotivoDaFalha', () => {
+  it('extrai reason de sessionFailed: { reason: "fatal: Remote branch main not found in upstream origin" }', () => {
+    expect(
+      extrairMotivoDaFalha({
+        sessionFailed: { reason: 'fatal: Remote branch main not found in upstream origin' },
+      })
+    ).toBe('fatal: Remote branch main not found in upstream origin')
+  })
+
+  it('extrai message de error: { message: "Internal error" }', () => {
+    expect(extrairMotivoDaFalha({ error: { message: 'Internal error' } })).toBe('Internal error')
+  })
+
+  it('retorna null se não houver falha', () => {
+    expect(extrairMotivoDaFalha({})).toBeNull()
+    expect(extrairMotivoDaFalha(null)).toBeNull()
+    expect(extrairMotivoDaFalha({ state: 'ACTIVE' })).toBeNull()
+  })
+})
+
 describe('consultarSessaoJules', () => {
   it('devolve estado e número do PR, sem carregar a URL adiante', async () => {
     const fetchImpl = (async () =>
@@ -178,6 +199,87 @@ describe('consultarSessaoJules', () => {
       estado: 'COMPLETED',
       numeroDoPr: 63,
       ultimaAtualizacao: '2026-01-01T00:00:00Z',
+      motivoDaFalha: null,
+    })
+  })
+
+  it('retorna motivoDaFalha preenchido quando body possui sessionFailed', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          state: 'FAILED',
+          updateTime: '2026-01-01T00:00:00Z',
+          sessionFailed: { reason: 'fatal: Remote branch main not found in upstream origin' },
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    const lido = await consultarSessaoJules({ apiKey: 'k', sessionName: 'sessions/1', fetchImpl })
+
+    expect(lido).toEqual({
+      estado: 'FAILED',
+      numeroDoPr: null,
+      ultimaAtualizacao: '2026-01-01T00:00:00Z',
+      motivoDaFalha: 'fatal: Remote branch main not found in upstream origin',
+    })
+  })
+
+  it('busca na rota de activities (/sessions/x/activities) como fallback quando state é FAILED e o topo não possui sessionFailed', async () => {
+    const urlsChamadas: string[] = []
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const urlStr = String(url)
+      urlsChamadas.push(urlStr)
+      if (urlStr.includes('/activities')) {
+        return new Response(
+          JSON.stringify({
+            activities: [
+              {
+                sessionFailed: {
+                  reason: 'fatal: Remote branch main not found in upstream origin',
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          state: 'FAILED',
+          updateTime: '2026-01-01T00:00:00Z',
+        }),
+        { status: 200 }
+      )
+    }) as unknown as typeof fetch
+
+    const lido = await consultarSessaoJules({ apiKey: 'k', sessionName: 'sessions/x', fetchImpl })
+
+    expect(urlsChamadas.some((u) => u.includes('/sessions/x/activities'))).toBe(true)
+    expect(lido).toEqual({
+      estado: 'FAILED',
+      numeroDoPr: null,
+      ultimaAtualizacao: '2026-01-01T00:00:00Z',
+      motivoDaFalha: 'fatal: Remote branch main not found in upstream origin',
+    })
+  })
+
+  it('retorna motivoDaFalha: null quando a sessão está ativa ou completou normalmente', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          state: 'IN_PROGRESS',
+          updateTime: '2026-01-01T00:00:00Z',
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    const lido = await consultarSessaoJules({ apiKey: 'k', sessionName: 'sessions/1', fetchImpl })
+
+    expect(lido).toEqual({
+      estado: 'IN_PROGRESS',
+      numeroDoPr: null,
+      ultimaAtualizacao: '2026-01-01T00:00:00Z',
+      motivoDaFalha: null,
     })
   })
 

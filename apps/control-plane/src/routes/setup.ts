@@ -32,6 +32,7 @@ import {
   CredencialDoGithubInvalidaError,
 } from '../services/acesso-ao-repositorio.js'
 import { fetchImplParaProvaDeAcesso } from '../services/fake-github-access.js'
+import { resolverDefaultBranch } from '../services/default-branch-resolver.js'
 
 /**
  * O que uma listagem do GitHub devolve por repositório, do pouco que a tela
@@ -743,14 +744,33 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         })
       }
 
+      // Deduplicação de requisições GET para o mesmo endereço dentro desta submissão:
+      // a verificação de permissão de escrita e a resolução da branch padrão consultam
+      // o mesmo endpoint (GET /repos/{owner}/{repo}). Reusar o resultado poupa rate limit.
+      const fetchBase = fetchImplParaProvaDeAcesso() ?? fetch
+      const respostasEmCache = new Map<string, Promise<Response>>()
+      const fetchComCachePorRequisicao: typeof fetch = (input, init) => {
+        const url = String(input)
+        const metodo = init?.method?.toUpperCase() ?? 'GET'
+        if (metodo === 'GET') {
+          const existente = respostasEmCache.get(url)
+          if (existente) {
+            return existente.then((res) => res.clone())
+          }
+          const promessa = fetchBase(input, init).then((res) => res.clone())
+          respostasEmCache.set(url, promessa)
+          return promessa.then((res) => res.clone())
+        }
+        return fetchBase(input, init)
+      }
+
       try {
         // A MESMA prova que a tela usou para montar a lista, repetida aqui: uma
         // chamada exata por repositório, com o token do PRÓPRIO cliente, onde
         // `push === true` é o que autoriza.
-        const fetchImplDaProva = fetchImplParaProvaDeAcesso()
         const semAcesso = await repositoriosSemEscrita(repos, {
           githubToken: githubTokenDoDono,
-          ...(fetchImplDaProva ? { fetchImpl: fetchImplDaProva } : {}),
+          fetchImpl: fetchComCachePorRequisicao,
         })
         if (semAcesso.length > 0) {
           app.log.warn(
@@ -815,6 +835,12 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           where: { wingId, userId: owner.id },
         })
 
+        const defaultBranch = await resolverDefaultBranch({
+          repoFullName,
+          token: githubTokenDoDono,
+          fetchImpl: fetchComCachePorRequisicao,
+        })
+
         if (!project) {
           project = await app.prisma.project.create({
             data: {
@@ -828,6 +854,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               // data continua nula — que é o que diz "ninguém escolheu".
               autonomia: nivelEscolhido,
               ...(clienteEscolheuNivel ? { autonomiaEscolhidaEm: new Date() } : {}),
+              defaultBranch,
               // O token do GitHub NÃO é duplicado aqui em texto puro — já foi
               // persistido cifrado por usuário no callback OAuth
               // (EngineConnection, runtime 'github'); a missão o materializa
@@ -844,6 +871,13 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               } as Prisma.JsonObject,
             },
           })
+        } else {
+          await app.prisma.project
+            .update({
+              where: { id: project.id },
+              data: { defaultBranch },
+            })
+            .catch(() => {})
         }
         projectsByRepo.set(repoFullName, { id: project.id, runtimeConfig: project.runtimeConfig })
 

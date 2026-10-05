@@ -128,11 +128,13 @@ describe('Guest Mission Initialization', () => {
   })
 
   it('preExecutionInterceptor aborts mission if credential is revoked', async () => {
-    vi.doMock('../lib/credential-archive.js', () => ({
-      isGuestCredentialRevoked: vi.fn().mockReturnValue(true),
-    }))
-
+    // O mock do módulo já foi registrado no beforeEach. Registrar um SEGUNDO
+    // `vi.doMock` do mesmo módulo aqui disputava com o primeiro (a resolução do
+    // caminho é assíncrona) e o teste falhava ~1 vez em 12: o `import` abaixo
+    // às vezes devolvia a versão `false` do beforeEach. Muda-se o retorno do
+    // mock que já existe, sem registrar de novo.
     const { isGuestCredentialRevoked } = await import('../lib/credential-archive.js')
+    vi.mocked(isGuestCredentialRevoked).mockReturnValue(true)
     const { assertGuestQuotaAvailable } = await import('../lib/spend-guard.js')
 
     const mission = {

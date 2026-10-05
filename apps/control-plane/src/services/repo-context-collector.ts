@@ -12,6 +12,7 @@ export interface RepoContextCollectorOptions {
   fetchImpl?: typeof fetch
   /** Emissor do installation token do App por repositório. Default: mintInstallationToken. */
   mintAppToken?: (deps: { repository: string }) => Promise<string | null>
+  onWarn?: (message: string) => void
 }
 
 export interface CollectRepoContextInput {
@@ -22,6 +23,10 @@ export interface CollectRepoContextInput {
   ownerType: 'user' | 'organization'
   /** node id do dono — necessário para CRIAR o board se ele não existe. */
   ownerId: string
+  /** node id do repositório no GitHub (ex: R_kg...) — necessário para vincular o board criado ao repositório */
+  repoId?: string
+  /** alias alternativo para o Node ID do repositório */
+  targetRepoId?: string
   /** número do board GitOrch já conhecido; ausente/null → cria um novo. */
   boardNumber?: number
   /** título ao criar o board (default derivado do repo). */
@@ -68,9 +73,11 @@ export class RepoContextCollector {
   private readonly projects: ProjectV2Client
   private readonly fetchImpl: typeof fetch
   private readonly mintAppToken: (deps: { repository: string }) => Promise<string | null>
+  private readonly onWarn: (message: string) => void
 
   constructor(options: RepoContextCollectorOptions) {
     this.token = options.token
+    this.onWarn = options.onWarn ?? (() => undefined)
     // `fetchSemPermissao` e não `fetch` cru: este coletor CRIA quadro no
     // repositório do cliente (createProjectV2). Com o `?? fetch` de antes, o
     // caminho de produção — que não passa fetchImpl — escrevia sem guarda
@@ -158,6 +165,21 @@ export class RepoContextCollector {
       ownerId: input.ownerId,
       title: input.boardTitle ?? `GitOrch — ${input.repo}`,
     })
+
+    const repositoryId = input.repoId ?? input.targetRepoId
+    if (repositoryId && typeof this.projects.linkProjectV2ToRepository === 'function') {
+      try {
+        await this.projects.linkProjectV2ToRepository({
+          projectId: created.id,
+          repositoryId,
+        })
+      } catch (err) {
+        this.onWarn(
+          `board ${input.owner}/${input.repo} criado mas falhou ao ligar ao repositório: ${(err as Error).message}`
+        )
+      }
+    }
+
     return { id: created.id, number: created.number, created: true }
   }
 

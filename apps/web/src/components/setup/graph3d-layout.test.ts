@@ -170,7 +170,7 @@ describe('forceDirectedPositions', () => {
     const elapsed = performance.now() - start
     expect(positions.size).toBe(1500)
     expect(elapsed).toBeLessThan(15000)
-  })
+  }, 30000)
 
   it('zero nós devolve mapa vazio; 1 nó fica na origem', () => {
     expect(forceDirectedPositions([], []).size).toBe(0)

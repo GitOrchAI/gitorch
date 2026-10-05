@@ -1,5 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { nextOnboardingStep, resolveRailsBoard, shouldChainOnboarding } from './scheduler.js'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import {
+  nextOnboardingStep,
+  resolveRailsBoard,
+  resolverBoardDoProjeto,
+  shouldChainOnboarding,
+  tentarAutoRemediarQuadroDaSprint,
+} from './scheduler.js'
 
 // Crítico 1, item (c): a mecânica da cascata de onboarding (dado o que resta
 // da fila, qual é o próximo papel a disparar) isolada da decisão de entrega
@@ -91,9 +97,136 @@ describe('resolveRailsBoard (Crítico 2: sem fallback pro board global de outro 
     expect(resolveRailsBoard(projetoComBoard)).toBe('meu-dono/7')
   })
 
+  test('projeto COM githubBoardNumber no runtimeConfig: devolve dono/numero a partir do wingId', () => {
+    const projetoComWizardBoard = {
+      wingId: 'meu-dono/meu-repo',
+      runtimeConfig: { githubBoardNumber: 42 },
+    }
+    expect(resolveRailsBoard(projetoComWizardBoard)).toBe('meu-dono/42')
+  })
+
   test('sem NENHUMA env global setada, o comportamento é idêntico (a função nunca olha pro env)', () => {
     delete process.env['GITORCH_PROJECT_BOARD']
     const projetoSemBoard = { runtimeConfig: { envConfig: {} } }
     expect(resolveRailsBoard(projetoSemBoard)).toBeUndefined()
+  })
+
+  test('resolverBoardDoProjeto é alias funcional de resolveRailsBoard', () => {
+    const projeto = {
+      wingId: 'GitOrchAI/autocandidata',
+      runtimeConfig: { githubBoardNumber: 15 },
+    }
+    expect(resolverBoardDoProjeto(projeto)).toBe('GitOrchAI/15')
+  })
+})
+
+describe('tentarAutoRemediarQuadroDaSprint', () => {
+  test('quando o repositório não tem quadro linkado mas tem githubBoardNumber no runtimeConfig: auto-remedia e vincula', async () => {
+    const leitor = {
+      findProjectId: vi.fn(async () => 'PVT_remediado'),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    }
+    const resolveOwnerId = vi.fn(async () => ({ id: 'O_org', type: 'organization' as const }))
+    const resolveRepositoryId = vi.fn(async () => 'R_repo_id')
+
+    const decisao = await tentarAutoRemediarQuadroDaSprint({
+      project: {
+        id: 'p1',
+        wingId: 'GitOrchAI/autocandidata',
+        runtimeConfig: { githubBoardNumber: 15 },
+      },
+      token: 'tok-app',
+      leitor: leitor as never,
+      resolveOwnerId,
+      resolveRepositoryId,
+    })
+
+    expect(decisao).toEqual({
+      acao: 'usar',
+      quadro: {
+        id: 'PVT_remediado',
+        number: 15,
+        title: 'GitOrchAI/autocandidata',
+        closed: false,
+        linkado: true,
+      },
+      precisaLigar: false,
+      motivo: 'quadro configurado no runtimeConfig auto-remediado com sucesso',
+    })
+    expect(leitor.findProjectId).toHaveBeenCalledWith({
+      login: 'GitOrchAI',
+      number: 15,
+      ownerType: 'organization',
+    })
+    expect(resolveRepositoryId).toHaveBeenCalledWith('GitOrchAI/autocandidata', 'tok-app')
+    expect(leitor.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_remediado',
+      repositoryId: 'R_repo_id',
+    })
+  })
+
+  test('quando o leitor principal não encontra o board mas há token alternativo decodificado: busca e vincula via alternativo', async () => {
+    const { encryptCredential } = await import('../lib/credential-crypto.js')
+    const leitorPrincipal = {
+      findProjectId: vi.fn(async () => null),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    }
+    const leitorAlternativo = {
+      findProjectId: vi.fn(async () => 'PVT_alternativo'),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    }
+    const criarClienteAlternativo = vi.fn(() => leitorAlternativo)
+
+    const decisao = await tentarAutoRemediarQuadroDaSprint({
+      project: {
+        id: 'p2',
+        wingId: 'dono/repo',
+        runtimeConfig: { githubBoardNumber: 42 },
+        encryptedClientToken: encryptCredential('tok-pat-cliente'),
+      },
+      token: 'tok-app',
+      leitor: leitorPrincipal as never,
+      resolveOwnerId: async () => ({ id: 'U_dono', type: 'user' as const }),
+      resolveRepositoryId: async () => 'R_repo_id',
+      criarClienteAlternativo: criarClienteAlternativo as never,
+    })
+
+    expect(decisao).toEqual({
+      acao: 'usar',
+      quadro: {
+        id: 'PVT_alternativo',
+        number: 42,
+        title: 'dono/repo',
+        closed: false,
+        linkado: true,
+      },
+      precisaLigar: false,
+      motivo: 'quadro configurado no runtimeConfig auto-remediado com sucesso',
+    })
+    expect(criarClienteAlternativo).toHaveBeenCalledWith('tok-pat-cliente')
+    expect(leitorAlternativo.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_alternativo',
+      repositoryId: 'R_repo_id',
+    })
+  })
+
+  test('quando não há board configurado no runtimeConfig: devolve null sem buscar', async () => {
+    const leitor = {
+      findProjectId: vi.fn(async () => 'PVT_x'),
+      linkProjectV2ToRepository: vi.fn(),
+    }
+
+    const decisao = await tentarAutoRemediarQuadroDaSprint({
+      project: {
+        id: 'p3',
+        wingId: 'dono/repo',
+        runtimeConfig: {},
+      },
+      token: 'tok-app',
+      leitor: leitor as never,
+    })
+
+    expect(decisao).toBeNull()
+    expect(leitor.findProjectId).not.toHaveBeenCalled()
   })
 })

@@ -16,6 +16,7 @@ function routingTransport(handlers: {
   find?: ResponseFor
   listar?: ResponseFor
   create?: ResponseFor
+  link?: ResponseFor
   repo?: ResponseFor
 }): {
   transport: GraphQLTransport
@@ -31,6 +32,11 @@ function routingTransport(handlers: {
         : { data: { repository: { projectsV2: { nodes: [] } } } }
     }
     if (req.query.includes('CreateProjectV2') && handlers.create) return handlers.create(req)
+    if (req.query.includes('LinkProjectV2ToRepository')) {
+      return handlers.link
+        ? handlers.link(req)
+        : { data: { linkProjectV2ToRepository: { repository: { id: 'R_repo' } } } }
+    }
     if (req.query.includes('RepoContext') && handlers.repo) return handlers.repo(req)
     throw new Error(`fake transport: sem handler para a query:\n${req.query}`)
   }
@@ -157,6 +163,76 @@ describe('RepoContextCollector', () => {
     expect(createCall?.variables).toEqual({ ownerId: 'U_1', title: 'GitOrch — gitorch' })
     // Sem número conhecido → nem tentou o findProjectId.
     expect(calls.some((c) => c.query.includes('GetProjectId'))).toBe(false)
+  })
+
+  it('cria o board e vincula atomicamente ao repositório via linkProjectV2ToRepository quando repoId é fornecido', async () => {
+    const { transport, calls } = routingTransport({
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 12 } } } }),
+      link: () => ({ data: { linkProjectV2ToRepository: { repository: { id: 'R_kg123' } } } }),
+      repo: semPrsNemIssues,
+    })
+    const collector = new RepoContextCollector({ token: 't', request: transport })
+
+    const ctx = await collector.collect({
+      owner: 'loureng',
+      repo: 'gitorch',
+      ownerType: 'user',
+      ownerId: 'U_1',
+      repoId: 'R_kg123',
+    })
+
+    expect(ctx.board).toEqual({ id: 'PVT_new', number: 12, created: true })
+    const linkCall = calls.find((c) => c.query.includes('LinkProjectV2ToRepository'))
+    expect(linkCall).toBeDefined()
+    expect(linkCall?.variables).toEqual({ projectId: 'PVT_new', repositoryId: 'R_kg123' })
+  })
+
+  it('vincula atomicamente ao repositório quando targetRepoId é fornecido como alias', async () => {
+    const { transport, calls } = routingTransport({
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 12 } } } }),
+      link: () => ({ data: { linkProjectV2ToRepository: { repository: { id: 'R_kg999' } } } }),
+      repo: semPrsNemIssues,
+    })
+    const collector = new RepoContextCollector({ token: 't', request: transport })
+
+    const ctx = await collector.collect({
+      owner: 'loureng',
+      repo: 'gitorch',
+      ownerType: 'user',
+      ownerId: 'U_1',
+      targetRepoId: 'R_kg999',
+    })
+
+    expect(ctx.board).toEqual({ id: 'PVT_new', number: 12, created: true })
+    const linkCall = calls.find((c) => c.query.includes('LinkProjectV2ToRepository'))
+    expect(linkCall?.variables).toEqual({ projectId: 'PVT_new', repositoryId: 'R_kg999' })
+  })
+
+  it('falha ao vincular o board ao repositório não derruba a criação do board e avisa via onWarn', async () => {
+    const avisos: string[] = []
+    const { transport } = routingTransport({
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 12 } } } }),
+      link: () => {
+        throw new Error('GraphQL error: Resource not accessible by integration')
+      },
+      repo: semPrsNemIssues,
+    })
+    const collector = new RepoContextCollector({
+      token: 't',
+      request: transport,
+      onWarn: (m) => avisos.push(m),
+    })
+
+    const ctx = await collector.collect({
+      owner: 'loureng',
+      repo: 'gitorch',
+      ownerType: 'user',
+      ownerId: 'U_1',
+      repoId: 'R_kg123',
+    })
+
+    expect(ctx.board).toEqual({ id: 'PVT_new', number: 12, created: true })
+    expect(avisos.some((a) => a.includes('falhou ao ligar ao repositório'))).toBe(true)
   })
 
   it('cria o board quando o número conhecido não existe mais (findProjectId → null)', async () => {

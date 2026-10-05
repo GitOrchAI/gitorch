@@ -247,6 +247,55 @@ describe('vigiarSessoes', () => {
     )
   })
 
+  it('propaga consulta.motivoDaFalha para registrarNoPainel e aviso (warn) quando a sessão falha', async () => {
+    const motivo = 'fatal: Remote branch main not found in upstream origin'
+    const deps = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/falha-com-motivo', issueNumber: 42 })],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'FAILED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+        motivoDaFalha: motivo,
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.registrarNoPainel).toHaveBeenCalledWith(
+      expect.stringContaining('sessions/falha-com-motivo'),
+      expect.stringContaining(motivo)
+    )
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining(motivo))
+  })
+
+  it('no case investigar, enriquece registrarNoPainel e emite aviso (warn) com motivoDaFalha', async () => {
+    const julesLoop = await import('./jules-session-loop.js')
+    const spy = vi.spyOn(julesLoop, 'decidirRespostaDaSessao').mockReturnValueOnce({
+      acao: 'investigar',
+    })
+
+    const motivo = 'Quota exceeded for project'
+    const deps = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/investigar-motivo', issueNumber: 50 })],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'FAILED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+        motivoDaFalha: motivo,
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.registrarNoPainel).toHaveBeenCalledWith(
+      expect.stringContaining('sessao-investigando-falha:sessions/investigar-motivo:FAILED'),
+      expect.stringContaining(motivo)
+    )
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining(motivo))
+
+    spy.mockRestore()
+  })
+
   it('FAILED COM PR → a vigia NÃO fecha (deixa para o ciclo terminal do scheduler, que tem token do GitHub)', async () => {
     const deps = depsFalso({
       sessoes: [linha({ sessionName: 'sessions/falhou-pr', issueNumber: 7 })],

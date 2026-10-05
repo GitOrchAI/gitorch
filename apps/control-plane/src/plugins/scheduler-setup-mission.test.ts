@@ -476,6 +476,47 @@ describe('provisionSetupMission', () => {
     })
   })
 
+  test('reusa o board quando githubBoardNumber está gravado no runtimeConfig (sem GITORCH_PROJECT_BOARD no envConfig)', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const update = vi.fn().mockResolvedValue({})
+    const findProjectId = vi.fn(async () => 'PVT_existente_wizard')
+    const createProjectV2 = vi.fn(async () => ({ id: 'PVT_novo_duplicado', number: 999 }))
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_wizard_reuse',
+        project: {
+          id: 'proj_wizard',
+          wingId: 'GitOrchAI/gitorch',
+          userId: 'user_1',
+          runtimeConfig: { githubBoardNumber: 42 },
+        },
+      },
+      stack,
+      'gh_owner_token',
+      {
+        prisma: { project: { update } } as never,
+        createProjectV2Client: () => ({ findProjectId, createProjectV2 }),
+        resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(findProjectId).toHaveBeenCalledWith(
+      expect.objectContaining({ login: 'GitOrchAI', number: 42 })
+    )
+    expect(createProjectV2).not.toHaveBeenCalled()
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_wizard' },
+      data: {
+        runtimeConfig: {
+          githubBoardNumber: 42,
+          envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/42' },
+        },
+      },
+    })
+  })
+
   test('falha ao criar o board NÃO derruba o provisionamento (workspace já alocado fica completed)', async () => {
     const allocateWorkspace = vi.fn().mockResolvedValue({ path: '/workspace/x' })
     const stack = fakeStack(allocateWorkspace)

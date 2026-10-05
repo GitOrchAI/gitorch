@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import {
   garantirGrafoDoRepositorio,
@@ -109,7 +110,7 @@ describe('consultarGrafoDeCodigo', () => {
         'query',
         'corrigir cadastro de cliente',
         '--graph',
-        '/ws/repo/graphify-out/graph.json',
+        path.join('/ws/repo', 'graphify-out', 'graph.json'),
         '--budget',
         '500',
       ],

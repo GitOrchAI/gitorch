@@ -178,11 +178,11 @@ export class LocalWorkspaceProvider {
     const run = this.gitRunner ?? defaultGitRunner(300_000)
     const auth = this.authArgs(token)
 
-    const resolvedWorkspace = path.posix.resolve(workspacePath)
-    const gitDir = path.posix.join(resolvedWorkspace, '.git')
-    const resolvedGitDir = path.posix.resolve(gitDir)
+    const resolvedWorkspace = path.resolve(workspacePath)
+    const gitDir = path.join(resolvedWorkspace, '.git')
+    const resolvedGitDir = path.resolve(gitDir)
 
-    if (!resolvedGitDir.startsWith(resolvedWorkspace + path.posix.sep)) {
+    if (!resolvedGitDir.startsWith(resolvedWorkspace + path.sep)) {
       return
     }
 
@@ -281,9 +281,9 @@ export class LocalWorkspaceProvider {
 
     for (const repo of spec.repositories) {
       this.validateInput(repo.targetDir)
-      const targetPath = path.posix.join(workspacePath, 'repos', repo.targetDir)
+      const targetPath = path.resolve(workspacePath, 'repos', repo.targetDir)
 
-      if (!targetPath.startsWith(path.resolve(workspacePath) + path.posix.sep)) {
+      if (!targetPath.startsWith(path.resolve(workspacePath) + path.sep)) {
         throw new Error('Caminho do repositório fora da raiz do workspace')
       }
 

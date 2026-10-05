@@ -40,7 +40,7 @@ async function walk(root: string, current: string, entries: ArchivedEntry[]): Pr
     }
     const content = await fs.readFile(abs)
     entries.push({
-      path: path.relative(root, abs),
+      path: path.relative(root, abs).replace(/\\/g, '/'),
       mode: stat.mode & 0o777,
       content: content.toString('base64'),
     })
@@ -91,7 +91,11 @@ export async function archivePaths(baseDir: string, relPaths: string[]): Promise
         throw new Error(`Credencial excede ${MAX_TOTAL_BYTES} bytes; recusando arquivar`)
       }
       const content = await fs.readFile(abs)
-      entries.push({ path: rel, mode: stat.mode & 0o777, content: content.toString('base64') })
+      entries.push({
+        path: rel.replace(/\\/g, '/'),
+        mode: stat.mode & 0o777,
+        content: content.toString('base64'),
+      })
     }
   }
   if (entries.length === 0) return null
@@ -111,7 +115,8 @@ export function readArchiveEntry(blob: string, relPath: string, guestId?: string
     throw new Error('Credential access revoked for guest')
   }
   const archive = JSON.parse(blob) as ArchiveV1
-  const entry = archive.entries.find((e) => e.path === relPath)
+  const target = relPath.replace(/\\/g, '/')
+  const entry = archive.entries.find((e) => e.path.replace(/\\/g, '/') === target)
   if (!entry) return null
   return Buffer.from(entry.content, 'base64').toString('utf8')
 }
