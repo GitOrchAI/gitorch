@@ -68,6 +68,7 @@ import {
   chaveDaVerificacao,
   type CacheDeVerificacaoPendente,
 } from './cache-de-verificacao-pendente.js'
+import { cacheDePermissaoDoProcesso, type CacheDePermissaoDeAdmin } from './permissao-de-admin.js'
 import { decidirSobreLegado } from './rejulgar-legados.js'
 import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 
@@ -85,6 +86,13 @@ import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 const JULES_MARKER = MARCA_DO_PARECER
 
 /**
+ * A frase do parecer que entrega a mescla ao dono. É também o sinal de que o PR
+ * ficou aprovado e parado SÓ por isso: se o autor passou a ser administrador, o
+ * PR vale uma reexaminação (ver `deveRejulgar`).
+ */
+const FRASE_DA_MESCLA_DO_DONO = 'A mescla é do dono do repositório'
+
+/**
  * O que o participante do repositório lê no fim do parecer. Em português claro:
  * quem é, o que o produto vai (ou não) fazer, e que o PR continua sendo dele —
  * o produto não abre sessão de retrabalho nem mexe na branch da pessoa.
@@ -99,9 +107,10 @@ function avisoAoParticipante(
     'a sua relação com ele; texto do PR não conta).'
   if (veredito === 'approve' && !mesclaSozinho) {
     return (
-      `${abertura} Parecer: aprovado pelo QA neste commit. A mescla é do dono do repositório: ` +
-      'o GitOrch não mescla sozinho PR de participante que não seja a conta do dono. Nada mais ' +
-      'é preciso da sua parte; um commit novo reabre o julgamento.'
+      `${abertura} Parecer: aprovado pelo QA neste commit. ${FRASE_DA_MESCLA_DO_DONO}: ` +
+      'o GitOrch não mescla sozinho PR de participante que não seja a conta do dono ou de quem ' +
+      'administra o repositório. Nada mais é preciso da sua parte; um commit novo reabre o ' +
+      'julgamento.'
     )
   }
   if (veredito === 'approve') {
@@ -289,6 +298,12 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    * testes injetam outro, com relógio próprio.
    */
   cacheDeVerificacaoPendente?: CacheDeVerificacaoPendente
+  /**
+   * Cache curto da permissão de administrador de quem abre PR de participante
+   * (ver permissao-de-admin.ts). Sem ele vale o cache do processo; só os testes
+   * injetam outro, com relógio próprio.
+   */
+  cacheDePermissaoDeAdmin?: CacheDePermissaoDeAdmin
   /**
    * Linhas de sessão deste projeto — a forma autoritativa de reconhecer o PR
    * e, quando o PR ainda não foi gravado na linha (ver o aviso de reprovação
@@ -488,6 +503,17 @@ export async function runQaMissionViaRails(
     }
     return resp.json().catch(() => ({}))
   }
+
+  // Dono de fato em repositório de organização = permissão `admin` (o GitHub o
+  // rotula MEMBER, nunca OWNER). Mesma credencial e mesmo fetch do resto da
+  // missão; qualquer falha vira "não é admin" (ver permissao-de-admin.ts).
+  const cacheDePermissao = options.cacheDePermissaoDeAdmin ?? cacheDePermissaoDoProcesso
+  const autorTemPermissaoDeAdmin = (repositorio: string, login: string | undefined) =>
+    login === undefined
+      ? Promise.resolve(false)
+      : cacheDePermissao.autorTemPermissaoDeAdmin(repositorio, login, (repo, quem) =>
+          gh('GET', `/repos/${repo}/collaborators/${encodeURIComponent(quem)}/permission`)
+        )
 
   // 1) PRs abertas do repositório (o gatilho do QA). Task 8 (decisão do
   // dono: "julga todos, mescla só o que delegou"): o filtro que descartava
@@ -1021,6 +1047,18 @@ export async function runQaMissionViaRails(
       veredito.issueNumber !== null &&
       tarefaMudouDesdeOParecer(reviewMarcadaNesteHead, veredito.issueNumber)
 
+    // Aprovação parada num PR de participante SÓ porque a mescla ficou "com o
+    // dono": se o autor é, de fato, administrador do repositório (MEMBER em
+    // organização), o PR vale uma reexaminação — uma só, porque o parecer novo
+    // não traz mais a frase e a passagem seguinte o pula como qualquer outro.
+    // Só pergunta ao GitHub quando todo o resto já bate (cache cobre o resto).
+    const aprovadoParadoDeAdmin =
+      deParticipante &&
+      veredito.associacao !== 'OWNER' &&
+      foiAprovacao &&
+      (reviewMarcadaNesteHead?.body ?? '').includes(FRASE_DA_MESCLA_DO_DONO) &&
+      (await autorTemPermissaoDeAdmin(options.repository, p.user?.login))
+
     const deveRejulgar =
       veredito.delegado &&
       (tarefaFoiRevinculada ||
@@ -1030,6 +1068,7 @@ export async function runQaMissionViaRails(
           // reabrir a cada tique seria spam de parecer e de tentativa de
           // mescla. Commit novo (head novo) reabre o julgamento normalmente.
           ((foiAprovacao && !deParticipante) ||
+            aprovadoParadoDeAdmin ||
             parecerSobPremissaErrada ||
             reprovadoPeloPortaoComCiVerdeAgora ||
             legadoMereceUmaChance ||
@@ -1754,9 +1793,16 @@ export async function runQaMissionViaRails(
   // antes de o motor rodar, então subiu de posição; a lógica é exatamente a
   // mesma descrita aqui.
   // Mescla automática: o PR delegado de verdade (como sempre) e o PR de
-  // participante SÓ quando o GitHub diz que o autor é o dono (OWNER). MEMBER e
-  // COLLABORATOR recebem o parecer, mas a mescla fica com o dono.
-  const podeMesclarEste = delegado && (!participante || associacaoDoParticipante === 'OWNER')
+  // participante SÓ quando o GitHub diz que o autor é o dono: OWNER, ou
+  // administrador do repositório (em organização o dono vem como MEMBER).
+  // MEMBER e COLLABORATOR sem admin recebem o parecer, mas a mescla fica com o
+  // dono. A permissão só é consultada para quem vai ser mesclado (aprovação).
+  const podeMesclarEste =
+    delegado &&
+    (!participante ||
+      associacaoDoParticipante === 'OWNER' ||
+      (effectiveVerdict === 'approve' &&
+        (await autorTemPermissaoDeAdmin(options.repository, target.user?.login))))
 
   const reviewEvent = !delegado
     ? 'COMMENT'
