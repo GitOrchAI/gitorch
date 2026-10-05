@@ -263,6 +263,43 @@ describe.skipIf(!reachable)('scripts/db-migrate.sh (integração, postgres real 
     }
   }, 30000)
 
+  it('pipeline-intelligence: banco legado SEM pipeline_configs/pipeline_evidences ganha as duas tabelas pelo ledger, e elas funcionam', () => {
+    const dbName = uniqueDbName('pipeline')
+    createDb(dbName)
+    const dbUrl = withDatabase(requireAdminUrl(), dbName)
+    try {
+      // Estado real da produção antes do conserto: schema atual menos as duas
+      // tabelas que nenhum SQL do ledger criava.
+      applyBaselineOnly(dbUrl)
+      psql(dbUrl, 'DROP TABLE "pipeline_evidences"; DROP TABLE "pipeline_configs"')
+      expect(psql(dbUrl, "SELECT to_regclass('public.pipeline_configs')")).toBe('')
+
+      expect(runScript(dbUrl).status).toBe(0)
+      expect(runScript(dbUrl).status).toBe(0)
+      expect(appliedNames(dbUrl)).toContain('pipeline-intelligence-migration.sql')
+
+      // Insert + select + FK cascade, tudo dentro de uma transação desfeita.
+      const out = execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-qtA', '-f', '-'], {
+        encoding: 'utf-8',
+        input:
+          'BEGIN; ' +
+          "INSERT INTO projects(id, wing_id, name, updated_at) VALUES ('p_it', 'w_it', 'it', now()); " +
+          "INSERT INTO pipeline_configs(id, project_id, updated_at) VALUES ('pc_it', 'p_it', now()); " +
+          'INSERT INTO pipeline_evidences(id, pipeline_config_id, commit_hash, branch, event_source, run_id, status, evidence_summary) ' +
+          "VALUES ('pe_it', 'pc_it', 'abc', 'main', 'github_actions', '1', 'passed', '{}'); " +
+          "SELECT (SELECT runner_preference FROM pipeline_configs WHERE id='pc_it') || ':' || " +
+          "(SELECT count(*) FROM pipeline_evidences WHERE pipeline_config_id='pc_it'); " +
+          "DELETE FROM projects WHERE id='p_it'; " +
+          "SELECT count(*) FROM pipeline_configs WHERE id='pc_it'; " +
+          'ROLLBACK;',
+      }).trim()
+      expect(out).toContain('auto:1')
+      expect(out.split('\n').pop()).toBe('0')
+    } finally {
+      dropDb(dbName)
+    }
+  }, 60000)
+
   it('achado F2.1.6#1: morte entre baseline e seed não deixa o banco sem planos pra sempre', () => {
     const dbName = uniqueDbName('f1seed')
     createDb(dbName)
