@@ -32,11 +32,11 @@ export class GitHubWorkModel {
     return item.milestone
   }
 
-  mergedAtFor(item: GitHubWorkItem): string | undefined {
+  mergedAtFor(item: GitHubWorkItem): string | Date | null | undefined {
     return item.mergedAt
   }
 
-  leadTimeFor(item: GitHubWorkItem): number | undefined {
+  leadTimeFor(item: GitHubWorkItem): number | null | undefined {
     if (item.mergedAt && item.wishCreatedAt) {
       return new Date(item.mergedAt).getTime() - new Date(item.wishCreatedAt).getTime()
     }
