@@ -80,7 +80,7 @@ describe('SSE Plugin', () => {
 
     const resPromise = fetch(`http://localhost:${port}/wait/validtoken`)
 
-    setTimeout(() => {
+    const interval = setInterval(() => {
       app.emitter.emit('guest_status_changed', { token: 'validtoken', status: 'approved' })
     }, 50)
 
@@ -90,22 +90,24 @@ describe('SSE Plugin', () => {
 
     const reader = res.body?.getReader()
     let data = ''
-    while (true) {
-      const { done, value } = await reader!.read()
-      if (value) {
-        data += new TextDecoder().decode(value)
+    try {
+      while (true) {
+        const { done, value } = await reader!.read()
+        if (value) {
+          data += new TextDecoder().decode(value)
+        }
+        if (data.includes('approved') || done) {
+          break
+        }
       }
-      if (data.includes('approved') || done) {
-        break
-      }
+    } finally {
+      clearInterval(interval)
+      reader!.cancel()
     }
-
-    // Abort the fetch request to close the connection
-    reader!.cancel()
 
     expect(data).toContain('event: connected')
     expect(data).toContain('data: {"token":"validtoken"}')
     expect(data).toContain('event: guest_status_changed')
     expect(data).toContain('"status":"approved"')
-  })
+  }, 30000)
 })

@@ -2948,17 +2948,17 @@ describe('Rotas do painel do owner', () => {
   })
 
   describe('GET /api/v1/painel/repositorio (Fase 6.2 do plano do repositório inteiro)', () => {
-    test('GET /api/v1/painel/repositorio junta ficha, origem e nota de segurança', async () => {
+    test('com projeto na querystring junta ficha, origem, próximo passo e nome do projeto', async () => {
       const p = await build(
         fakePrisma({
           project: {
-            findFirst: vi.fn().mockResolvedValue({ id: 'proj_1' }),
-            findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]),
+            findFirst: vi.fn().mockResolvedValue({ id: 'proj_1', name: 'meu-projeto' }),
+            findMany: vi.fn().mockResolvedValue([{ id: 'proj_1', name: 'meu-projeto' }]),
           },
           repoItem: {
             findMany: vi.fn().mockResolvedValue([
-              { tipo: 'pr', numero: 1, origem: 'jules' },
-              { tipo: 'alerta', numero: 2, origem: 'dependabot' },
+              { tipo: 'pr', numero: 1, origem: 'jules', projectId: 'proj_1' },
+              { tipo: 'alerta', numero: 2, origem: 'dependabot', projectId: 'proj_1' },
             ]),
           },
           event: {
@@ -2987,10 +2987,12 @@ describe('Rotas do painel do owner', () => {
       const p1 = body.itens.find((i: any) => i.numero === 1)
       expect(p1.tipo).toBe('pr')
       expect(p1.proximoPasso).toBe('aguardando')
+      expect(p1.projeto).toBe('meu-projeto')
 
       // alerta não tem
       const p2 = body.itens.find((i: any) => i.numero === 2)
       expect(p2.proximoPasso).toBeNull()
+      expect(p2.projeto).toBe('meu-projeto')
 
       expect(p.repoItem.findMany).toHaveBeenCalledWith({
         where: { projectId: 'proj_1' },
@@ -3007,14 +3009,115 @@ describe('Rotas do painel do owner', () => {
       expect(res.statusCode).toBe(401)
     })
 
-    test('sem projeto na querystring → 400', async () => {
+    test('sem projeto na querystring retorna 200 e itens combinados de todos os projetos ativos', async () => {
+      const p = await build(
+        fakePrisma({
+          project: {
+            findMany: vi.fn().mockResolvedValue([
+              { id: 'proj_1', name: 'alpha' },
+              { id: 'proj_2', name: 'beta' },
+            ]),
+          },
+          repoItem: {
+            findMany: vi.fn().mockResolvedValue([
+              { tipo: 'pr', numero: 10, origem: 'jules', projectId: 'proj_1' },
+              { tipo: 'issue', numero: 20, origem: 'humano', projectId: 'proj_2' },
+            ]),
+          },
+          event: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                payload: {
+                  chave: 'motor-do-proximo-passo:alpha:10:revisar',
+                  texto: 'em revisão',
+                },
+              },
+            ]),
+          },
+        })
+      )
+
       const res = await app.inject({
         method: 'GET',
         url: '/api/v1/painel/repositorio',
         headers: authHeaders,
       })
-      expect(res.statusCode).toBe(400)
-      expect(res.json().error).toBe('Informe o projeto.')
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.itens).toHaveLength(2)
+
+      expect(p.project.findMany).toHaveBeenCalledWith({
+        where: { userId: 'owner_1', isActive: true },
+        select: { id: true, name: true },
+      })
+      expect(p.repoItem.findMany).toHaveBeenCalledWith({
+        where: { projectId: { in: ['proj_1', 'proj_2'] } },
+        orderBy: { atualizadoEm: 'desc' },
+        take: 200,
+      })
+      expect(p.event.findMany).toHaveBeenCalledWith({
+        where: { projectId: { in: ['proj_1', 'proj_2'] }, type: 'audit' },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      })
+
+      const itemAlpha = body.itens.find((i: any) => i.numero === 10)
+      expect(itemAlpha.projeto).toBe('alpha')
+      expect(itemAlpha.proximoPasso).toBe('em revisão')
+
+      const itemBeta = body.itens.find((i: any) => i.numero === 20)
+      expect(itemBeta.projeto).toBe('beta')
+      expect(itemBeta.proximoPasso).toBeNull()
+    })
+
+    test('sem projeto na querystring quando dono não tem projetos ativos → 200 com itens vazio', async () => {
+      const p = await build(
+        fakePrisma({
+          project: {
+            findMany: vi.fn().mockResolvedValue([]),
+          },
+          repoItem: {
+            findMany: vi.fn(),
+          },
+        })
+      )
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ itens: [] })
+      expect(p.repoItem.findMany).not.toHaveBeenCalled()
+    })
+
+    test('com projeto vazio na querystring (?projeto=  ) comporta-se como sem projeto', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findMany: vi.fn().mockResolvedValue([{ id: 'proj_1', name: 'alpha' }]),
+          },
+          repoItem: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ tipo: 'pr', numero: 5, origem: 'jules', projectId: 'proj_1' }]),
+          },
+          event: {
+            findMany: vi.fn().mockResolvedValue([]),
+          },
+        })
+      )
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/repositorio?projeto=%20%20',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.itens).toHaveLength(1)
+      expect(body.itens[0].projeto).toBe('alpha')
     })
 
     test('projeto de outro dono → 404', async () => {

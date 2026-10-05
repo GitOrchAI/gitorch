@@ -59,10 +59,9 @@ describe('buildMissionRunner (local-process, o default e o que a CI usa) tem a M
     process.env['GITORCH_LOCAL_PLUGIN_MARKER'] = join(pluginDir, 'hooks.json')
 
     const runner = buildMissionRunner(fakeApp, fakeEnvironments)
-    // Sem GITORCH_RUNTIME/GITORCH_OWNER_USER_ID: createLocalCredentialRunner
-    // repassa direto pro runner real — 'true' sempre sai com exit 0, prova
-    // que o gate deixou passar sem mockar a execução real do agente.
-    const result = await runner({ binary: 'true', args: [], env: {} })
+    const binary = process.platform === 'win32' ? process.execPath : 'true'
+    const args = process.platform === 'win32' ? ['-e', 'process.exit(0)'] : []
+    const result = await runner({ binary, args, env: {} })
 
     expect(result.exitCode).toBe(0)
   })

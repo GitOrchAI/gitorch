@@ -58,7 +58,8 @@ describe('cross-repo contracts', () => {
     // Mock readFileSync
     const mockedReadFileSync = fs.readFileSync as import('vitest').Mock
     mockedReadFileSync.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('frontend/api.ts')) {
+      const p = filePath.replace(/\\/g, '/')
+      if (p.endsWith('frontend/api.ts')) {
         return `
           async function getUser() {
             const res = await fetch('/api/users')
@@ -70,7 +71,7 @@ describe('cross-repo contracts', () => {
           }
         `
       }
-      if (filePath.endsWith('backend/routes.ts')) {
+      if (p.endsWith('backend/routes.ts')) {
         return `
           import { app } from 'express'
 
@@ -84,7 +85,7 @@ describe('cross-repo contracts', () => {
           }
         `
       }
-      if (filePath.endsWith('backend/db-usage.ts')) {
+      if (p.endsWith('backend/db-usage.ts')) {
         return `
           import { prisma } from './db'
 
@@ -94,7 +95,7 @@ describe('cross-repo contracts', () => {
           }
         `
       }
-      if (filePath.endsWith('db/schema.prisma')) {
+      if (p.endsWith('db/schema.prisma')) {
         return `
           generator client {
             provider = "prisma-client-js"

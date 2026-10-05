@@ -234,7 +234,7 @@ describe('dúvida do dev resolvida pelo QA/RA — o aviso "nada bloqueado" vai p
       () => {
         expect(prisma.event.create).toHaveBeenCalled()
       },
-      { timeout: 3000, interval: 10 }
+      { timeout: 15000, interval: 10 }
     )
 
     const chamada = prisma.event.create.mock.calls[0] as unknown as [

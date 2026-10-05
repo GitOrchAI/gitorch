@@ -173,6 +173,50 @@ export async function ensureProjectBoard(
 
     const [dono, nome] = deps.repository.split('/')
 
+    const clienteAlternativo =
+      deps.clientToken && deps.criarClienteAlternativo
+        ? deps.criarClienteAlternativo(deps.clientToken)
+        : null
+
+    const tentarLigarQuadroAoRepositorio = async (
+      clientUsado: EnsureProjectBoardDeps['client'],
+      projectId: string,
+      contextoMensagem: string
+    ) => {
+      if (!deps.resolveRepositoryId) return
+      let ligado = false
+      if (clientUsado.linkProjectV2ToRepository) {
+        try {
+          const repositoryId = await deps.resolveRepositoryId(deps.repository)
+          await clientUsado.linkProjectV2ToRepository({ projectId, repositoryId })
+          ligado = true
+        } catch (err) {
+          if (
+            !clienteAlternativo?.linkProjectV2ToRepository ||
+            clientUsado === clienteAlternativo
+          ) {
+            warn(`${contextoMensagem}: ${(err as Error).message}`)
+          }
+        }
+      }
+      if (
+        !ligado &&
+        clienteAlternativo?.linkProjectV2ToRepository &&
+        clientUsado !== clienteAlternativo
+      ) {
+        try {
+          const repositoryId = await deps.resolveRepositoryId(deps.repository)
+          await clienteAlternativo.linkProjectV2ToRepository({
+            projectId,
+            repositoryId,
+          })
+          ligado = true
+        } catch (errAlt) {
+          warn(`${contextoMensagem}: ${(errAlt as Error).message}`)
+        }
+      }
+    }
+
     // A busca inteira, para UMA credencial. Vira função porque precisa rodar
     // mais de uma vez: ver o comentário do passo 2.5.
     //
@@ -224,21 +268,11 @@ export async function ensureProjectBoard(
         )
 
         if (candidato) {
-          if (deps.resolveRepositoryId && client.linkProjectV2ToRepository) {
-            try {
-              const repositoryId = await deps.resolveRepositoryId(deps.repository)
-              await client.linkProjectV2ToRepository({
-                projectId: candidato.id,
-                repositoryId,
-              })
-            } catch (err) {
-              // O quadro existe e é o certo; não conseguir anunciá-lo ao
-              // repositório tira o atalho da aba /projects, não o quadro.
-              warn(
-                `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório: ${(err as Error).message}`
-              )
-            }
-          }
+          await tentarLigarQuadroAoRepositorio(
+            client,
+            candidato.id,
+            `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório`
+          )
           return { owner, number: candidato.number }
         }
       }
@@ -273,21 +307,11 @@ export async function ensureProjectBoard(
           { exigirExclusivo: true }
         )
         if (candidato) {
-          if (deps.resolveRepositoryId && client.linkProjectV2ToRepository) {
-            try {
-              const repositoryId = await deps.resolveRepositoryId(deps.repository)
-              await client.linkProjectV2ToRepository({
-                projectId: candidato.id,
-                repositoryId,
-              })
-            } catch (err) {
-              // Mesmo raciocínio do passo 2: o quadro é o certo; não anunciá-lo
-              // ao repositório tira só o atalho da aba /projects.
-              warn(
-                `quadro #${candidato.number} de ${deps.repository} encontrado na conta pessoal, mas falhou ao ligar ao repositório: ${(err as Error).message}`
-              )
-            }
-          }
+          await tentarLigarQuadroAoRepositorio(
+            client,
+            candidato.id,
+            `quadro #${candidato.number} de ${deps.repository} encontrado na conta pessoal, mas falhou ao ligar ao repositório`
+          )
           return { owner, number: candidato.number }
         }
       }
@@ -308,10 +332,6 @@ export async function ensureProjectBoard(
     // com a cega e criar com a que enxerga é o laço: "não enxergo" vira "não
     // existe", nasce mais um quadro, e na volta seguinte tudo se repete. Foi
     // assim que #11 e #12 apareceram com 42 segundos de diferença.
-    const clienteAlternativo =
-      deps.clientToken && deps.criarClienteAlternativo
-        ? deps.criarClienteAlternativo(deps.clientToken)
-        : null
     if (clienteAlternativo) {
       const comACredencialQueCria = await procurar(clienteAlternativo)
       if (comACredencialQueCria === 'ambiguo') return null
@@ -334,16 +354,11 @@ export async function ensureProjectBoard(
       // logo após criar; falha em ligar NUNCA derruba a criação do board (o
       // roadmap ainda funciona sem o link — só a aba /projects que fica sem o
       // atalho).
-      if (deps.resolveRepositoryId && client.linkProjectV2ToRepository) {
-        try {
-          const repositoryId = await deps.resolveRepositoryId(deps.repository)
-          await client.linkProjectV2ToRepository({ projectId: criado.id, repositoryId })
-        } catch (err) {
-          warn(
-            `board ${deps.repository} criado mas falhou ao ligar ao repositório: ${(err as Error).message}`
-          )
-        }
-      }
+      await tentarLigarQuadroAoRepositorio(
+        client,
+        criado.id,
+        `board ${deps.repository} criado mas falhou ao ligar ao repositório`
+      )
 
       return { owner, number: criado.number }
     }
@@ -560,10 +575,17 @@ export interface EnsureAndPersistDeps {
 
 /** Lê o board já gravado no projeto, no formato "dono/numero". */
 export function boardGravado(project: ProjectComBoard): string | undefined {
-  const envConfig = (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-    Record<string, unknown> | undefined
+  const runtimeConfig = project.runtimeConfig as Record<string, unknown> | null
+  const envConfig = runtimeConfig?.['envConfig'] as Record<string, unknown> | undefined
   const valor = envConfig?.['GITORCH_PROJECT_BOARD']
-  return typeof valor === 'string' && valor.length > 0 ? valor : undefined
+  if (typeof valor === 'string' && valor.length > 0) return valor
+
+  const boardNumber = runtimeConfig?.['githubBoardNumber']
+  if (typeof boardNumber === 'number' && Number.isFinite(boardNumber)) {
+    const owner = project.wingId.split('/')[0]
+    if (owner) return `${owner}/${boardNumber}`
+  }
+  return undefined
 }
 
 /**

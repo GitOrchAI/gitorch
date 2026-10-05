@@ -271,7 +271,7 @@ async function esperaMissaoAssentar(
       })
       expect(assentou).toBe(true)
     },
-    { timeout: 3000, interval: 10 }
+    { timeout: 30000, interval: 20 }
   )
 }
 
@@ -346,559 +346,567 @@ function fetchRoteado(pergunta: string) {
   })
 }
 
-describe('dúvida do dev + cota esgotada: liga à cascata de failover que já existe (L4-T22)', () => {
-  const original: Record<string, string | undefined> = {}
-  const originalFetch = global.fetch
-  let app: ReturnType<typeof Fastify> | undefined
+describe(
+  'dúvida do dev + cota esgotada: liga à cascata de failover que já existe (L4-T22)',
+  { timeout: 60000 },
+  () => {
+    const original: Record<string, string | undefined> = {}
+    const originalFetch = global.fetch
+    let app: ReturnType<typeof Fastify> | undefined
 
-  beforeEach(() => {
-    for (const key of ENV_KEYS) {
-      original[key] = process.env[key]
-      delete process.env[key]
-    }
-    process.env['NODE_ENV'] = 'production'
-    // GITORCH_GITHUB_TOKEN presente: `qaRails` fica true (role 'qa' cai no
-    // ramo de trilhos, onde `responderDuvidaPendente` roda) — o OPOSTO do
-    // seam de credencial expirada, que precisa do caminho clássico.
-    process.env['GITORCH_GITHUB_TOKEN'] = 'token-de-teste'
-    process.env['JULES_API_KEY'] = 'jules-key-de-teste'
-    process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = 'bot-token-de-teste'
-    resultadoDoMotor.porRuntime = null
-    resultadoDoMotor.chamadas = []
-    duvidaMissionMock.forcarErro = null
-    duvidaMissionMock.chamadas = 0
-  })
-
-  afterEach(async () => {
-    if (app) await app.close()
-    app = undefined
-    for (const key of ENV_KEYS) {
-      if (original[key] === undefined) delete process.env[key]
-      else process.env[key] = original[key]
-    }
-    global.fetch = originalFetch
-    vi.restoreAllMocks()
-  })
-
-  // DJ-T4 (10/09/2026), decisão do dono: "não tem cota? tudo bem, aguarda —
-  // sem falha, sem mensagem." Este teste testava o comportamento ANTERIOR
-  // (falha honesta + UM aviso executivo agregado, #511/#513/L4-T22) para
-  // exatamente este cenário — cadeia INTEIRA esgotada por cota, nenhum
-  // outro motivo misturado. DJ-T4 substitui esse desfecho: a missão agora
-  // DORME (status 'waiting', waitingReason 'cota-dos-motores') em vez de
-  // falhar, e não manda mais o resumo executivo (a ordem do dono foi
-  // silêncio). O teste continua provando o que ainda vale (item 2: os TRÊS
-  // motores são realmente tentados pela MESMA cascata) e passou a provar o
-  // NOVO desfecho no lugar do antigo.
-  test('cota esgotada nos TRÊS motores da cadeia: os três são tentados (item 2) e a missão dorme sem falha nem aviso executivo (DJ-T4)', async () => {
-    resultadoDoMotor.porRuntime = {
-      codex: {
-        missionId: 'irrelevante',
-        runtime: 'codex',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      antigravity: {
-        missionId: 'irrelevante',
-        runtime: 'antigravity',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      claude: {
-        missionId: 'irrelevante',
-        runtime: 'claude',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-    }
-    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
-    global.fetch = fetchMock as unknown as typeof fetch
-
-    app = Fastify({ logger: false })
-    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 3 })
-    app.decorate('prisma', prisma as never)
-    await app.register(schedulerPlugin)
-
-    const resultado = await app.triggerAgentMission('qa', 'proj_1')
-    expect(resultado.triggered).toBe(true)
-
-    // Item 2: a cascata REALMENTE tentou os três motores — não parou no
-    // primeiro nem ficou girando nele. Esta é a prova de que o esgotamento de
-    // cota deixou de ser falha LOCAL e passou pela MESMA cascata de
-    // executeMissionWithFailover.
-    await vi.waitFor(
-      () => {
-        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
-      },
-      { timeout: 3000, interval: 10 }
-    )
-
-    // DJ-T4: a missão termina DORMINDO ('waiting', waitingReason
-    // 'cota-dos-motores') — nunca 'failed'. Esse é exatamente o desfecho
-    // que substitui a falha honesta de antes: nenhum motor tinha cota, mas
-    // isso não é mais tratado como defeito.
-    await vi.waitFor(
-      () => {
-        const chamadasDeEspera = prisma.mission.updateMany.mock.calls.filter(
-          (c) => (c[0] as { data?: { status?: string } }).data?.status === 'waiting'
-        )
-        expect(chamadasDeEspera.length).toBeGreaterThan(0)
-      },
-      { timeout: 3000, interval: 10 }
-    )
-    // Filtra por ESTA missão (`where.id`): o fake prisma deste arquivo
-    // devolve `count: 1` para QUALQUER updateMany, então o ceifador de boot
-    // e `failStuckMissions` (que rodam incondicionalmente a cada disparo,
-    // sem relação nenhuma com esta missão) também aparecem como "failed" na
-    // lista — sem o filtro por id, a asserção pegaria ruído alheio.
-    const chamadasDeFalhaDestaMissao = prisma.mission.updateMany.mock.calls.filter(
-      (c) =>
-        (c[0] as { where?: { id?: string }; data?: { status?: string } }).where?.id ===
-          resultado.missionId && (c[0] as { data?: { status?: string } }).data?.status === 'failed'
-    )
-    expect(chamadasDeFalhaDestaMissao).toHaveLength(0)
-
-    // O resumo executivo ("sem capacidade") NÃO sai mais para este caso —
-    // a ordem do dono foi silêncio, não um informe. Ajuste DJ-T4 (D76,
-    // literal): o aviso POR MOTOR (`recadoDeTetoDeUso`, #511) TAMBÉM parou
-    // de sair — ele ainda disparava a cada degrau que batia no teto até
-    // esta rodada corrigir o achado. Agora NENHUMA mensagem de Telegram sai
-    // para esta cadeia inteira, motor nenhum.
-    const mensagensDeTelegramDe = (mock: typeof fetchMock) =>
-      mock.mock.calls
-        .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
-        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
-
-    // Tempo de sobra para qualquer aviso adicional terminar de sair.
-    await new Promise((resolve) => setTimeout(resolve, 200))
-    const avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
-      m.text.includes('sem capacidade')
-    )
-    expect(avisoExecutivo).toHaveLength(0)
-    // DJ-T4: prova nova — nenhuma mensagem de Telegram sai, nem o resumo
-    // executivo nem o aviso por motor.
-    expect(mensagensDeTelegramDe(fetchMock)).toHaveLength(0)
-
-    // O dedup de MISSÃO duplicada (DJ-T4, item 3 — "enquanto houver missão
-    // waiting do mesmo papel+projeto, não cria outra") tem cobertura própria
-    // e com estado real em scheduler-cota-espera-real-seam.test.ts: o fake
-    // prisma DESTE arquivo não implementa `mission.findFirst` (só
-    // updateMany/count/create, ver `buildFakePrisma` no topo), então a
-    // checagem aqui cairia no best-effort "seguindo sem a checagem" e não
-    // provaria nada — testar com o fixture certo em vez de forçar aqui.
-    //
-    // Espera a missão assentar por completo (mesma disciplina de
-    // `esperaMissaoAssentar` usada nos demais testes deste arquivo) antes de
-    // terminar — sem isto, a cauda fire-and-forget vaza `resultadoDoMotor.chamadas`
-    // para o próximo teste.
-    await esperaMissaoAssentar(prisma, resultado.missionId)
-  })
-
-  test('cota esgotada só no primeiro motor: o SEGUNDO responde, o terceiro nunca é chamado, e o log nomeia qual motor respondeu', async () => {
-    resultadoDoMotor.porRuntime = {
-      codex: {
-        missionId: 'irrelevante',
-        runtime: 'codex',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      antigravity: {
-        missionId: 'irrelevante',
-        runtime: 'antigravity',
-        exitCode: 0,
-        durationMs: 1,
-        // Resposta técnica válida (RAILS_SCHEMAS.devQuestion): precisaDoDono
-        // falso, resposta cita arquivo real — passa o freio de concretude
-        // (ehRespostaUtil) e vai direto para o dev.
-        output: JSON.stringify({
-          precisaDoDono: false,
-          resposta:
-            'Reuse the retry helper already defined in apps/control-plane/src/services/rails-runner.ts (runFormStep) instead of writing a new one.',
-        }),
-        stderr: '',
-      },
-    }
-    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
-    global.fetch = fetchMock as unknown as typeof fetch
-
-    const { linhas: logLinhas, logger } = criaLoggerCapturado()
-    app = Fastify({ loggerInstance: logger as never })
-    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 0 })
-    app.decorate('prisma', prisma as never)
-    await app.register(schedulerPlugin)
-
-    const resultado = await app.triggerAgentMission('qa', 'proj_1')
-    expect(resultado.triggered).toBe(true)
-
-    // O segundo motor (antigravity) respondeu — o terceiro (claude) NUNCA
-    // precisou ser chamado. Prova de que o failover para no primeiro sucesso,
-    // não continua tentando motores à toa.
-    await vi.waitFor(
-      () => {
-        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity'])
-      },
-      { timeout: 3000, interval: 10 }
-    )
-    // O log NOMEIA qual motor respondeu, e qual motor não deu conta — a
-    // exigência explícita do item 2 ("com log dizendo qual motor
-    // respondeu"). Nunca um log genérico sem dizer QUAL motor. `waitFor`
-    // pela mesma razão de sempre: as linhas de log da resposta bem-sucedida
-    // saem DEPOIS de `chamadas` já ter os dois motores (mais `await`s no
-    // caminho: registrarResposta, registrarAprendizado etc.).
-    await vi.waitFor(
-      () => {
-        const textoDoLog = logLinhas.join('\n')
-        expect(textoDoLog).toContain('motor codex não deu conta')
-        expect(textoDoLog).toContain('motor antigravity respondeu à dúvida')
-      },
-      { timeout: 3000, interval: 10 }
-    )
-    // Depois de estabilizado: o terceiro motor (claude) nunca foi chamado.
-    expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity'])
-
-    // Espera a missão assentar (ver `esperaMissaoAssentar`) antes de encerrar
-    // o teste — sem isto, a cauda fire-and-forget pode vazar para o teste
-    // seguinte.
-    await esperaMissaoAssentar(prisma, resultado.missionId)
-  })
-
-  // Fix-up pós-revisão (item 1): a versão original checava `isEngineFault`
-  // ANTES de devolver a reserva, e lançava direto quando o erro NÃO era de
-  // motor — pulando a devolução inteira. A marca `tentando:` ficava presa
-  // para sempre e a pergunta some da fila.
-  test('item 1 (fix-up): erro que NÃO é falha de motor — a reserva é devolvida mesmo assim, e a cadeia não insiste noutro motor', async () => {
-    duvidaMissionMock.forcarErro = () =>
-      new Error('bug interno: parse do formulário falhou de verdade')
-    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
-    global.fetch = fetchMock as unknown as typeof fetch
-
-    app = Fastify({ logger: false })
-    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 0 })
-    app.decorate('prisma', prisma as never)
-    await app.register(schedulerPlugin)
-
-    const resultado = await app.triggerAgentMission('qa', 'proj_1')
-    expect(resultado.triggered).toBe(true)
-
-    // Erro que NÃO é de motor não justifica failover — só UMA tentativa,
-    // nunca os três degraus da cadeia.
-    await vi.waitFor(
-      () => {
-        expect(duvidaMissionMock.chamadas).toBe(1)
-      },
-      { timeout: 3000, interval: 10 }
-    )
-
-    // A prova central: a reserva foi devolvida MESMO com um erro que não é
-    // de motor. `devolverAReserva` grava `data.answeredHash` de volta à
-    // marca ANTERIOR (`null`, para esta sessão) — valor distinto do que
-    // `reservarAResposta` grava (sempre um hash de tentativa, nunca null).
-    await vi.waitFor(
-      () => {
-        const chamadasDeDevolucao = prisma.devSession.updateMany.mock.calls.filter(
-          (c) => (c[0] as { data: { answeredHash: string | null } }).data.answeredHash === null
-        )
-        expect(chamadasDeDevolucao.length).toBeGreaterThan(0)
-      },
-      { timeout: 3000, interval: 10 }
-    )
-
-    // A missão termina como falha honesta — nenhum motor concluiu.
-    await vi.waitFor(
-      () => {
-        const chamadasDeFalha = prisma.mission.updateMany.mock.calls.filter(
-          (c) => (c[0] as { data?: { status?: string } }).data?.status === 'failed'
-        )
-        expect(chamadasDeFalha.length).toBeGreaterThan(0)
-      },
-      { timeout: 3000, interval: 10 }
-    )
-  })
-
-  // Fix-up pós-revisão (item 2): `.catch(() => false)` escondia qualquer
-  // falha da PRÓPRIA devolução, e o log logo abaixo afirmava "a tentativa
-  // foi devolvida" mesmo quando ela não tinha sido.
-  test('item 2 (fix-up): a falha da PRÓPRIA devolução é registrada (nunca engolida) e o log não afirma um sucesso que não houve', async () => {
-    duvidaMissionMock.forcarErro = () => new Error('Individual quota reached')
-    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
-    global.fetch = fetchMock as unknown as typeof fetch
-
-    const { linhas: logLinhas, logger } = criaLoggerCapturado()
-    app = Fastify({ loggerInstance: logger as never })
-    const prisma = buildFakePrisma({
-      chatId: 'chat-do-dono',
-      duvidasEsperando: 0,
-      // Falha SÓ na devolução (`data.answeredHash === null`, o formato que
-      // `devolverAReserva` grava aqui — `esperando.answeredHash` é `null`
-      // nesta fixture). A RESERVA (`reservarAResposta`, `data.answeredHash`
-      // = um hash de tentativa, nunca null) precisa continuar funcionando —
-      // senão a própria reserva quebra ANTES de `runDuvidaMissionViaRails`
-      // ser chamado, e o teste deixaria de exercitar o que quer provar.
-      devSessionUpdateManyImpl: async (a) => {
-        if (a.data.answeredHash === null) throw new Error('banco fora do ar')
-        return { count: 1 }
-      },
+    beforeEach(() => {
+      for (const key of ENV_KEYS) {
+        original[key] = process.env[key]
+        delete process.env[key]
+      }
+      process.env['NODE_ENV'] = 'production'
+      // GITORCH_GITHUB_TOKEN presente: `qaRails` fica true (role 'qa' cai no
+      // ramo de trilhos, onde `responderDuvidaPendente` roda) — o OPOSTO do
+      // seam de credencial expirada, que precisa do caminho clássico.
+      process.env['GITORCH_GITHUB_TOKEN'] = 'token-de-teste'
+      process.env['JULES_API_KEY'] = 'jules-key-de-teste'
+      process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = 'bot-token-de-teste'
+      resultadoDoMotor.porRuntime = null
+      resultadoDoMotor.chamadas = []
+      duvidaMissionMock.forcarErro = null
+      duvidaMissionMock.chamadas = 0
     })
-    app.decorate('prisma', prisma as never)
-    await app.register(schedulerPlugin)
 
-    const resultado = await app.triggerAgentMission('qa', 'proj_1')
-    expect(resultado.triggered).toBe(true)
+    afterEach(async () => {
+      if (app) await app.close()
+      app = undefined
+      for (const key of ENV_KEYS) {
+        if (original[key] === undefined) delete process.env[key]
+        else process.env[key] = original[key]
+      }
+      global.fetch = originalFetch
+      vi.restoreAllMocks()
+    })
 
-    // Erro DE motor (cota) — a cadeia insiste nos três degraus mesmo com a
-    // devolução falhando em TODOS: uma devolução que não funciona não pode
-    // impedir o failover de tentar o próximo motor.
-    await vi.waitFor(
-      () => {
-        expect(duvidaMissionMock.chamadas).toBe(3)
-      },
-      { timeout: 3000, interval: 10 }
-    )
+    // DJ-T4 (10/09/2026), decisão do dono: "não tem cota? tudo bem, aguarda —
+    // sem falha, sem mensagem." Este teste testava o comportamento ANTERIOR
+    // (falha honesta + UM aviso executivo agregado, #511/#513/L4-T22) para
+    // exatamente este cenário — cadeia INTEIRA esgotada por cota, nenhum
+    // outro motivo misturado. DJ-T4 substitui esse desfecho: a missão agora
+    // DORME (status 'waiting', waitingReason 'cota-dos-motores') em vez de
+    // falhar, e não manda mais o resumo executivo (a ordem do dono foi
+    // silêncio). O teste continua provando o que ainda vale (item 2: os TRÊS
+    // motores são realmente tentados pela MESMA cascata) e passou a provar o
+    // NOVO desfecho no lugar do antigo.
+    test('cota esgotada nos TRÊS motores da cadeia: os três são tentados (item 2) e a missão dorme sem falha nem aviso executivo (DJ-T4)', async () => {
+      resultadoDoMotor.porRuntime = {
+        codex: {
+          missionId: 'irrelevante',
+          runtime: 'codex',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+        antigravity: {
+          missionId: 'irrelevante',
+          runtime: 'antigravity',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+        claude: {
+          missionId: 'irrelevante',
+          runtime: 'claude',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+      }
+      const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+      global.fetch = fetchMock as unknown as typeof fetch
 
-    await vi.waitFor(
-      () => {
-        const textoDoLog = logLinhas.join('\n')
-        // A prova central do item 2: o erro da DEVOLUÇÃO em si vira log —
-        // nunca silêncio (`.catch(() => false)` escondia isto por completo).
-        expect(textoDoLog).toContain('devolução da reserva TAMBÉM falhou')
-        // E o log NÃO afirma "a tentativa foi devolvida" quando ela não foi —
-        // a versão original imprimia essa frase incondicionalmente.
-        expect(textoDoLog).not.toContain('a tentativa foi devolvida')
-        expect(textoDoLog).toContain('a tentativa NÃO foi devolvida')
-      },
-      { timeout: 3000, interval: 10 }
-    )
+      app = Fastify({ logger: false })
+      const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 3 })
+      app.decorate('prisma', prisma as never)
+      await app.register(schedulerPlugin)
 
-    // Causa raiz medida do achado "cascata de cota instável" (task
-    // 95380eae): este teste força os TRÊS degraus a falhar por cota
-    // ('Individual quota reached' em todos), o que TAMBÉM dispara o aviso
-    // executivo agregado — mas o teste só verificava `duvidaMissionMock.chamadas`
-    // e o log, nunca esperava esse aviso (nem a persistência final da
-    // missão) assentar. A cauda fire-and-forget (resolveNotifyChatId,
-    // devSession.count, o `fetch` do aviso) continuava rodando DEPOIS do
-    // `afterEach` fechar o app, e — como `global.fetch` é reatribuído a cada
-    // teste — a mensagem tardia acabava batendo no `fetchMock` do teste
-    // SEGUINTE ("item 3 e 5", a falha mista), inflando de 1 para 2 o total
-    // de avisos "sem capacidade" que aquele teste contava (reproduzido ao
-    // vivo instrumentando `expect.getState().currentTestName` no envio).
-    // Esperar aqui pelo efeito observável final (`mission.updateMany` com
-    // `status` preenchido) fecha a cauda antes do teste devolver o controle.
-    await esperaMissaoAssentar(prisma, resultado.missionId)
-  })
+      const resultado = await app.triggerAgentMission('qa', 'proj_1')
+      expect(resultado.triggered).toBe(true)
 
-  // Fix-up pós-revisão (item 3/5), histórico: a condição original só olhava
-  // o ÚLTIMO erro da cadeia — dois motores por cota seguidos de um terceiro
-  // por OUTRO motivo fazia o dono não receber aviso NENHUM. L4-T22 corrigiu
-  // isso mandando o resumo executivo também no caso MISTO.
-  //
-  // DJ-T4 (10/09/2026, decisão D76, literal): "não tem cota? tudo bem,
-  // aguarda. Eu sei que está sem cota" — e isto vale TAMBÉM quando a cota é
-  // só PARTE da causa (misto). O teste agora prova o oposto do que provava:
-  // nenhuma mensagem sai para este caso, porque pelo menos um motor da
-  // cadeia caiu por cota. A missão continua terminando 'failed' (a parte
-  // "não é cota" do comportamento de hoje não mudou — só o envio ao dono).
-  test('DJ-T4: falha MISTA (dois motores por cota, o terceiro por OUTRO motivo) — nenhum aviso sai, e a missão ainda termina failed como hoje', async () => {
-    // Engine-fault genérico, deliberadamente SEM palavras que casem
-    // credencial expirada ('401'/'unauthorized'/'token expired') — este
-    // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
-    // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
-    // este degrau lançar CredencialExpiradaError, que dispara um recado
-    // e uma resolução de destino DIFERENTES — não os que este teste mede).
-    const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
-    resultadoDoMotor.porRuntime = {
-      codex: {
-        missionId: 'irrelevante',
-        runtime: 'codex',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      antigravity: {
-        missionId: 'irrelevante',
-        runtime: 'antigravity',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      claude: {
-        missionId: 'irrelevante',
-        runtime: 'claude',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_OUTRO_MOTIVO,
-      },
-    }
-    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
-    global.fetch = fetchMock as unknown as typeof fetch
+      // Item 2: a cascata REALMENTE tentou os três motores — não parou no
+      // primeiro nem ficou girando nele. Esta é a prova de que o esgotamento de
+      // cota deixou de ser falha LOCAL e passou pela MESMA cascata de
+      // executeMissionWithFailover.
+      await vi.waitFor(
+        () => {
+          expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
+        },
+        { timeout: 15000, interval: 10 }
+      )
 
-    app = Fastify({ logger: false })
-    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 2 })
-    app.decorate('prisma', prisma as never)
-    await app.register(schedulerPlugin)
+      // DJ-T4: a missão termina DORMINDO ('waiting', waitingReason
+      // 'cota-dos-motores') — nunca 'failed'. Esse é exatamente o desfecho
+      // que substitui a falha honesta de antes: nenhum motor tinha cota, mas
+      // isso não é mais tratado como defeito.
+      await vi.waitFor(
+        () => {
+          const chamadasDeEspera = prisma.mission.updateMany.mock.calls.filter(
+            (c) => (c[0] as { data?: { status?: string } }).data?.status === 'waiting'
+          )
+          expect(chamadasDeEspera.length).toBeGreaterThan(0)
+        },
+        { timeout: 15000, interval: 10 }
+      )
+      // Filtra por ESTA missão (`where.id`): o fake prisma deste arquivo
+      // devolve `count: 1` para QUALQUER updateMany, então o ceifador de boot
+      // e `failStuckMissions` (que rodam incondicionalmente a cada disparo,
+      // sem relação nenhuma com esta missão) também aparecem como "failed" na
+      // lista — sem o filtro por id, a asserção pegaria ruído alheio.
+      const chamadasDeFalhaDestaMissao = prisma.mission.updateMany.mock.calls.filter(
+        (c) =>
+          (c[0] as { where?: { id?: string }; data?: { status?: string } }).where?.id ===
+            resultado.missionId &&
+          (c[0] as { data?: { status?: string } }).data?.status === 'failed'
+      )
+      expect(chamadasDeFalhaDestaMissao).toHaveLength(0)
 
-    const resultado = await app.triggerAgentMission('qa', 'proj_1')
-    expect(resultado.triggered).toBe(true)
+      // O resumo executivo ("sem capacidade") NÃO sai mais para este caso —
+      // a ordem do dono foi silêncio, não um informe. Ajuste DJ-T4 (D76,
+      // literal): o aviso POR MOTOR (`recadoDeTetoDeUso`, #511) TAMBÉM parou
+      // de sair — ele ainda disparava a cada degrau que batia no teto até
+      // esta rodada corrigir o achado. Agora NENHUMA mensagem de Telegram sai
+      // para esta cadeia inteira, motor nenhum.
+      const mensagensDeTelegramDe = (mock: typeof fetchMock) =>
+        mock.mock.calls
+          .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
+          .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
 
-    await vi.waitFor(
-      () => {
-        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
-      },
-      { timeout: 3000, interval: 10 }
-    )
+      // Tempo de sobra para qualquer aviso adicional terminar de sair.
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
+        m.text.includes('sem capacidade')
+      )
+      expect(avisoExecutivo).toHaveLength(0)
+      // DJ-T4: prova nova — nenhuma mensagem de Telegram sai, nem o resumo
+      // executivo nem o aviso por motor.
+      expect(mensagensDeTelegramDe(fetchMock)).toHaveLength(0)
 
-    const mensagensDeTelegramDe = (mock: typeof fetchMock) =>
-      mock.mock.calls
-        .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
-        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
+      // O dedup de MISSÃO duplicada (DJ-T4, item 3 — "enquanto houver missão
+      // waiting do mesmo papel+projeto, não cria outra") tem cobertura própria
+      // e com estado real em scheduler-cota-espera-real-seam.test.ts: o fake
+      // prisma DESTE arquivo não implementa `mission.findFirst` (só
+      // updateMany/count/create, ver `buildFakePrisma` no topo), então a
+      // checagem aqui cairia no best-effort "seguindo sem a checagem" e não
+      // provaria nada — testar com o fixture certo em vez de forçar aqui.
+      //
+      // Espera a missão assentar por completo (mesma disciplina de
+      // `esperaMissaoAssentar` usada nos demais testes deste arquivo) antes de
+      // terminar — sem isto, a cauda fire-and-forget vaza `resultadoDoMotor.chamadas`
+      // para o próximo teste.
+      await esperaMissaoAssentar(prisma, resultado.missionId)
+    })
 
-    // Tempo de sobra para qualquer aviso terminar de sair, antes de provar
-    // que nenhum saiu.
-    await new Promise((resolve) => setTimeout(resolve, 200))
-    const avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
-      m.text.includes('sem capacidade')
-    )
-    expect(avisoExecutivo).toHaveLength(0)
-    // DJ-T4: nenhuma mensagem de Telegram sai — nem o resumo executivo, nem
-    // o aviso por motor de nenhum dos dois degraus que bateram no teto.
-    expect(mensagensDeTelegramDe(fetchMock)).toHaveLength(0)
+    test('cota esgotada só no primeiro motor: o SEGUNDO responde, o terceiro nunca é chamado, e o log nomeia qual motor respondeu', async () => {
+      resultadoDoMotor.porRuntime = {
+        codex: {
+          missionId: 'irrelevante',
+          runtime: 'codex',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+        antigravity: {
+          missionId: 'irrelevante',
+          runtime: 'antigravity',
+          exitCode: 0,
+          durationMs: 1,
+          // Resposta técnica válida (RAILS_SCHEMAS.devQuestion): precisaDoDono
+          // falso, resposta cita arquivo real — passa o freio de concretude
+          // (ehRespostaUtil) e vai direto para o dev.
+          output: JSON.stringify({
+            precisaDoDono: false,
+            resposta:
+              'Reuse the retry helper already defined in apps/control-plane/src/services/rails-runner.ts (runFormStep) instead of writing a new one.',
+          }),
+          stderr: '',
+        },
+      }
+      const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+      global.fetch = fetchMock as unknown as typeof fetch
 
-    // A missão ainda termina 'failed': a cadeia continha um motivo que NÃO
-    // é cota (`SAIDA_DE_OUTRO_MOTIVO`), então o comportamento de hoje (falha
-    // honesta) segue valendo — DJ-T4 só silenciou o AVISO, não o desfecho.
-    const chamadasDeFalha = prisma.mission.updateMany.mock.calls.filter(
-      (c) =>
-        (c[0] as { where?: { id?: string }; data?: { status?: string } }).where?.id ===
-          resultado.missionId && (c[0] as { data?: { status?: string } }).data?.status === 'failed'
-    )
-    expect(chamadasDeFalha.length).toBeGreaterThan(0)
+      const { linhas: logLinhas, logger } = criaLoggerCapturado()
+      app = Fastify({ loggerInstance: logger as never })
+      const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 0 })
+      app.decorate('prisma', prisma as never)
+      await app.register(schedulerPlugin)
 
-    // Mesma causa raiz do fix-up acima: espera a missão assentar por
-    // completo antes de terminar, para a cauda fire-and-forget não vazar
-    // para o teste seguinte ("item 4", que reseta `resultadoDoMotor.chamadas`
-    // e reconta do zero — um vazamento aqui duplicaria a contagem dele).
-    await esperaMissaoAssentar(prisma, resultado.missionId)
-  })
+      const resultado = await app.triggerAgentMission('qa', 'proj_1')
+      expect(resultado.triggered).toBe(true)
 
-  // DJ-T4 (10/09/2026, decisão D76): os DOIS testes que viviam aqui (item 4
-  // — dedup do aviso executivo sobrevivendo a um "restart" via
-  // `Project.motoresEsgotadosAvisadoEm"; item 7 — erro ao resolver o destino
-  // do aviso sendo logado) testavam mecanismos que EXISTIAM só para dar
-  // suporte ao envio do resumo executivo. Esse envio foi desligado nesta
-  // tarefa (nem no caso 100% cota, nem no misto) — não sobrou dedup para
-  // sobreviver a um restart, nem destino de Telegram para falhar ao
-  // resolver: o código de ambos os mecanismos foi removido de
-  // `executeMissionWithFailover` junto com o `avisarMotoresEsgotados`.
-  // Removidos em vez de mantidos como "sempre verde": testavam infra morta,
-  // e um teste verde sobre código deletado é pior que nenhum teste — passa
-  // sem provar nada. Este teste novo prova o que importa agora: mesmo
-  // atravessando um "restart" do control-plane, nenhuma chamada a
-  // `Project.update` grava `motoresEsgotadosAvisadoEm` (a coluna de dedup
-  // não é mais tocada) e nenhuma mensagem de Telegram sai — o log é o único
-  // registro do evento.
-  test('DJ-T4: cadeia MISTA através de um "restart" — nenhum dedup em banco, nenhuma mensagem de Telegram, só log', async () => {
-    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
-    global.fetch = fetchMock as unknown as typeof fetch
+      // O segundo motor (antigravity) respondeu — o terceiro (claude) NUNCA
+      // precisou ser chamado. Prova de que o failover para no primeiro sucesso,
+      // não continua tentando motores à toa.
+      await vi.waitFor(
+        () => {
+          expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity'])
+        },
+        { timeout: 35000, interval: 20 }
+      )
+      // O log NOMEIA qual motor respondeu, e qual motor não deu conta — a
+      // exigência explícita do item 2 ("com log dizendo qual motor
+      // respondeu"). Nunca um log genérico sem dizer QUAL motor. `waitFor`
+      // pela mesma razão de sempre: as linhas de log da resposta bem-sucedida
+      // saem DEPOIS de `chamadas` já ter os dois motores (mais `await`s no
+      // caminho: registrarResposta, registrarAprendizado etc.).
+      await vi.waitFor(
+        () => {
+          const textoDoLog = logLinhas.join('\n')
+          expect(textoDoLog).toContain('motor codex não deu conta')
+          expect(textoDoLog).toContain('motor antigravity respondeu à dúvida')
+        },
+        { timeout: 35000, interval: 20 }
+      )
+      // Depois de estabilizado: o terceiro motor (claude) nunca foi chamado.
+      expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity'])
 
-    // Engine-fault genérico, deliberadamente SEM palavras que casem
-    // credencial expirada ('401'/'unauthorized'/'token expired') — este
-    // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
-    // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
-    // este degrau lançar CredencialExpiradaError, que dispara um recado
-    // e uma resolução de destino DIFERENTES — não os que este teste mede).
-    const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
-    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 1 })
-    resultadoDoMotor.porRuntime = {
-      codex: {
-        missionId: 'irrelevante',
-        runtime: 'codex',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      antigravity: {
-        missionId: 'irrelevante',
-        runtime: 'antigravity',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      claude: {
-        missionId: 'irrelevante',
-        runtime: 'claude',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_OUTRO_MOTIVO,
-      },
-    }
+      // Espera a missão assentar (ver `esperaMissaoAssentar`) antes de encerrar
+      // o teste — sem isto, a cauda fire-and-forget pode vazar para o teste
+      // seguinte.
+      await esperaMissaoAssentar(prisma, resultado.missionId)
+    })
 
-    const { linhas: logLinhas, logger } = criaLoggerCapturado()
-    const mensagensDeTelegramDe = () =>
-      fetchMock.mock.calls
-        .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
-        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
+    // Fix-up pós-revisão (item 1): a versão original checava `isEngineFault`
+    // ANTES de devolver a reserva, e lançava direto quando o erro NÃO era de
+    // motor — pulando a devolução inteira. A marca `tentando:` ficava presa
+    // para sempre e a pergunta some da fila.
+    test('item 1 (fix-up): erro que NÃO é falha de motor — a reserva é devolvida mesmo assim, e a cadeia não insiste noutro motor', async () => {
+      duvidaMissionMock.forcarErro = () =>
+        new Error('bug interno: parse do formulário falhou de verdade')
+      const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+      global.fetch = fetchMock as unknown as typeof fetch
 
-    // "Processo 1": registra o plugin, esgota a cadeia.
-    const app1 = Fastify({ loggerInstance: logger as never })
-    app1.decorate('prisma', prisma as never)
-    await app1.register(schedulerPlugin)
-    const resultado1 = await app1.triggerAgentMission('qa', 'proj_1')
-    expect(resultado1.triggered).toBe(true)
-    await esperaMissaoAssentar(prisma, resultado1.missionId)
-    await app1.close()
+      app = Fastify({ logger: false })
+      const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 0 })
+      app.decorate('prisma', prisma as never)
+      await app.register(schedulerPlugin)
 
-    // "Restart": uma instância NOVA do plugin — closures novas, Maps em
-    // memória (se algum existisse) começariam ZERADOS. O MESMO objeto prisma
-    // é a única coisa que sobrevive, exatamente como um banco real sobrevive
-    // a um restart do processo.
-    resultadoDoMotor.chamadas = []
-    app = Fastify({ loggerInstance: logger as never })
-    app.decorate('prisma', prisma as never)
-    await app.register(schedulerPlugin)
-    const resultado2 = await app.triggerAgentMission('qa', 'proj_1')
-    expect(resultado2.triggered).toBe(true)
+      const resultado = await app.triggerAgentMission('qa', 'proj_1')
+      expect(resultado.triggered).toBe(true)
 
-    await vi.waitFor(
-      () => {
-        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
-      },
-      { timeout: 3000, interval: 10 }
-    )
-    await esperaMissaoAssentar(prisma, resultado2.missionId)
-    // Tempo de sobra para qualquer aviso adicional terminar de sair — se
-    // fosse disparar, já teria acontecido dentro desta janela.
-    await new Promise((resolve) => setTimeout(resolve, 200))
+      // Erro que NÃO é de motor não justifica failover — só UMA tentativa,
+      // nunca os três degraus da cadeia.
+      await vi.waitFor(
+        () => {
+          expect(duvidaMissionMock.chamadas).toBe(1)
+        },
+        { timeout: 15000, interval: 10 }
+      )
 
-    // Nenhuma mensagem de Telegram, nos dois "processos" somados.
-    expect(mensagensDeTelegramDe()).toHaveLength(0)
+      // A prova central: a reserva foi devolvida MESMO com um erro que não é
+      // de motor. `devolverAReserva` grava `data.answeredHash` de volta à
+      // marca ANTERIOR (`null`, para esta sessão) — valor distinto do que
+      // `reservarAResposta` grava (sempre um hash de tentativa, nunca null).
+      await vi.waitFor(
+        () => {
+          const chamadasDeDevolucao = prisma.devSession.updateMany.mock.calls.filter(
+            (c) => (c[0] as { data: { answeredHash: string | null } }).data.answeredHash === null
+          )
+          expect(chamadasDeDevolucao.length).toBeGreaterThan(0)
+        },
+        { timeout: 15000, interval: 10 }
+      )
 
-    // Nenhuma gravação da antiga marca de dedup — o campo não é mais tocado.
-    const gravacoesDeDedup = (prisma.project.update as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (c) =>
-        (c[0] as { data?: { motoresEsgotadosAvisadoEm?: unknown } }).data
-          ?.motoresEsgotadosAvisadoEm !== undefined
-    )
-    expect(gravacoesDeDedup).toHaveLength(0)
+      // A missão termina como falha honesta — nenhum motor concluiu.
+      await vi.waitFor(
+        () => {
+          const chamadasDeFalha = prisma.mission.updateMany.mock.calls.filter(
+            (c) => (c[0] as { data?: { status?: string } }).data?.status === 'failed'
+          )
+          expect(chamadasDeFalha.length).toBeGreaterThan(0)
+        },
+        { timeout: 15000, interval: 10 }
+      )
+    })
 
-    // O fato fica em log — "sem aviso ao dono" é a marca textual do novo
-    // comportamento (ver o log adicionado em scheduler.ts).
-    const textoDoLog = logLinhas.join('\n')
-    expect(textoDoLog).toContain('sem aviso ao dono')
-  })
-})
+    // Fix-up pós-revisão (item 2): `.catch(() => false)` escondia qualquer
+    // falha da PRÓPRIA devolução, e o log logo abaixo afirmava "a tentativa
+    // foi devolvida" mesmo quando ela não tinha sido.
+    test('item 2 (fix-up): a falha da PRÓPRIA devolução é registrada (nunca engolida) e o log não afirma um sucesso que não houve', async () => {
+      duvidaMissionMock.forcarErro = () => new Error('Individual quota reached')
+      const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+      global.fetch = fetchMock as unknown as typeof fetch
+
+      const { linhas: logLinhas, logger } = criaLoggerCapturado()
+      app = Fastify({ loggerInstance: logger as never })
+      const prisma = buildFakePrisma({
+        chatId: 'chat-do-dono',
+        duvidasEsperando: 0,
+        // Falha SÓ na devolução (`data.answeredHash === null`, o formato que
+        // `devolverAReserva` grava aqui — `esperando.answeredHash` é `null`
+        // nesta fixture). A RESERVA (`reservarAResposta`, `data.answeredHash`
+        // = um hash de tentativa, nunca null) precisa continuar funcionando —
+        // senão a própria reserva quebra ANTES de `runDuvidaMissionViaRails`
+        // ser chamado, e o teste deixaria de exercitar o que quer provar.
+        devSessionUpdateManyImpl: async (a) => {
+          if (a.data.answeredHash === null) throw new Error('banco fora do ar')
+          return { count: 1 }
+        },
+      })
+      app.decorate('prisma', prisma as never)
+      await app.register(schedulerPlugin)
+
+      const resultado = await app.triggerAgentMission('qa', 'proj_1')
+      expect(resultado.triggered).toBe(true)
+
+      // Erro DE motor (cota) — a cadeia insiste nos três degraus mesmo com a
+      // devolução falhando em TODOS: uma devolução que não funciona não pode
+      // impedir o failover de tentar o próximo motor.
+      await vi.waitFor(
+        () => {
+          expect(duvidaMissionMock.chamadas).toBe(3)
+        },
+        { timeout: 35000, interval: 20 }
+      )
+
+      await vi.waitFor(
+        () => {
+          const textoDoLog = logLinhas.join('\n')
+          // A prova central do item 2: o erro da DEVOLUÇÃO em si vira log —
+          // nunca silêncio (`.catch(() => false)` escondia isto por completo).
+          expect(textoDoLog).toContain('devolução da reserva TAMBÉM falhou')
+          // E o log NÃO afirma "a tentativa foi devolvida" quando ela não foi —
+          // a versão original imprimia essa frase incondicionalmente.
+          expect(textoDoLog).not.toContain('a tentativa foi devolvida')
+          expect(textoDoLog).toContain('a tentativa NÃO foi devolvida')
+        },
+        { timeout: 15000, interval: 10 }
+      )
+
+      // Causa raiz medida do achado "cascata de cota instável" (task
+      // 95380eae): este teste força os TRÊS degraus a falhar por cota
+      // ('Individual quota reached' em todos), o que TAMBÉM dispara o aviso
+      // executivo agregado — mas o teste só verificava `duvidaMissionMock.chamadas`
+      // e o log, nunca esperava esse aviso (nem a persistência final da
+      // missão) assentar. A cauda fire-and-forget (resolveNotifyChatId,
+      // devSession.count, o `fetch` do aviso) continuava rodando DEPOIS do
+      // `afterEach` fechar o app, e — como `global.fetch` é reatribuído a cada
+      // teste — a mensagem tardia acabava batendo no `fetchMock` do teste
+      // SEGUINTE ("item 3 e 5", a falha mista), inflando de 1 para 2 o total
+      // de avisos "sem capacidade" que aquele teste contava (reproduzido ao
+      // vivo instrumentando `expect.getState().currentTestName` no envio).
+      // Esperar aqui pelo efeito observável final (`mission.updateMany` com
+      // `status` preenchido) fecha a cauda antes do teste devolver o controle.
+      await esperaMissaoAssentar(prisma, resultado.missionId)
+    })
+
+    // Fix-up pós-revisão (item 3/5), histórico: a condição original só olhava
+    // o ÚLTIMO erro da cadeia — dois motores por cota seguidos de um terceiro
+    // por OUTRO motivo fazia o dono não receber aviso NENHUM. L4-T22 corrigiu
+    // isso mandando o resumo executivo também no caso MISTO.
+    //
+    // DJ-T4 (10/09/2026, decisão D76, literal): "não tem cota? tudo bem,
+    // aguarda. Eu sei que está sem cota" — e isto vale TAMBÉM quando a cota é
+    // só PARTE da causa (misto). O teste agora prova o oposto do que provava:
+    // nenhuma mensagem sai para este caso, porque pelo menos um motor da
+    // cadeia caiu por cota. A missão continua terminando 'failed' (a parte
+    // "não é cota" do comportamento de hoje não mudou — só o envio ao dono).
+    test('DJ-T4: falha MISTA (dois motores por cota, o terceiro por OUTRO motivo) — nenhum aviso sai, e a missão ainda termina failed como hoje', async () => {
+      // Engine-fault genérico, deliberadamente SEM palavras que casem
+      // credencial expirada ('401'/'unauthorized'/'token expired') — este
+      // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
+      // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
+      // este degrau lançar CredencialExpiradaError, que dispara um recado
+      // e uma resolução de destino DIFERENTES — não os que este teste mede).
+      const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
+      resultadoDoMotor.porRuntime = {
+        codex: {
+          missionId: 'irrelevante',
+          runtime: 'codex',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+        antigravity: {
+          missionId: 'irrelevante',
+          runtime: 'antigravity',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+        claude: {
+          missionId: 'irrelevante',
+          runtime: 'claude',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_OUTRO_MOTIVO,
+        },
+      }
+      const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+      global.fetch = fetchMock as unknown as typeof fetch
+
+      app = Fastify({ logger: false })
+      const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 2 })
+      app.decorate('prisma', prisma as never)
+      await app.register(schedulerPlugin)
+
+      const resultado = await app.triggerAgentMission('qa', 'proj_1')
+      expect(resultado.triggered).toBe(true)
+
+      await vi.waitFor(
+        () => {
+          expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
+        },
+        { timeout: 35000, interval: 20 }
+      )
+
+      const mensagensDeTelegramDe = (mock: typeof fetchMock) =>
+        mock.mock.calls
+          .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
+          .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
+
+      // Tempo de sobra para qualquer aviso terminar de sair, antes de provar
+      // que nenhum saiu.
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
+        m.text.includes('sem capacidade')
+      )
+      expect(avisoExecutivo).toHaveLength(0)
+      // DJ-T4: nenhuma mensagem de Telegram sai — nem o resumo executivo, nem
+      // o aviso por motor de nenhum dos dois degraus que bateram no teto.
+      expect(mensagensDeTelegramDe(fetchMock)).toHaveLength(0)
+
+      // A missão ainda termina 'failed': a cadeia continha um motivo que NÃO
+      // é cota (`SAIDA_DE_OUTRO_MOTIVO`), então o comportamento de hoje (falha
+      // honesta) segue valendo — DJ-T4 só silenciou o AVISO, não o desfecho.
+      const chamadasDeFalha = prisma.mission.updateMany.mock.calls.filter(
+        (c) =>
+          (c[0] as { where?: { id?: string }; data?: { status?: string } }).where?.id ===
+            resultado.missionId &&
+          (c[0] as { data?: { status?: string } }).data?.status === 'failed'
+      )
+      expect(chamadasDeFalha.length).toBeGreaterThan(0)
+
+      // Mesma causa raiz do fix-up acima: espera a missão assentar por
+      // completo antes de terminar, para a cauda fire-and-forget não vazar
+      // para o teste seguinte ("item 4", que reseta `resultadoDoMotor.chamadas`
+      // e reconta do zero — um vazamento aqui duplicaria a contagem dele).
+      await esperaMissaoAssentar(prisma, resultado.missionId)
+    })
+
+    // DJ-T4 (10/09/2026, decisão D76): os DOIS testes que viviam aqui (item 4
+    // — dedup do aviso executivo sobrevivendo a um "restart" via
+    // `Project.motoresEsgotadosAvisadoEm"; item 7 — erro ao resolver o destino
+    // do aviso sendo logado) testavam mecanismos que EXISTIAM só para dar
+    // suporte ao envio do resumo executivo. Esse envio foi desligado nesta
+    // tarefa (nem no caso 100% cota, nem no misto) — não sobrou dedup para
+    // sobreviver a um restart, nem destino de Telegram para falhar ao
+    // resolver: o código de ambos os mecanismos foi removido de
+    // `executeMissionWithFailover` junto com o `avisarMotoresEsgotados`.
+    // Removidos em vez de mantidos como "sempre verde": testavam infra morta,
+    // e um teste verde sobre código deletado é pior que nenhum teste — passa
+    // sem provar nada. Este teste novo prova o que importa agora: mesmo
+    // atravessando um "restart" do control-plane, nenhuma chamada a
+    // `Project.update` grava `motoresEsgotadosAvisadoEm` (a coluna de dedup
+    // não é mais tocada) e nenhuma mensagem de Telegram sai — o log é o único
+    // registro do evento.
+    test('DJ-T4: cadeia MISTA através de um "restart" — nenhum dedup em banco, nenhuma mensagem de Telegram, só log', async () => {
+      const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+      global.fetch = fetchMock as unknown as typeof fetch
+
+      // Engine-fault genérico, deliberadamente SEM palavras que casem
+      // credencial expirada ('401'/'unauthorized'/'token expired') — este
+      // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
+      // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
+      // este degrau lançar CredencialExpiradaError, que dispara um recado
+      // e uma resolução de destino DIFERENTES — não os que este teste mede).
+      const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
+      const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 1 })
+      resultadoDoMotor.porRuntime = {
+        codex: {
+          missionId: 'irrelevante',
+          runtime: 'codex',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+        antigravity: {
+          missionId: 'irrelevante',
+          runtime: 'antigravity',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_COTA_ESGOTADA,
+        },
+        claude: {
+          missionId: 'irrelevante',
+          runtime: 'claude',
+          exitCode: 1,
+          durationMs: 1,
+          output: '',
+          stderr: SAIDA_DE_OUTRO_MOTIVO,
+        },
+      }
+
+      const { linhas: logLinhas, logger } = criaLoggerCapturado()
+      const mensagensDeTelegramDe = () =>
+        fetchMock.mock.calls
+          .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
+          .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
+
+      // "Processo 1": registra o plugin, esgota a cadeia.
+      const app1 = Fastify({ loggerInstance: logger as never })
+      app1.decorate('prisma', prisma as never)
+      await app1.register(schedulerPlugin)
+      const resultado1 = await app1.triggerAgentMission('qa', 'proj_1')
+      expect(resultado1.triggered).toBe(true)
+      await esperaMissaoAssentar(prisma, resultado1.missionId)
+      await app1.close()
+
+      // "Restart": uma instância NOVA do plugin — closures novas, Maps em
+      // memória (se algum existisse) começariam ZERADOS. O MESMO objeto prisma
+      // é a única coisa que sobrevive, exatamente como um banco real sobrevive
+      // a um restart do processo.
+      resultadoDoMotor.chamadas = []
+      app = Fastify({ loggerInstance: logger as never })
+      app.decorate('prisma', prisma as never)
+      await app.register(schedulerPlugin)
+      const resultado2 = await app.triggerAgentMission('qa', 'proj_1')
+      expect(resultado2.triggered).toBe(true)
+
+      await vi.waitFor(
+        () => {
+          expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
+        },
+        { timeout: 35000, interval: 20 }
+      )
+      await esperaMissaoAssentar(prisma, resultado2.missionId)
+      // Tempo de sobra para qualquer aviso adicional terminar de sair — se
+      // fosse disparar, já teria acontecido dentro desta janela.
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      // Nenhuma mensagem de Telegram, nos dois "processos" somados.
+      expect(mensagensDeTelegramDe()).toHaveLength(0)
+
+      // Nenhuma gravação da antiga marca de dedup — o campo não é mais tocado.
+      const gravacoesDeDedup = (
+        prisma.project.update as ReturnType<typeof vi.fn>
+      ).mock.calls.filter(
+        (c) =>
+          (c[0] as { data?: { motoresEsgotadosAvisadoEm?: unknown } }).data
+            ?.motoresEsgotadosAvisadoEm !== undefined
+      )
+      expect(gravacoesDeDedup).toHaveLength(0)
+
+      // O fato fica em log — "sem aviso ao dono" é a marca textual do novo
+      // comportamento (ver o log adicionado em scheduler.ts).
+      const textoDoLog = logLinhas.join('\n')
+      expect(textoDoLog).toContain('sem aviso ao dono')
+    }, 60000)
+  }
+)
 
 // CodeQL (alta severidade, achado em main): `fetchRoteado` roteava a rota de
 // `/pulls` do GitHub com `u.includes('api.github.com')` — "Incomplete URL

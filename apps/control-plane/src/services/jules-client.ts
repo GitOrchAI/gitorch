@@ -130,6 +130,57 @@ export interface EstadoDaSessaoLido {
   numeroDoPr: number | null
   /** Carimbo da última mudança, usado para detectar sessão que não avança. */
   ultimaAtualizacao: string | null
+  /** Motivo da falha quando a sessão foi cancelada ou falhou. */
+  motivoDaFalha: string | null
+}
+
+interface PossivelFormatoDeFalha {
+  sessionFailed?: { reason?: unknown }
+  error?: { message?: unknown } | string
+  reason?: unknown
+  message?: unknown
+}
+
+/**
+ * Extrai o motivo da falha a partir do corpo de resposta da sessão ou de atividades.
+ *
+ * Suporta `sessionFailed: { reason: "..." }`, `error: { message: "..." }`,
+ * strings diretas ou propriedades `reason` / `message`.
+ */
+export function extrairMotivoDaFalha(corpo: unknown): string | null {
+  if (!corpo || typeof corpo !== 'object') return null
+
+  const c = corpo as PossivelFormatoDeFalha
+
+  // 1. sessionFailed.reason
+  if (c.sessionFailed && typeof c.sessionFailed === 'object') {
+    const reason = (c.sessionFailed as { reason?: unknown }).reason
+    if (typeof reason === 'string' && reason.trim()) {
+      return reason.trim()
+    }
+  }
+
+  // 2. error (object with message, or string)
+  if (c.error) {
+    if (typeof c.error === 'object') {
+      const msg = (c.error as { message?: unknown }).message
+      if (typeof msg === 'string' && msg.trim()) {
+        return msg.trim()
+      }
+    } else if (typeof c.error === 'string' && c.error.trim()) {
+      return c.error.trim()
+    }
+  }
+
+  // 3. reason directly or message directly if present as fallback
+  if (typeof c.reason === 'string' && c.reason.trim()) {
+    return c.reason.trim()
+  }
+  if (typeof c.message === 'string' && c.message.trim()) {
+    return c.message.trim()
+  }
+
+  return null
 }
 
 /**
@@ -188,10 +239,42 @@ export async function consultarSessaoJules(deps: {
       outputs?: unknown
       updateTime?: string
     }
+
+    let motivoDaFalha = extrairMotivoDaFalha(body)
+    const estado = body.state ?? 'STATE_UNSPECIFIED'
+    const estadoNorm = estado.toUpperCase()
+
+    if (!motivoDaFalha && (estadoNorm === 'FAILED' || estadoNorm === 'CANCELLED')) {
+      try {
+        const actResp = await f(`${JULES_API}/${deps.sessionName}/activities`, {
+          headers: { 'X-Goog-Api-Key': deps.apiKey },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        })
+        if (actResp.ok) {
+          const actBody = (await actResp.json().catch(() => ({}))) as {
+            activities?: unknown[]
+          }
+          motivoDaFalha = extrairMotivoDaFalha(actBody)
+          if (!motivoDaFalha && Array.isArray(actBody.activities)) {
+            for (let i = actBody.activities.length - 1; i >= 0; i--) {
+              const motivo = extrairMotivoDaFalha(actBody.activities[i])
+              if (motivo) {
+                motivoDaFalha = motivo
+                break
+              }
+            }
+          }
+        }
+      } catch (err) {
+        warn(`[jules] falha ao buscar atividades de ${deps.sessionName}: ${(err as Error).message}`)
+      }
+    }
+
     return {
-      estado: body.state ?? 'STATE_UNSPECIFIED',
+      estado,
       numeroDoPr: numeroDoPrDaSaida(body.outputs),
       ultimaAtualizacao: body.updateTime ?? null,
+      motivoDaFalha,
     }
   } catch (err) {
     warn(`[jules] falha ao ler a sessão ${deps.sessionName}: ${(err as Error).message}`)

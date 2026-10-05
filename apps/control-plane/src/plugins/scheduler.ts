@@ -310,6 +310,7 @@ import {
   ultimaMensagemDoDevJules,
   houveAtividadeDoDevDesde,
 } from '../services/jules-client.js'
+import { verificarOuGerarAgentsMd } from '../services/onboarding-agents-generator.js'
 import { vigiarSessoes } from '../services/session-watch.js'
 import {
   CADENCIA_DA_VARREDURA_MS,
@@ -382,6 +383,7 @@ import {
 import {
   lerCredencialDoProjeto,
   lerCredencialQueAlcancaOProjeto,
+  decodificarTokenDoClienteSeHouver,
 } from '../services/project-credential.js'
 import {
   avaliarCustoDaOrdemDosProjetos,
@@ -619,11 +621,148 @@ export function shouldChainOnboarding(args: {
  * exatamente o vazamento multi-tenant que esta task dizia matar). Pura e
  * testável isolada do resto do dispatch.
  */
-export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string | undefined {
-  return (
-    (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-      Record<string, unknown> | undefined
-  )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+export function resolveRailsBoard(project: {
+  wingId?: string
+  runtimeConfig?: unknown
+}): string | undefined {
+  const runtimeConfig = project.runtimeConfig as Record<string, unknown> | null
+  const envConfig = runtimeConfig?.['envConfig'] as Record<string, unknown> | undefined
+  const boardFromEnv = envConfig?.['GITORCH_PROJECT_BOARD'] as string | undefined
+  if (typeof boardFromEnv === 'string' && boardFromEnv.length > 0) return boardFromEnv
+
+  const boardNumber = runtimeConfig?.['githubBoardNumber']
+  if (typeof boardNumber === 'number' && Number.isFinite(boardNumber) && project.wingId) {
+    const owner = project.wingId.split('/')[0]
+    if (owner) return `${owner}/${boardNumber}`
+  }
+  return undefined
+}
+
+export const resolverBoardDoProjeto = resolveRailsBoard
+
+export interface AutoRemediarQuadroDaSprintDeps {
+  project: {
+    id: string
+    wingId: string
+    runtimeConfig?: unknown
+    encryptedClientToken?: string | null
+  }
+  token: string
+  leitor: Pick<ProjectV2Client, 'findProjectId'> &
+    Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>
+  resolveOwnerId?: (owner: string, token: string) => Promise<ResolvedOwner>
+  resolveRepositoryId?: (repository: string, token: string) => Promise<string>
+  criarClienteAlternativo?: (
+    token: string
+  ) => Pick<ProjectV2Client, 'findProjectId'> &
+    Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>
+}
+
+/**
+ * Tenta auto-remediar um projeto cujo repositório não tem quadro linkado no GitHub,
+ * mas tem o quadro previamente configurado no runtimeConfig (ex: wizard/onboarding anterior).
+ * Localiza o projectId e tenta vincular ao repositório se possível.
+ */
+export async function tentarAutoRemediarQuadroDaSprint(
+  deps: AutoRemediarQuadroDaSprintDeps
+): Promise<DecisaoDeQuadro | null> {
+  const boardConfigurado = resolverBoardDoProjeto(deps.project)
+  if (!boardConfigurado) return null
+
+  const [bOwner, bNumStr] = boardConfigurado.split('/')
+  const bNum = Number.parseInt(bNumStr ?? '', 10)
+  if (!bOwner || !Number.isFinite(bNum)) return null
+
+  let resolvedOwner: ResolvedOwner | null = null
+  if (deps.resolveOwnerId) {
+    try {
+      resolvedOwner = await deps.resolveOwnerId(bOwner, deps.token)
+    } catch {
+      // segue com fallback
+    }
+  }
+  const ownerType = resolvedOwner?.type ?? 'organization'
+
+  let projectId = await deps.leitor
+    .findProjectId({
+      login: bOwner,
+      number: bNum,
+      ownerType,
+    })
+    .catch(() => null)
+
+  const clientToken = decodificarTokenDoClienteSeHouver(deps.project.encryptedClientToken)
+  let clienteAlternativo:
+    | (Pick<ProjectV2Client, 'findProjectId'> &
+        Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>)
+    | null = null
+
+  if (clientToken && deps.criarClienteAlternativo) {
+    clienteAlternativo = deps.criarClienteAlternativo(clientToken)
+  }
+
+  let clientUsadoParaLink = deps.leitor
+  if (!projectId && clienteAlternativo) {
+    projectId = await clienteAlternativo
+      .findProjectId({
+        login: bOwner,
+        number: bNum,
+        ownerType,
+      })
+      .catch(() => null)
+    if (projectId) {
+      clientUsadoParaLink = clienteAlternativo
+    }
+  }
+
+  if (!projectId) return null
+
+  // Tenta vincular ao repositório se possível
+  if (deps.resolveRepositoryId) {
+    let ligado = false
+    if (clientUsadoParaLink.linkProjectV2ToRepository) {
+      try {
+        const repoId = await deps.resolveRepositoryId(deps.project.wingId, deps.token)
+        await clientUsadoParaLink.linkProjectV2ToRepository({
+          projectId,
+          repositoryId: repoId,
+        })
+        ligado = true
+      } catch {
+        // tenta com credencial alternativa
+      }
+    }
+    if (
+      !ligado &&
+      clienteAlternativo?.linkProjectV2ToRepository &&
+      clientUsadoParaLink !== clienteAlternativo &&
+      clientToken
+    ) {
+      try {
+        const repoId = await deps.resolveRepositoryId(deps.project.wingId, clientToken)
+        await clienteAlternativo.linkProjectV2ToRepository({
+          projectId,
+          repositoryId: repoId,
+        })
+        ligado = true
+      } catch {
+        // falha no link não impede de usar o quadro
+      }
+    }
+  }
+
+  return {
+    acao: 'usar',
+    quadro: {
+      id: projectId,
+      number: bNum,
+      title: deps.project.wingId,
+      closed: false,
+      linkado: true,
+    },
+    precisaLigar: false,
+    motivo: 'quadro configurado no runtimeConfig auto-remediado com sucesso',
+  }
 }
 
 /**
@@ -2042,12 +2181,22 @@ export async function provisionSetupMission(
       // nunca rodava e todo provisionamento criava board NOVO — finalizar o
       // wizard 2x para o mesmo repositório duplicava o board. O número já
       // vive em runtimeConfig.envConfig.GITORCH_PROJECT_BOARD ("owner/N"),
-      // gravado pela primeira execução desta mesma função.
-      const boardJaGravado = (
-        (mission.project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-          Record<string, unknown> | undefined
-      )?.['GITORCH_PROJECT_BOARD'] as string | undefined
-      const existingNumber = boardJaGravado ? Number(boardJaGravado.split('/')[1]) : undefined
+      // gravado pela primeira execução desta mesma função, ou em
+      // runtimeConfig.githubBoardNumber (número), gravado no aceite final do wizard.
+      const runtimeConfig = mission.project.runtimeConfig as Record<string, unknown> | null
+      const envConfig = runtimeConfig?.['envConfig'] as Record<string, unknown> | undefined
+      const boardJaGravado = envConfig?.['GITORCH_PROJECT_BOARD'] as string | undefined
+      const boardNumberFromEnv = boardJaGravado ? Number(boardJaGravado.split('/')[1]) : undefined
+      const boardNumberFromRuntime =
+        typeof runtimeConfig?.['githubBoardNumber'] === 'number'
+          ? (runtimeConfig['githubBoardNumber'] as number)
+          : undefined
+      const existingNumber =
+        boardNumberFromEnv !== undefined && Number.isFinite(boardNumberFromEnv)
+          ? boardNumberFromEnv
+          : boardNumberFromRuntime !== undefined && Number.isFinite(boardNumberFromRuntime)
+            ? boardNumberFromRuntime
+            : undefined
 
       // D13 (01/09/2026): a credencial do PRÓPRIO cliente — a única que
       // cria/liga board em CONTA PESSOAL — nunca era lida aqui. Leitura
@@ -3484,6 +3633,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     userId: string | null
     runtimeConfig?: unknown
     devPlan?: string | null
+    defaultBranch?: string | null
     /** BYOK: a impressão digital da conta do dev assíncrono deste cliente. */
     devAccountId?: string | null
     /**
@@ -3876,16 +4026,39 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 onWarn: (m) => app.log.warn(m),
               })
             },
-            criarSessaoDev: async ({ repository, titulo, prompt }) =>
-              criarSessaoJules({
+            criarSessaoDev: async ({ repository, titulo, prompt }) => {
+              // A principal REAL do projeto (GITORCH-ONBOARDING-T1); sem ela, a
+              // base única do dev (`baseDoDev`, #987) — nunca o ramo de um PR antigo.
+              const defaultBranch = project.defaultBranch ?? baseDoDev()
+
+              const agentsCheck = await verificarOuGerarAgentsMd({
+                repository,
+                defaultBranch,
+                token: railsToken as string,
+                fetchImpl: fetchDoQuadro(project),
+                onWarn: (m) => app.log.warn(m),
+              })
+
+              if (!agentsCheck.existe) {
+                app.log.warn(
+                  `[scheduler] Bloqueio pelo portão de prontidão: AGENTS.md ausente em ${repository} e não pôde ser gerado: ${agentsCheck.motivo ?? 'motivo desconhecido'}`
+                )
+                return {
+                  situacao: 'falhou',
+                  motivo: 'AGENTS.md ausente na branch padrão e não pôde ser gerado',
+                }
+              }
+
+              return criarSessaoJules({
                 // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
                 apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
-                startingBranch: baseDoDev(),
+                startingBranch: defaultBranch,
                 titulo,
                 prompt,
                 onWarn: (m) => app.log.warn(m),
-              }),
+              })
+            },
             // Guardar a ligação é o que permite julgar o PR depois: ele chega
             // com o autor da conta da instalação e sem palavra de ligação no
             // corpo, então o GitHub sozinho não conta de quem é o trabalho.
@@ -11264,7 +11437,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
     const projetos = await app.prisma.project.findMany({
       where: { isActive: true },
-      select: { id: true, name: true, wingId: true, autonomia: true, userId: true },
+      select: {
+        id: true,
+        name: true,
+        wingId: true,
+        autonomia: true,
+        userId: true,
+        runtimeConfig: true,
+        encryptedClientToken: true,
+      },
     })
 
     // EM SÉRIE, pelo mesmo motivo da varredura irmã: dois projetos do mesmo
@@ -11300,9 +11481,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           owner: owner ?? '',
           repo: repo ?? '',
         })
-        const decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
+        let decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
         if (decisao.acao !== 'usar' || !decisao.quadro) {
-          await avisarQuadroIndefinido(p, decisao)
+          const remediado = await tentarAutoRemediarQuadroDaSprint({
+            project: p,
+            token,
+            leitor,
+            resolveOwnerId: (o, t) => resolveGithubOwnerId(o, t),
+            resolveRepositoryId: (r, t) => resolveGithubRepositoryId(r, t),
+            criarClienteAlternativo: (t) =>
+              new ProjectV2Client({
+                token: t,
+                fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+              }),
+          }).catch((err) => {
+            app.log.warn(
+              `[Scheduler] falha na auto-remediação do quadro de ${p.wingId}: ${(err as Error).message}`
+            )
+            return null
+          })
+
+          if (remediado) {
+            decisao = remediado
+          } else {
+            await avisarQuadroIndefinido(p, decisao)
+            continue
+          }
+        }
+
+        if (decisao.acao !== 'usar' || !decisao.quadro) {
           continue
         }
 

@@ -56,6 +56,7 @@ export interface EstadoLido {
   estado: string
   numeroDoPr: number | null
   ultimaAtualizacao: string | null
+  motivoDaFalha?: string | null
 }
 
 export interface VigiaDeps {
@@ -486,6 +487,19 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           // descartado ou está reprovado — deixa para o ciclo terminal do
           // scheduler (`varrerCicloTerminalDaSessao`, T2), que tem. Aqui só o
           // caso SEM PR, que é decidível sem rede.
+          if (consulta.motivoDaFalha) {
+            warn(
+              `[vigia] sessão ${linha.sessionName} encerrou com falha (${estadoBruto}): ${consulta.motivoDaFalha}`
+            )
+            if (deps.registrarNoPainel) {
+              await deps
+                .registrarNoPainel(
+                  `sessao-falha-terminal:${linha.sessionName}:${estadoBruto}`,
+                  `GitOrch: a sessão da issue #${linha.issueNumber} (${linha.sessionName}) encerrou com falha (${estadoBruto}): ${consulta.motivoDaFalha}.`
+                )
+                .catch(() => undefined)
+            }
+          }
           if (consulta.numeroDoPr !== null) {
             // Já registrado antes do switch — o scheduler pega no próximo ciclo.
             break
@@ -530,6 +544,9 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         }
 
         case 'investigar': {
+          if (consulta.motivoDaFalha) {
+            warn(`[vigia] sessão ${linha.sessionName} em ${estadoBruto}: ${consulta.motivoDaFalha}`)
+          }
           // O sm-watchdog aposentado lia os comentários de falha do próprio
           // dev ("Jules has failed...") e, depois de 3 ocorrências, travava
           // a issue e avisava o dono. Essa via saiu porque era inerte para a
@@ -554,11 +571,14 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               agora: deps.agora,
             })
             if (deps.registrarNoPainel) {
+              const detalheMotivo = consulta.motivoDaFalha
+                ? ` Motivo: ${consulta.motivoDaFalha}.`
+                : ''
               await deps
                 .registrarNoPainel(
                   `sessao-investigando-falha:${linha.sessionName}:${estadoBruto}`,
                   `GitOrch: a sessão da issue #${linha.issueNumber} (${linha.sessionName}) chegou ` +
-                    `ao estado ${estadoBruto} sem entregar PR. O SM foi acionado para investigar ` +
+                    `ao estado ${estadoBruto} sem entregar PR.${detalheMotivo} O SM foi acionado para investigar ` +
                     `o impedimento.`
                 )
                 .catch(() => undefined)
