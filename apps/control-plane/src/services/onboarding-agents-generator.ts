@@ -1,3 +1,4 @@
+import { urlDoRepositorioNoGithub } from './default-branch-resolver.js'
 import { headersGithub } from './github-json.js'
 
 export interface RootContentItem {
@@ -119,21 +120,38 @@ export async function verificarOuGerarAgentsMd(
   const f = deps.fetchImpl ?? fetch
   const warn = deps.onWarn ?? (() => undefined)
 
-  const [owner, repo] = deps.repository.split('/')
-  if (!owner || !repo) {
+  // Guarda da porta de saída: o nome do repositório vem do cliente (wizard) e
+  // estas chamadas levam a credencial (inclusive um PUT que grava no repositório).
+  // Formato exato "dono/repo" e destino conferido (https + api.github.com).
+  const raiz = urlDoRepositorioNoGithub(deps.repository)
+  if (raiz === null) {
     const motivo = `repositório em formato inesperado: '${deps.repository}'`
     warn(`[onboarding-agents] ${motivo}`)
     return { existe: false, criado: false, motivo }
   }
 
+  const urlDeContents = (sufixo: string, ref?: string): URL => {
+    const url = new URL(`${raiz.pathname}/contents${sufixo}`, raiz.origin)
+    if (ref !== undefined) url.searchParams.set('ref', ref)
+    return url
+  }
+
+  // Única porta de saída de rede deste serviço: confere protocolo e host por
+  // igualdade exata imediatamente antes do fetch. Recusa lança — todas as
+  // chamadas abaixo já estão em try/catch e viram o resultado `existe: false`.
+  const chamar = (url: URL, init: RequestInit): Promise<Response> => {
+    if (url.protocol !== 'https:' || url.host !== 'api.github.com') {
+      throw new Error('destino fora de https://api.github.com recusado')
+    }
+    return f(url.href, init)
+  }
+
   // 1. Verifica se AGENTS.md já existe na branch padrão
-  const checkUrl = `https://api.github.com/repos/${owner}/${repo}/contents/AGENTS.md?ref=${encodeURIComponent(
-    deps.defaultBranch
-  )}`
+  const checkUrl = urlDeContents('/AGENTS.md', deps.defaultBranch)
 
   let checkResp: Response
   try {
-    checkResp = await f(checkUrl, {
+    checkResp = await chamar(checkUrl, {
       method: 'GET',
       headers: headersGithub(deps.token),
     })
@@ -157,10 +175,8 @@ export async function verificarOuGerarAgentsMd(
   // 2. Não existe (404): inspeciona raiz e docs para montar AGENTS.md grounded
   let rootItems: RootContentItem[] = []
   try {
-    const rootUrl = `https://api.github.com/repos/${owner}/${repo}/contents?ref=${encodeURIComponent(
-      deps.defaultBranch
-    )}`
-    const rootResp = await f(rootUrl, {
+    const rootUrl = urlDeContents('', deps.defaultBranch)
+    const rootResp = await chamar(rootUrl, {
       method: 'GET',
       headers: headersGithub(deps.token),
     })
@@ -181,10 +197,8 @@ export async function verificarOuGerarAgentsMd(
     rootItems.some((item) => item.name === 'docs' && item.type === 'dir') || rootItems.length === 0
   if (hasDocsDir) {
     try {
-      const docsUrl = `https://api.github.com/repos/${owner}/${repo}/contents/docs?ref=${encodeURIComponent(
-        deps.defaultBranch
-      )}`
-      const docsResp = await f(docsUrl, {
+      const docsUrl = urlDeContents('/docs', deps.defaultBranch)
+      const docsResp = await chamar(docsUrl, {
         method: 'GET',
         headers: headersGithub(deps.token),
       })
@@ -205,10 +219,8 @@ export async function verificarOuGerarAgentsMd(
   )
   if (hasPackageJson) {
     try {
-      const pkgUrl = `https://api.github.com/repos/${owner}/${repo}/contents/package.json?ref=${encodeURIComponent(
-        deps.defaultBranch
-      )}`
-      const pkgResp = await f(pkgUrl, {
+      const pkgUrl = urlDeContents('/package.json', deps.defaultBranch)
+      const pkgResp = await chamar(pkgUrl, {
         method: 'GET',
         headers: headersGithub(deps.token),
       })
@@ -234,7 +246,7 @@ export async function verificarOuGerarAgentsMd(
   })
 
   // 3. Comita o AGENTS.md via PUT
-  const putUrl = `https://api.github.com/repos/${owner}/${repo}/contents/AGENTS.md`
+  const putUrl = urlDeContents('/AGENTS.md')
   const putBody = {
     message: 'docs(agents): adicionar AGENTS.md canônico para guiar automação do jules',
     content: Buffer.from(conteudo).toString('base64'),
@@ -242,7 +254,7 @@ export async function verificarOuGerarAgentsMd(
   }
 
   try {
-    const putResp = await f(putUrl, {
+    const putResp = await chamar(putUrl, {
       method: 'PUT',
       headers: headersGithub(deps.token, true),
       body: JSON.stringify(putBody),

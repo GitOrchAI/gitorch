@@ -65,6 +65,59 @@ describe('onboarding-agents-generator', () => {
   })
 
   describe('verificarOuGerarAgentsMd', () => {
+    describe('guarda na porta de saída (a credencial e o PUT nunca saem para outro destino)', () => {
+      const maliciosos: Array<[string, string]> = [
+        ['travessia com ..', 'dono/../repo'],
+        ['dono ..', '../repo'],
+        ['barra a mais (antes ignorada)', 'dono/repo/extra'],
+        ['sem barra', 'so-um-nome'],
+        ['arroba', 'dono@evil.com/repo'],
+        ['dois-pontos', 'dono:8080/repo'],
+        ['espaço', 'dono/re po'],
+        ['barra codificada %2f', 'dono%2f..%2frepo/x'],
+        ['host no nome', 'evil.com/https://api.github.com/repo'],
+        ['vazio', ''],
+        ['dono vazio', '/repo'],
+      ]
+
+      it.each(maliciosos)('%s: recusa sem chamar o fetch', async (_nome, repositoryMalicioso) => {
+        const fetchMock = vi.fn()
+
+        const resultado = await verificarOuGerarAgentsMd({
+          repository: repositoryMalicioso,
+          defaultBranch,
+          token,
+          fetchImpl: fetchMock as unknown as typeof fetch,
+        })
+
+        expect(resultado.existe).toBe(false)
+        expect(resultado.criado).toBe(false)
+        expect(fetchMock).not.toHaveBeenCalled()
+      })
+
+      it('toda chamada de um repositório válido vai para https://api.github.com/repos/dono/repo', async () => {
+        const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+          if (init?.method === 'PUT') return new Response('{}', { status: 201 })
+          return new Response('Not found', { status: 404 })
+        })
+
+        await verificarOuGerarAgentsMd({
+          repository: 'dono/repo.js',
+          defaultBranch: 'feat/x y',
+          token,
+          fetchImpl: fetchMock as unknown as typeof fetch,
+        })
+
+        expect(fetchMock.mock.calls.length).toBeGreaterThan(1)
+        for (const [url] of fetchMock.mock.calls) {
+          const u = new URL(String(url))
+          expect(u.protocol).toBe('https:')
+          expect(u.host).toBe('api.github.com')
+          expect(u.pathname.startsWith('/repos/dono/repo.js/contents')).toBe(true)
+        }
+      })
+    })
+
     it('retorna { existe: true, criado: false } quando AGENTS.md já existe sem fazer PUT', async () => {
       const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
         const urlStr = String(url)

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { resolverDefaultBranch } from './default-branch-resolver.js'
+import { resolverDefaultBranch, urlDoRepositorioNoGithub } from './default-branch-resolver.js'
 
 describe('resolverDefaultBranch', () => {
   it('chama GET https://api.github.com/repos/{owner}/{repo} e retorna "master" quando default_branch é "master"', async () => {
@@ -150,5 +150,75 @@ describe('resolverDefaultBranch', () => {
 
     expect(branch).toBe('master')
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  describe('guarda na porta de saída (SSRF: a credencial nunca sai para outro destino)', () => {
+    const maliciosos: Array<[string, string]> = [
+      ['travessia com ..', 'dono/../repo'],
+      ['travessia dupla', '../../evil'],
+      ['barra a mais', 'dono/repo/extra'],
+      ['sem barra', 'so-um-nome'],
+      ['arroba', 'dono@evil.com/repo'],
+      ['arroba no repo', 'dono/repo@evil.com'],
+      ['dois-pontos', 'dono:8080/repo'],
+      ['espaço', 'dono/re po'],
+      ['barra codificada %2f', 'dono%2f..%2frepo/x'],
+      ['percentual no repo', 'dono/repo%2fevil'],
+      ['host no nome', 'evil.com/https://api.github.com/repo'],
+      ['esquema de URL', 'https://evil.com/repo'],
+      ['barra invertida', 'dono\\evil/repo'],
+      ['quebra de linha', 'dono/repo\nHost: evil.com'],
+      ['dono vazio', '/repo'],
+      ['repo vazio', 'dono/'],
+      ['vazio', ''],
+      ['só ponto-ponto no repo', 'dono/..'],
+    ]
+
+    it.each(maliciosos)(
+      '%s: devolve o fallback e NÃO chama o fetch',
+      async (_nome, repoFullName) => {
+        const fetchImpl = vi.fn() as unknown as typeof fetch
+
+        const branch = await resolverDefaultBranch({
+          repoFullName,
+          token: 'gho_nao_pode_vazar',
+          fallbackBranch: 'master',
+          fetchImpl,
+        })
+
+        expect(branch).toBe('master')
+        expect(fetchImpl).not.toHaveBeenCalled()
+      }
+    )
+
+    it('nome válido chama exatamente https://api.github.com/repos/dono/repo com Authorization', async () => {
+      const fetchImpl = vi.fn(
+        async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
+          new Response(JSON.stringify({ default_branch: 'develop' }), { status: 200 })
+      )
+
+      const branch = await resolverDefaultBranch({
+        repoFullName: 'dono/repo.js_x-y',
+        token: 'gho_teste',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+
+      expect(branch).toBe('develop')
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit]
+      expect(String(url)).toBe('https://api.github.com/repos/dono/repo.js_x-y')
+      expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer gho_teste')
+    })
+
+    it('urlDoRepositorioNoGithub recusa host adulterado e protocolo que não é https', () => {
+      expect(urlDoRepositorioNoGithub('dono/repo', 'https://evil.com')).toBeNull()
+      expect(urlDoRepositorioNoGithub('dono/repo', 'https://api.github.com.evil.com')).toBeNull()
+      expect(urlDoRepositorioNoGithub('dono/repo', 'http://api.github.com')).toBeNull()
+      expect(urlDoRepositorioNoGithub('dono/repo', 'https://api.github.com:8443')).toBeNull()
+      expect(urlDoRepositorioNoGithub('dono/repo', 'não é url')).toBeNull()
+      expect(urlDoRepositorioNoGithub('dono/repo')?.href).toBe(
+        'https://api.github.com/repos/dono/repo'
+      )
+    })
   })
 })
