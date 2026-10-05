@@ -8,6 +8,7 @@ import {
   primeWorkspace,
   generateMultiRepoManifest,
   formatDiffWithCgcContext,
+  formatAttachedDocumentsSection,
 } from './workspace-priming.js'
 
 const execFileAsync = promisify(execFile)
@@ -176,5 +177,26 @@ describe('formatDiffWithCgcContext', () => {
     // Check that it preserves the entire diff without truncation
     const occurrences = (result.match(/--- a\/file\.ts/g) || []).length
     expect(occurrences).toBe(40)
+  })
+})
+
+describe('formatAttachedDocumentsSection', () => {
+  test('formats an array of attachments correctly', () => {
+    const attachments = [
+      { name: 'doc1.md', content: 'content of doc1' },
+      { name: 'image.png', content: 'content of image' },
+    ]
+
+    const result = formatAttachedDocumentsSection(attachments)
+    expect(result).toContain('## Especificações Técnicas e Anexos Fornecidos')
+    expect(result).toContain('### Documento: doc1.md')
+    expect(result).toContain('content of doc1')
+    expect(result).toContain('### Documento: image.png')
+    expect(result).toContain('content of image')
+  })
+
+  test('returns an empty string when the array is undefined or empty', () => {
+    expect(formatAttachedDocumentsSection(undefined)).toBe('')
+    expect(formatAttachedDocumentsSection([])).toBe('')
   })
 })

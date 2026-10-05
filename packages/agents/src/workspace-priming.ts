@@ -264,3 +264,20 @@ export function formatDiffWithCgcContext(input: FormatDiffWithCgcContextInput): 
 
   return parts.join('\n\n')
 }
+
+export function formatAttachedDocumentsSection(
+  attachments?: Array<{ name: string; content: string }>
+): string {
+  if (!attachments || attachments.length === 0) {
+    return ''
+  }
+
+  const parts = ['## Especificações Técnicas e Anexos Fornecidos']
+
+  for (const doc of attachments) {
+    parts.push(`### Documento: ${doc.name}`)
+    parts.push(doc.content)
+  }
+
+  return parts.join('\n\n')
+}

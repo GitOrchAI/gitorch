@@ -5,10 +5,14 @@ import { vi } from 'vitest'
 
 const mockHydrateStateFromCheckpoint = vi.hoisted(() => vi.fn())
 
-vi.mock('./workspace-priming.js', () => ({
-  hydrateStateFromCheckpoint: mockHydrateStateFromCheckpoint,
-  primeWorkspace: vi.fn(),
-}))
+vi.mock('./workspace-priming.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as any
+  return {
+    ...actual,
+    hydrateStateFromCheckpoint: mockHydrateStateFromCheckpoint,
+    primeWorkspace: vi.fn(),
+  }
+})
 
 test('builds a PO mission with default runtime and credential reference', () => {
   const mission = buildAgentMission({
@@ -145,6 +149,34 @@ test('propagates userId to buildAgentMission output if provided', () => {
   })
 
   expect(mission.userId).toBe('user-123')
+})
+
+test('includes formatted attachments in prompt when attachments are provided', () => {
+  const attachments = [
+    { name: 'requirements.txt', content: 'hello world' },
+    { name: 'diagram.png', content: '[base64 string placeholder]' },
+  ]
+
+  const mission = buildAgentMission({
+    id: 'mission-attachments',
+    projectId: 'project-1',
+    repository: 'owner/repo',
+    role: 'po',
+    goal: 'Parse provided attachments',
+    context: [],
+    credentialRef: {
+      connectionId: 'conn-codex',
+      ownerScope: 'project',
+      runtime: 'codex',
+      providedSecrets: [],
+    },
+    attachments,
+  })
+
+  expect(mission.attachments).toEqual(attachments)
+  expect(mission.prompt).toContain('## Especificações Técnicas e Anexos Fornecidos')
+  expect(mission.prompt).toContain('### Documento: requirements.txt')
+  expect(mission.prompt).toContain('hello world')
 })
 
 test('resumeMissionFromCheckpoint updates state to resuming and executes from pendingRole', async () => {
