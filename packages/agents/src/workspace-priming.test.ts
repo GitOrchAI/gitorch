@@ -8,6 +8,7 @@ import {
   primeWorkspace,
   generateMultiRepoManifest,
   formatDiffWithCgcContext,
+  formatAttachedDocumentsSection,
 } from './workspace-priming.js'
 
 const execFileAsync = promisify(execFile)
@@ -176,5 +177,35 @@ describe('formatDiffWithCgcContext', () => {
     // Check that it preserves the entire diff without truncation
     const occurrences = (result.match(/--- a\/file\.ts/g) || []).length
     expect(occurrences).toBe(40)
+  })
+})
+
+describe('formatAttachedDocumentsSection', () => {
+  test('returns empty string if no attachments are provided', () => {
+    expect(formatAttachedDocumentsSection()).toBe('')
+    expect(formatAttachedDocumentsSection([])).toBe('')
+  })
+
+  test('formats a single attachment correctly', () => {
+    const attachments = [{ name: 'spec.txt', content: 'hello world' }]
+    const result = formatAttachedDocumentsSection(attachments)
+
+    expect(result).toContain('## Especificações Técnicas e Anexos Fornecidos')
+    expect(result).toContain('### Arquivo: spec.txt')
+    expect(result).toContain('hello world')
+  })
+
+  test('formats multiple attachments correctly', () => {
+    const attachments = [
+      { name: 'spec.txt', content: 'hello world' },
+      { name: 'data.json', content: '{"foo": "bar"}' },
+    ]
+    const result = formatAttachedDocumentsSection(attachments)
+
+    expect(result).toContain('## Especificações Técnicas e Anexos Fornecidos')
+    expect(result).toContain('### Arquivo: spec.txt')
+    expect(result).toContain('hello world')
+    expect(result).toContain('### Arquivo: data.json')
+    expect(result).toContain('{"foo": "bar"}')
   })
 })

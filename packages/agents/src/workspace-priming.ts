@@ -254,6 +254,21 @@ export interface FormatDiffWithCgcContextInput {
   cgcContext: string
 }
 
+export function formatAttachedDocumentsSection(
+  attachments?: Array<{ name: string; content: string }>
+): string {
+  if (!attachments || attachments.length === 0) {
+    return ''
+  }
+
+  let result = '## Especificações Técnicas e Anexos Fornecidos'
+  for (const attachment of attachments) {
+    result += `\n\n### Arquivo: ${attachment.name}\n${attachment.content}`
+  }
+
+  return result
+}
+
 export function formatDiffWithCgcContext(input: FormatDiffWithCgcContextInput): string {
   const parts: string[] = []
   if (input.cgcContext && input.cgcContext.trim() !== '') {

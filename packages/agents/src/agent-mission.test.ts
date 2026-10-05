@@ -5,10 +5,14 @@ import { vi } from 'vitest'
 
 const mockHydrateStateFromCheckpoint = vi.hoisted(() => vi.fn())
 
-vi.mock('./workspace-priming.js', () => ({
-  hydrateStateFromCheckpoint: mockHydrateStateFromCheckpoint,
-  primeWorkspace: vi.fn(),
-}))
+vi.mock('./workspace-priming.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as any
+  return {
+    ...actual,
+    hydrateStateFromCheckpoint: mockHydrateStateFromCheckpoint,
+    primeWorkspace: vi.fn(),
+  }
+})
 
 test('builds a PO mission with default runtime and credential reference', () => {
   const mission = buildAgentMission({
@@ -96,6 +100,30 @@ test('includes subPath context instructions in prompt when subPath is provided',
   expect(mission.prompt).toContain(
     'Working Directory: You are working in a multi-repo workspace. Your target repository is located at /workspace/repos/backend'
   )
+})
+
+test('includes formatted attachments in prompt when attachments are provided', () => {
+  const mission = buildAgentMission({
+    id: 'mission-att-1',
+    projectId: 'project-1',
+    repository: 'owner/repo',
+    role: 'po',
+    goal: 'Test attachments in prompt',
+    context: [],
+    attachments: [{ name: 'requirements.txt', content: 'Do everything correctly.' }],
+    credentialRef: {
+      connectionId: 'conn-codex',
+      ownerScope: 'project',
+      runtime: 'codex',
+      providedSecrets: [],
+    },
+  })
+
+  expect(mission.attachments).toBeDefined()
+  expect(mission.attachments?.length).toBe(1)
+  expect(mission.prompt).toContain('## Especificações Técnicas e Anexos Fornecidos')
+  expect(mission.prompt).toContain('### Arquivo: requirements.txt')
+  expect(mission.prompt).toContain('Do everything correctly.')
 })
 
 test('keeps credential reference immutable from caller mutations after mission creation', () => {
