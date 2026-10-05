@@ -58,6 +58,7 @@ export interface AgentMission {
   evidenceRefs: string[]
   userId?: string
   executionLimits?: GuestExecutionLimits & ExecutionLimits
+  attachments?: Array<{ name: string; content: string }>
 }
 
 export type OnboardingStepKind =

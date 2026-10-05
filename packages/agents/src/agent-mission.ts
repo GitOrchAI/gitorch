@@ -12,7 +12,7 @@ import type {
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
 import { GSTACK_SKILL_CATALOG } from '@gitorch/cadence'
 import { buildPrimingPreamble } from './prompts/priming.js'
-import { hydrateStateFromCheckpoint } from './workspace-priming.js'
+import { hydrateStateFromCheckpoint, formatAttachedDocumentsSection } from './workspace-priming.js'
 import type { StateNode } from './types'
 import { SynapseClient } from '@gitorch/synapse'
 
@@ -34,6 +34,7 @@ export interface BuildAgentMissionInput {
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
   executionLimits?: ExecutionLimits
+  attachments?: Array<{ name: string; content: string }>
 }
 
 export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
@@ -69,7 +70,8 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
       input.goal,
       input.context,
       runtime.runtime,
-      input.subPath
+      input.subPath,
+      input.attachments
     ),
     runtime: { ...runtime },
     credentialRef: {
@@ -79,6 +81,7 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     evidenceRefs: [...(input.evidenceRefs ?? [])],
     userId: input.userId,
     executionLimits: limits,
+    attachments: input.attachments,
   }
 }
 
@@ -171,7 +174,8 @@ function buildPrompt(
   goal: string,
   context: string[],
   runtime?: F6AgentRuntime,
-  subPath?: string
+  subPath?: string,
+  attachments?: Array<{ name: string; content: string }>
 ): string {
   const contextBlock = context.length > 0 ? context.map((line) => `- ${line}`).join('\n') : '- none'
   let systemPrompt = AGENT_SYSTEM_PROMPTS[role] || ''
@@ -187,12 +191,21 @@ function buildPrompt(
       }. You must change directory (cd) to this path before executing any linting, testing, or git commands.\n`
     : ''
 
-  return [
+  const attachmentsBlock = formatAttachedDocumentsSection(attachments)
+
+  const promptParts = [
     buildPrimingPreamble(role, runtime),
     `Role: ${role}`,
     `Repository: ${repository}`,
     `Goal: ${goal}`,
     subPathInstructions,
+  ]
+
+  if (attachmentsBlock) {
+    promptParts.push(attachmentsBlock)
+  }
+
+  promptParts.push(
     'System Instructions:',
     systemPrompt,
     '',
@@ -202,6 +215,8 @@ function buildPrompt(
     'Rules:',
     '- Use GitHub as the canonical work system.',
     '- Do not create product work unless the mission explicitly asks for it.',
-    '- Persist project understanding as memory-ready evidence.',
-  ].join('\n')
+    '- Persist project understanding as memory-ready evidence.'
+  )
+
+  return promptParts.join('\n')
 }
