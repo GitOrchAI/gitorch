@@ -3,6 +3,7 @@ import { horasEmConstrucao } from './em-construcao.js'
 import { decidirProximoPasso } from './motor-do-proximo-passo.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
+import { lerEstadoDoCiDoHead } from './estado-da-verificacao-do-github.js'
 import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
 import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
@@ -105,6 +106,17 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     return { baseDoPr, branchPadrao }
   }
 
+  // O estado do CI relido fresco na porta do merge — a mesma leitura única do
+  // QA. A varredura (`depsVigia.verificacao`) pode ter minutos de idade.
+  const lerCiAgoraParaMerge = async (sha: string): Promise<string> =>
+    (
+      await lerEstadoDoCiDoHead({
+        repositorio: projeto.wingId,
+        sha,
+        ghGet: (caminho) => ghGet(caminho, token),
+      })
+    ).estado
+
   if (depsVigia.issueNumber !== null) {
     const ficha = await lerFichaDoItem({
       prisma: prisma as never,
@@ -159,6 +171,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
           shaRevisado: currentPr.head.sha,
           shaAtual: currentPr.head.sha,
           entendimentoPresente: true,
+          lerCiAgora: lerCiAgoraParaMerge,
           merge: async () => {
             try {
               await ghSend(
@@ -474,6 +487,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
         shaRevisado: currentHeadSha ?? '',
         shaAtual: currentHeadSha ?? '',
         entendimentoPresente: entendimentoCompleto,
+        lerCiAgora: lerCiAgoraParaMerge,
         merge: async () => {
           try {
             await ghSend('PUT', `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`, token, {

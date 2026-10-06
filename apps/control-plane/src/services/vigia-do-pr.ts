@@ -29,6 +29,7 @@ import type { Prisma } from '@prisma/client'
 import { pedidoDeRebase } from './conflito-de-merge.js'
 import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
 import { baseDoDev } from './base-do-dev.js'
+import { lerEstadoDoCiDoHead, type EstadoDoCi } from './estado-da-verificacao-do-github.js'
 
 /**
  * Rodapé emitido pelo dev assíncrono ao abrir o pull request — a ÚNICA
@@ -989,24 +990,30 @@ export async function fecharPrDoVigia(args: {
  */
 export const MAX_PAGINAS_DE_PR = 20
 
-/** O que a verificação automática daquele commit está dizendo AGORA. */
+/**
+ * O que a verificação automática daquele commit está dizendo AGORA.
+ *
+ * Só traduz o estado da leitura única (`lerEstadoDoCiDoHead`): a régua de
+ * verde é a mesma do QA. `cancelado` não é veredito, então vira `pendente`.
+ */
 export async function lerVerificacao(args: {
   repo: string
   sha: string
   ghGet: (caminho: string) => Promise<unknown>
 }): Promise<EstadoDaVerificacao> {
-  const r = (await args.ghGet(
-    `/repos/${args.repo}/commits/${args.sha}/check-runs?per_page=100`
-  )) as {
-    check_runs?: Array<{ status?: string; conclusion?: string | null }>
+  const { estado } = await lerEstadoDoCiDoHead({
+    repositorio: args.repo,
+    sha: args.sha,
+    ghGet: args.ghGet,
+  })
+  const traducao: Record<EstadoDoCi, EstadoDaVerificacao> = {
+    green: 'verde',
+    red: 'vermelha',
+    pending: 'pendente',
+    cancelado: 'pendente',
+    'no checks': 'ausente',
   }
-  const runs = r.check_runs ?? []
-  if (runs.length === 0) return 'ausente'
-  if (runs.some((c) => ['failure', 'timed_out', 'action_required'].includes(c.conclusion ?? ''))) {
-    return 'vermelha'
-  }
-  if (runs.some((c) => c.status !== 'completed')) return 'pendente'
-  return 'verde'
+  return traducao[estado]
 }
 
 /**

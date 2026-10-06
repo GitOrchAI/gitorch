@@ -219,6 +219,11 @@ function fakeFetch(
     permissoes?: Record<string, string>
     /** Quando definido, a consulta de permissão devolve este status de erro (403, 500...). */
     permissaoFalha?: number
+    /**
+     * Workflow runs do head, por leitura: a N-ésima leitura recebe o item N
+     * (o último se repete). Default: nenhum workflow run listado.
+     */
+    workflowRunsPorLeitura?: Array<Array<{ status: string; conclusion?: string | null }>>
   } = {}
 ): typeof fetch {
   const posted: {
@@ -237,7 +242,17 @@ function fakeFetch(
     checkRunReads: string[]
     /** Um item por consulta de permissão (o login perguntado) — mede o custo em chamadas. */
     permissionReads: string[]
-  } = { reviews: [], comments: [], labels: [], merges: [], checkRunReads: [], permissionReads: [] }
+    /** Um item por leitura de workflow runs (o sha lido). */
+    workflowRunReads: string[]
+  } = {
+    reviews: [],
+    comments: [],
+    labels: [],
+    merges: [],
+    checkRunReads: [],
+    permissionReads: [],
+    workflowRunReads: [],
+  }
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
     const method = init?.method ?? 'GET'
@@ -306,6 +321,13 @@ function fakeFetch(
         check_runs: doPr?.checkRuns ??
           opts.checkRuns ?? [{ name: 'ci', conclusion: 'success', status: 'completed' }],
       })
+    }
+    if (u.includes('/actions/runs?')) {
+      const shaLido = new URL(u).searchParams.get('head_sha') ?? ''
+      posted.workflowRunReads.push(shaLido)
+      const leituras = opts.workflowRunsPorLeitura ?? [[]]
+      const indice = Math.min(posted.workflowRunReads.length - 1, leituras.length - 1)
+      return json({ workflow_runs: leituras[indice] ?? [] })
     }
     // L4-T17: API de jobs do Actions — o id do job é o MESMO id do
     // check-run. Só existe entrada quando o teste declara `jobSteps`; sem
@@ -1738,6 +1760,83 @@ describe('runQaMissionViaRails', () => {
     expect(r.output).toContain('Merge: blocked')
     expect(r.output).toContain('fix/combo-audit-suggestions-3')
     expect(r.output).toContain('`main`')
+  })
+
+  // Jobs reais ainda não registrados: logo depois de um push, o único
+  // check-run existente era um job condicional que termina `skipped` na hora.
+  // Isso NÃO é CI verde — o QA não pode aprovar nem mesclar sobre ele.
+  it('só um check-run skipped (jobs reais ainda na fila): não julga como verde e NÃO mescla', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      checkRuns: [{ name: 'Diagram Sync', status: 'completed', conclusion: 'skipped' }],
+    })
+    const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
+    const execute = vi.fn(async () => APPROVE)
+    await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute,
+      fetchImpl: f,
+    })
+    expect(posted.merges).toHaveLength(0)
+    expect(posted.reviews).toHaveLength(0)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('check-runs verdes mas workflow run do mesmo commit ainda na fila: NÃO julga nem mescla', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      workflowRunsPorLeitura: [
+        [{ status: 'completed', conclusion: 'success' }, { status: 'queued' }],
+      ],
+    })
+    const posted = (f as unknown as { posted: { merges: unknown[]; workflowRunReads: string[] } })
+      .posted
+    const execute = vi.fn(async () => APPROVE)
+    await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute,
+      fetchImpl: f,
+    })
+    expect(posted.workflowRunReads).toContain('abc123')
+    expect(posted.merges).toHaveLength(0)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  // O estado do CI do julgamento é lido ANTES do motor (que demora minutos).
+  // Na porta do merge ele é relido fresco para o commit que vai entrar.
+  it('CI verde no julgamento, mas workflow run novo rodando no instante do merge: NÃO mescla', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      workflowRunsPorLeitura: [
+        [{ status: 'completed', conclusion: 'success' }],
+        [{ status: 'completed', conclusion: 'success' }, { status: 'in_progress' }],
+      ],
+    })
+    const posted = (f as unknown as { posted: { merges: unknown[]; workflowRunReads: string[] } })
+      .posted
+    const execute = vi.fn(async () => APPROVE)
+    const r = await runQaMissionViaRails({
+      prisma: {
+        repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      } as unknown as import('@prisma/client').PrismaClient,
+      projectId: 'proj',
+      repository: 'o/r',
+      githubToken: 't',
+      execute,
+      fetchImpl: f,
+    })
+    expect(execute).toHaveBeenCalled()
+    expect(posted.workflowRunReads.length).toBeGreaterThanOrEqual(2)
+    expect(posted.merges).toHaveLength(0)
+    expect(r.output).toContain('Merge: blocked')
+    expect(r.output).toContain('instante do merge')
   })
 
   it('I2: o corpo do PUT .../merge contém o sha do head que foi revisado', async () => {
@@ -4833,6 +4932,11 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
     criarCacheDeVerificacaoPendente({ agora: () => relogio.agora, maxEntradas: 50 })
 
   const NUMERO_DO_VERDE = 21
+  /**
+   * O verde aprovado é relido UMA vez a mais, na porta do merge: o estado do
+   * julgamento tem minutos de idade. Os pendentes nunca chegam lá.
+   */
+  const RELEITURA_NO_MERGE = 1
   /** 10 PRs pendentes (#10..#19 -> 10 candidatos) e o verde na 11ª posição. */
   const filaComVerdeNaOnzena = (
     verde: Array<{ conclusion?: string; status?: string; name?: string }> = VERDE
@@ -4896,20 +5000,24 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
     expect(posted.reviews).toHaveLength(1)
     expect(posted.reviews[0]!.event).toBe('APPROVE')
     expect(execute).toHaveBeenCalledTimes(1)
-    // Sem cache, o custo é 1 leitura por candidato até chegar no verde.
-    expect(posted.checkRunReads).toHaveLength(11)
+    // Sem cache, o custo é 1 leitura por candidato até chegar no verde, mais
+    // a releitura fresca do verde na porta do merge (merge-do-pr.ts).
+    expect(posted.checkRunReads).toHaveLength(11 + RELEITURA_NO_MERGE)
   })
 
   it('(b) segunda missão com os mesmos heads pendentes NÃO relê os pendentes e ainda julga o verde', async () => {
     const cache = novoCache()
     const primeira = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
-    expect(primeira.posted.checkRunReads).toHaveLength(11)
+    expect(primeira.posted.checkRunReads).toHaveLength(11 + RELEITURA_NO_MERGE)
     expect(cache.tamanho()).toBe(10)
 
     // O dublê do GitHub é novo a cada missão: o verde volta a estar sem parecer.
     relogio.agora += 60_000
     const segunda = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
-    expect(segunda.posted.checkRunReads).toEqual([`sha-${NUMERO_DO_VERDE}`])
+    expect(segunda.posted.checkRunReads).toEqual([
+      `sha-${NUMERO_DO_VERDE}`,
+      `sha-${NUMERO_DO_VERDE}`,
+    ])
     expect(segunda.r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
     expect(segunda.posted.reviews).toHaveLength(1)
     expect(segunda.posted.reviews[0]!.event).toBe('APPROVE')
@@ -4933,7 +5041,7 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
     const segunda = await missao([...pendentes, verde], { cacheDeVerificacaoPendente: cache })
     expect(segunda.r.noOp).toBeUndefined()
     expect(segunda.r.output).toContain('PR #40')
-    expect(segunda.posted.checkRunReads).toEqual(['sha-26', 'sha-27', 'sha-28', 'sha-40'])
+    expect(segunda.posted.checkRunReads).toEqual(['sha-26', 'sha-27', 'sha-28', 'sha-40', 'sha-40'])
   })
 
   it('(c) o cache expira depois do TTL (relógio injetado) e a missão relê', async () => {
@@ -4942,11 +5050,11 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
 
     relogio.agora += TTL_DA_VERIFICACAO_PENDENTE_MS - 1
     const dentro = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
-    expect(dentro.posted.checkRunReads).toHaveLength(1)
+    expect(dentro.posted.checkRunReads).toHaveLength(1 + RELEITURA_NO_MERGE)
 
     relogio.agora += 2
     const fora = await missao(filaComVerdeNaOnzena(), { cacheDeVerificacaoPendente: cache })
-    expect(fora.posted.checkRunReads).toHaveLength(11)
+    expect(fora.posted.checkRunReads).toHaveLength(11 + RELEITURA_NO_MERGE)
     expect(fora.r.output).toContain(`PR #${NUMERO_DO_VERDE}`)
   })
 
@@ -4958,7 +5066,11 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
     fila[0] = { ...fila[0]!, headSha: 'sha-10-novo' }
     const segunda = await missao(fila, { cacheDeVerificacaoPendente: cache })
     // Só o #10 (head novo) é relido, mais o verde; os outros 9 vêm do cache.
-    expect(segunda.posted.checkRunReads).toEqual(['sha-10-novo', `sha-${NUMERO_DO_VERDE}`])
+    expect(segunda.posted.checkRunReads).toEqual([
+      'sha-10-novo',
+      `sha-${NUMERO_DO_VERDE}`,
+      `sha-${NUMERO_DO_VERDE}`,
+    ])
   })
 
   it('(e) verde e vermelho nunca entram no cache: sempre relê', async () => {
@@ -4966,8 +5078,8 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
     const verde = [{ number: 10, user: 'jules[bot]', headSha: 'sha-v', checkRuns: VERDE }]
     const v1 = await missao(verde, { cacheDeVerificacaoPendente: cache })
     const v2 = await missao(verde, { cacheDeVerificacaoPendente: cache })
-    expect(v1.posted.checkRunReads).toEqual(['sha-v'])
-    expect(v2.posted.checkRunReads).toEqual(['sha-v'])
+    expect(v1.posted.checkRunReads).toEqual(['sha-v', 'sha-v'])
+    expect(v2.posted.checkRunReads).toEqual(['sha-v', 'sha-v'])
     expect(cache.ler(chaveDaVerificacao('o/r', 10, 'sha-v'))).toBeUndefined()
 
     const vermelho = [{ number: 11, user: 'jules[bot]', headSha: 'sha-r', checkRuns: VERMELHO }]
@@ -5087,12 +5199,12 @@ describe('runQaMissionViaRails: PR verde no fim da fila não morre de fome', () 
 
     // Segunda missão: #10 sai do cache (não relê), o aviso já foi dado neste head.
     const segunda = await rodar(marcas[0]!.hash)
-    expect(segunda.posted.checkRunReads).toEqual(['sha-b'])
+    expect(segunda.posted.checkRunReads).toEqual(['sha-b', 'sha-b'])
     expect(avisos).toHaveLength(1)
 
     // Terceira: marca ainda não gravada -> o aviso ainda sai, mesmo vindo do cache.
     const terceira = await rodar(null)
-    expect(terceira.posted.checkRunReads).toEqual(['sha-b'])
+    expect(terceira.posted.checkRunReads).toEqual(['sha-b', 'sha-b'])
     expect(avisos).toHaveLength(2)
   })
 })
