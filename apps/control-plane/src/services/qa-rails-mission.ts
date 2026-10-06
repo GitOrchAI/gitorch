@@ -50,11 +50,7 @@ import {
   MARCA_DE_ENTREGA_GRANDE_DEMAIS,
   type EntregaJulgada,
 } from './reprovacao-que-ensina.js'
-import {
-  ciTerminouVerde,
-  estadoDoCi,
-  investigarEstadoDoCi,
-} from './estado-da-verificacao-do-github.js'
+import { lerEstadoDoCiDoHead } from './estado-da-verificacao-do-github.js'
 import { frasarCausaDoCancelamento, type ResultadoDoCulpado } from './causa-do-cancelamento.js'
 import { decidirQuemResolve } from './conflito-de-merge.js'
 import {
@@ -620,25 +616,13 @@ export async function runQaMissionViaRails(
   // Sem o sha do head não dá para ler check-runs: `unknown` (não é veredito).
   const lerVerificacao = async (sha: string | undefined): Promise<VerificacaoLida> => {
     if (!sha) return { estado: 'unknown', culpado: undefined }
-    const checks = (await gh('GET', `/repos/${options.repository}/commits/${sha}/check-runs`)) as {
-      check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
-    }
-    const checkRuns = checks.check_runs ?? []
-    const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
-      const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
-        steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
-      }
-      return (job.steps ?? []).map((s) => ({
-        name: s.name ?? '',
-        conclusion: s.conclusion ?? null,
-        completedAt: s.completed_at ?? null,
-      }))
+    // Leitura única (check-runs + investigação + workflow runs do mesmo
+    // commit): a mesma que o merge e o rejulgamento usam.
+    const investigado = await lerEstadoDoCiDoHead({
+      repositorio: options.repository,
+      sha,
+      ghGet: (caminho) => gh('GET', caminho),
     })
-      // Crash inesperado (não a falha best-effort de UM job — essa,
-      // `investigarCancelamentoEmCadeia` já absorve sozinha): recua para a
-      // resposta PURA (sem rede) — nunca trava a missão, nunca inventa
-      // culpado sem prova.
-      .catch(() => ({ estado: estadoDoCi(checkRuns), culpado: { encontrado: false as const } }))
     return { estado: investigado.estado, culpado: investigado.culpado }
   }
 
@@ -893,11 +877,7 @@ export async function runQaMissionViaRails(
       p.head?.sha
     ) {
       try {
-        const checks = (await gh(
-          'GET',
-          `/repos/${options.repository}/commits/${p.head.sha}/check-runs`
-        )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
-        reprovadoPeloPortaoComCiVerdeAgora = ciTerminouVerde(checks.check_runs ?? [])
+        reprovadoPeloPortaoComCiVerdeAgora = (await lerVerificacao(p.head.sha)).estado === 'green'
       } catch {
         // Não deu para saber o estado da verificação. Na dúvida, NÃO
         // rejulgar: reabrir um veredito sem saber se o motivo caiu seria
@@ -923,34 +903,10 @@ export async function runQaMissionViaRails(
       !foiAprovacao &&
       p.head?.sha
     ) {
-      const { estado, culpado } = await (async () => {
-        try {
-          const checks = (await gh(
-            'GET',
-            `/repos/${options.repository}/commits/${p.head?.sha}/check-runs`
-          )) as {
-            check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
-          }
-          const checkRuns = checks.check_runs ?? []
-
-          const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
-            const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
-              steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
-            }
-            return (job.steps ?? []).map((s) => ({
-              name: s.name ?? '',
-              conclusion: s.conclusion ?? null,
-              completedAt: s.completed_at ?? null,
-            }))
-          }).catch(() => ({
-            estado: estadoDoCi(checkRuns),
-            culpado: { encontrado: false as const },
-          }))
-          return investigado
-        } catch {
-          return { estado: 'unknown' as const, culpado: { encontrado: false as const } }
-        }
-      })()
+      const { estado, culpado } = await lerVerificacao(p.head.sha).catch(() => ({
+        estado: 'unknown' as const,
+        culpado: { encontrado: false as const },
+      }))
       const decisao = decidirSobreLegado({
         numero: p.number,
         headAtual: p.head.sha,
@@ -1900,6 +1856,8 @@ export async function runQaMissionViaRails(
           verdict.entendimento?.queAjusteE &&
           verdict.entendimento?.porQueExiste
         ),
+        // O `ciState` acima foi lido antes do motor; aqui é relido fresco.
+        lerCiAgora: async (sha) => (await lerVerificacao(sha)).estado,
         merge: async () => {
           // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
           // partir do NÚMERO do PR e do repositório que já temos — nunca de um

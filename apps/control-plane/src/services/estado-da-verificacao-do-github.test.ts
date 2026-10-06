@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   estadoDoCi,
-  ciTerminouVerde,
   investigarEstadoDoCi,
+  lerEstadoDoCiDoHead,
 } from './estado-da-verificacao-do-github.js'
 import type { PassoDoJob } from './causa-do-cancelamento.js'
 
@@ -110,17 +110,122 @@ describe('estadoDoCi', () => {
   })
 })
 
-describe('ciTerminouVerde', () => {
-  it('só é verdade quando terminou e passou', () => {
-    expect(ciTerminouVerde([ok(), { status: 'completed', conclusion: 'skipped' }])).toBe(true)
-    expect(ciTerminouVerde([ok(), { status: 'in_progress' }])).toBe(false)
-    expect(ciTerminouVerde([{ status: 'completed', conclusion: 'failure' }])).toBe(false)
+// Verde exige PROVA: pelo menos um job que rodou e passou. Logo depois de um
+// push, o único check-run já registrado pode ser um job condicional que
+// termina `skipped` na hora, enquanto os jobs reais ainda nem existem como
+// check-run (fila do runner). Aceitar isso como verde mesclou código sem CI.
+describe('estadoDoCi — verde só com pelo menos um sucesso real', () => {
+  it('só [skipped]: NÃO é verde — é "pending" (jobs reais ainda podem chegar)', () => {
+    expect(estadoDoCi([{ status: 'completed', conclusion: 'skipped' }])).toBe('pending')
   })
 
-  // Lista vazia não é verde: é "não sei". Reabrir um veredito sobre isso seria
-  // opinar duas vezes no pull request do cliente sem base.
-  it('sem check nenhum NÃO conta como verde para rejulgar', () => {
-    expect(ciTerminouVerde([])).toBe(false)
+  it('só skipped/neutral, vários: continua "pending", nunca "green"', () => {
+    expect(
+      estadoDoCi([
+        { status: 'completed', conclusion: 'skipped' },
+        { status: 'completed', conclusion: 'neutral' },
+        { status: 'completed', conclusion: 'skipped' },
+      ])
+    ).toBe('pending')
+  })
+
+  it('[skipped, success]: verde', () => {
+    expect(estadoDoCi([{ status: 'completed', conclusion: 'skipped' }, ok()])).toBe('green')
+  })
+
+  // Regressão que não pode voltar: repositório com jobs condicionais pulados
+  // em toda entrega normal e os jobs reais passando.
+  it('[success, success, skipped]: verde', () => {
+    expect(estadoDoCi([ok(), ok(), { status: 'completed', conclusion: 'skipped' }])).toBe('green')
+  })
+})
+
+/** Um GitHub de mentira só com as duas leituras que o estado do CI precisa. */
+function githubDoHead(opcoes: {
+  checkRuns: Array<{ id?: number; name?: string; status?: string; conclusion?: string }>
+  workflowRuns?: Array<{ status?: string; conclusion?: string | null }> | 'falha'
+}) {
+  const caminhos: string[] = []
+  const ghGet = async (caminho: string): Promise<unknown> => {
+    caminhos.push(caminho)
+    if (caminho.includes('/check-runs')) return { check_runs: opcoes.checkRuns }
+    if (caminho.includes('/actions/runs?')) {
+      if (opcoes.workflowRuns === 'falha') throw new Error('GitHub 502')
+      return { workflow_runs: opcoes.workflowRuns ?? [] }
+    }
+    throw new Error(`caminho inesperado: ${caminho}`)
+  }
+  return { ghGet, caminhos }
+}
+
+// Fecha a janela "check-runs ainda não registrados": o workflow run do mesmo
+// commit existe (na fila) antes de os jobs dele virarem check-run.
+describe('lerEstadoDoCiDoHead — check-runs + workflow runs do mesmo commit', () => {
+  const ler = (gh: ReturnType<typeof githubDoHead>) =>
+    lerEstadoDoCiDoHead({ repositorio: 'o/r', sha: 'abc', ghGet: gh.ghGet })
+
+  it('check-runs todos success, mas um workflow run in_progress: "pending"', async () => {
+    const gh = githubDoHead({
+      checkRuns: [ok(), ok()],
+      workflowRuns: [{ status: 'completed', conclusion: 'success' }, { status: 'in_progress' }],
+    })
+    expect((await ler(gh)).estado).toBe('pending')
+  })
+
+  it.each(['queued', 'waiting', 'pending', 'requested'])(
+    'workflow run "%s" com check-runs verdes: "pending"',
+    async (status) => {
+      const gh = githubDoHead({ checkRuns: [ok()], workflowRuns: [{ status }] })
+      expect((await ler(gh)).estado).toBe('pending')
+    }
+  )
+
+  it('check-runs verdes e todos os workflow runs terminados: "green"', async () => {
+    const gh = githubDoHead({
+      checkRuns: [ok(), { status: 'completed', conclusion: 'skipped' }],
+      workflowRuns: [{ status: 'completed', conclusion: 'success' }],
+    })
+    expect((await ler(gh)).estado).toBe('green')
+  })
+
+  it('falha ao ler os workflow runs: nunca "green" — vira "pending"', async () => {
+    const gh = githubDoHead({ checkRuns: [ok()], workflowRuns: 'falha' })
+    expect((await ler(gh)).estado).toBe('pending')
+  })
+
+  it('sem check-run nenhum, mas workflow run na fila: "pending", não "no checks"', async () => {
+    const gh = githubDoHead({ checkRuns: [], workflowRuns: [{ status: 'queued' }] })
+    expect((await ler(gh)).estado).toBe('pending')
+  })
+
+  it('sem check-run e sem workflow run: "no checks" continua estável', async () => {
+    const gh = githubDoHead({ checkRuns: [], workflowRuns: [] })
+    expect((await ler(gh)).estado).toBe('no checks')
+  })
+
+  it('o caso dos jobs reais ainda não registrados: só [skipped] + workflow na fila → "pending"', async () => {
+    const gh = githubDoHead({
+      checkRuns: [{ status: 'completed', conclusion: 'skipped' }],
+      workflowRuns: [{ status: 'completed', conclusion: 'skipped' }, { status: 'queued' }],
+    })
+    expect((await ler(gh)).estado).toBe('pending')
+  })
+
+  it('consulta os workflow runs DAQUELE commit, com página cheia', async () => {
+    const gh = githubDoHead({ checkRuns: [ok()], workflowRuns: [] })
+    await ler(gh)
+    expect(gh.caminhos).toContain('/repos/o/r/actions/runs?head_sha=abc&per_page=100')
+  })
+
+  // Vermelho já é veredito: um workflow ainda rodando não o torna verde, e a
+  // chamada a mais seria cota gasta à toa.
+  it('vermelho não gasta a leitura de workflow runs', async () => {
+    const gh = githubDoHead({
+      checkRuns: [{ status: 'completed', conclusion: 'failure' }],
+      workflowRuns: [{ status: 'in_progress' }],
+    })
+    expect((await ler(gh)).estado).toBe('red')
+    expect(gh.caminhos.some((c) => c.includes('/actions/runs?'))).toBe(false)
   })
 })
 

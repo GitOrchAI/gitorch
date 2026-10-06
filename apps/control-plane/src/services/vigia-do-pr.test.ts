@@ -14,6 +14,7 @@ import {
   descreverTempoParado,
   ehPRDaAutomacao,
   fecharPrDoVigia,
+  lerVerificacao,
   listarPrsAbertosParaOVigia,
   temRodapeDoDev,
   vigiarPrsOrfaos,
@@ -1287,5 +1288,54 @@ describe('ACHADO 4 + ACHADO 5 juntos — o pior caso que os dois defeitos formav
       'PATCH /repos/cliente/repo/pulls/77',
       'POST /repos/cliente/repo/issues/77/comments',
     ])
+  })
+})
+
+// O vigia mescla (caminho expresso do Dependabot e política "mesclar") com
+// base nesta leitura. Ela tinha uma régua PRÓPRIA, mais frouxa que a do QA:
+// só skipped, ou só cancelled, virava "verde". Agora é a mesma régua do QA.
+describe('lerVerificacao do vigia usa a régua única do estado do CI', () => {
+  function gh(
+    checkRuns: Array<{ status?: string; conclusion?: string }>,
+    workflowRuns: Array<{ status?: string }> = []
+  ) {
+    return async (caminho: string): Promise<unknown> => {
+      if (caminho.includes('/check-runs')) return { check_runs: checkRuns }
+      if (caminho.includes('/actions/runs?')) return { workflow_runs: workflowRuns }
+      if (caminho.includes('/actions/jobs/')) return { steps: [] }
+      throw new Error(`caminho inesperado: ${caminho}`)
+    }
+  }
+  const ler = (ghGet: (c: string) => Promise<unknown>) =>
+    lerVerificacao({ repo: 'o/r', sha: 'abc', ghGet })
+
+  it('só skipped (jobs reais ainda não registrados): "pendente", nunca "verde"', async () => {
+    expect(await ler(gh([{ status: 'completed', conclusion: 'skipped' }]))).toBe('pendente')
+  })
+
+  it('só cancelled: não é "verde"', async () => {
+    expect(await ler(gh([{ status: 'completed', conclusion: 'cancelled' }]))).not.toBe('verde')
+  })
+
+  it('check-runs verdes com workflow run na fila: "pendente"', async () => {
+    expect(
+      await ler(gh([{ status: 'completed', conclusion: 'success' }], [{ status: 'queued' }]))
+    ).toBe('pendente')
+  })
+
+  it('sucesso + skipped e nada rodando: "verde"', async () => {
+    expect(
+      await ler(
+        gh([
+          { status: 'completed', conclusion: 'success' },
+          { status: 'completed', conclusion: 'skipped' },
+        ])
+      )
+    ).toBe('verde')
+  })
+
+  it('falha real: "vermelha"; sem check nenhum: "ausente"', async () => {
+    expect(await ler(gh([{ status: 'completed', conclusion: 'failure' }]))).toBe('vermelha')
+    expect(await ler(gh([]))).toBe('ausente')
   })
 })

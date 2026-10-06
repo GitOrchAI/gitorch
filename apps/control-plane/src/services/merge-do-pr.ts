@@ -57,6 +57,12 @@ export async function mesclarPr(deps: {
    *  (Tarefa 2.4/3.1)? Fecha a lacuna de um `approve` sem os 4 campos —
    *  "revisor aprovou entendendo o porquê" só é verdade com os dois juntos. */
   entendimentoPresente: boolean
+  /**
+   * Relê o estado do CI do commit AGORA, na porta do merge (mesma régua de
+   * `lerEstadoDoCiDoHead`). `ciState` foi lido antes do julgamento, minutos
+   * atrás; jobs reais podem ter aparecido desde então.
+   */
+  lerCiAgora: (sha: string) => Promise<string>
   /** Faz o merge de verdade. Deve lançar em falha do GitHub. */
   merge: () => Promise<boolean>
 }): Promise<ResultadoDoMerge> {
@@ -101,6 +107,23 @@ export async function mesclarPr(deps: {
   }
   if (deps.diffTruncado) {
     return { mesclado: false, motivo: 'o diff não coube por inteiro no julgamento' }
+  }
+  // Último porteiro, logo antes de tocar no repositório: o CI relido fresco
+  // para o commit que vai entrar. Falha ao ler não é verde.
+  let ciAgora: string
+  try {
+    ciAgora = await deps.lerCiAgora(deps.shaAtual)
+  } catch (err) {
+    return {
+      mesclado: false,
+      motivo: `não deu para reler a verificação automática no instante do merge (${err instanceof Error ? err.message : String(err)}) — por segurança não mescla agora`,
+    }
+  }
+  if (ciAgora !== 'green') {
+    return {
+      mesclado: false,
+      motivo: `a verificação automática não está verde no instante do merge (${ciAgora}) — há jobs ainda sem resultado; não mescla agora`,
+    }
   }
 
   try {

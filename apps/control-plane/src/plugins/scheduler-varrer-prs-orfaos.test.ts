@@ -5,6 +5,9 @@ import type { VigiaDoPrDeps } from '../services/vigia-do-pr.js'
 import { MARCA_DO_PARECER, MARCA_DE_APROVACAO } from '../services/parecer-do-qa.js'
 import { contextoExecutivoVazio } from '../services/contexto-executivo-da-pergunta.js'
 
+const CI_VERDE = { check_runs: [{ status: 'completed', conclusion: 'success' }] }
+const SEM_WORKFLOW_RODANDO = { workflow_runs: [{ status: 'completed', conclusion: 'success' }] }
+
 function buildDepsVigia(
   overrides: Partial<Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]> = {}
 ) {
@@ -153,6 +156,8 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       if (url === '/repos/org/repo/pulls/42')
         return { head: { sha: 'sha1' }, base: { ref: 'main' } }
       if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
+      if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
+      if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return SEM_WORKFLOW_RODANDO
       return null
     })
     const ghSend = vi.fn(async () => ({}))
@@ -176,6 +181,43 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       '/repos/org/repo/pulls/42/merge',
       token,
       expect.any(Object)
+    )
+  })
+
+  it('aprovado + verde na varredura, mas só um check-run skipped no instante do merge → NÃO mescla', async () => {
+    const ghGet = vi.fn(async (url: string) => {
+      if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
+        return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
+      }
+      if (url === '/repos/org/repo/pulls/42')
+        return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+      if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
+      if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) {
+        return { check_runs: [{ status: 'completed', conclusion: 'skipped' }] }
+      }
+      if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return SEM_WORKFLOW_RODANDO
+      return null
+    })
+    const ghSend = vi.fn(async () => ({}))
+
+    await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: config('sim'),
+      agora,
+      projeto,
+      token,
+      depsVigia: buildDepsVigia(),
+      prisma: getPrismaMock(true),
+      ghGet,
+      ghSend,
+      registrarNoPainel: vi.fn(),
+      onWarn: vi.fn(),
+    })
+
+    expect(ghSend).not.toHaveBeenCalledWith(
+      'PUT',
+      '/repos/org/repo/pulls/42/merge',
+      token,
+      expect.anything()
     )
   })
 
@@ -219,14 +261,37 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
   describe('Dependabot expresso só mescla o que mira a branch padrão', () => {
     const configDependabot = { cuidaPorOrigem: { dependabot: 'sim' } }
 
-    function ghDoDependabot(baseRef: string) {
+    function ghDoDependabot(baseRef: string, workflowsAgora: unknown = SEM_WORKFLOW_RODANDO) {
       return vi.fn(async (url: string) => {
         if (url === '/repos/org/repo/pulls/42')
           return { head: { sha: 'sha1' }, base: { ref: baseRef } }
         if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
+        if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
+        if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return workflowsAgora
         return null
       })
     }
+
+    // A leitura do vigia (minutos antes) dizia verde; no instante do merge um
+    // workflow do mesmo commit ainda roda. Não pode mesclar.
+    it('verde na varredura, mas workflow rodando no instante do merge → NÃO mescla', async () => {
+      const ghSend = vi.fn(async () => ({}))
+      const result = await decidirAcaoNoPrOrfaoIntegrado({
+        runtimeConfig: configDependabot,
+        agora,
+        projeto,
+        token,
+        depsVigia: buildDepsVigia(),
+        prisma: getPrismaMock(true, {}, 'dependabot'),
+        ghGet: ghDoDependabot('main', { workflow_runs: [{ status: 'in_progress' }] }),
+        ghSend,
+        registrarNoPainel: vi.fn(),
+        onWarn: vi.fn(),
+      })
+      expect(ghSend).not.toHaveBeenCalled()
+      expect(result.acao).toBe('ignorar')
+      expect(result.motivo).toContain('instante do merge')
+    })
 
     it('base = main → mescla e registra o merge no painel', async () => {
       const ghSend = vi.fn(async () => ({}))

@@ -12,6 +12,7 @@ const base = {
   entendimentoPresente: true,
   baseDoPr: 'main',
   branchPadrao: 'main',
+  lerCiAgora: async (_sha: string) => 'green',
 }
 
 describe('mesclarPr', () => {
@@ -51,6 +52,48 @@ describe('mesclarPr', () => {
   it('NÃO mescla com verificação ainda rodando', async () => {
     const r = await mesclarPr({ ...base, ciState: 'pending', merge: async () => true })
     expect(r.mesclado).toBe(false)
+  })
+
+  // O estado do CI do julgamento foi lido minutos antes (o motor demora).
+  // Na porta do merge ele é relido para o commit que vai entrar.
+  it('CI verde no julgamento, mas "pending" na leitura fresca do merge: NÃO mescla', async () => {
+    let chamado = false
+    const shasLidos: string[] = []
+    const r = await mesclarPr({
+      ...base,
+      ciState: 'green',
+      lerCiAgora: async (sha) => {
+        shasLidos.push(sha)
+        return 'pending'
+      },
+      merge: async () => {
+        chamado = true
+        return true
+      },
+    })
+    expect(chamado).toBe(false)
+    expect(r.mesclado).toBe(false)
+    expect(r.motivo).toContain('instante do merge')
+    expect(r.motivo).toContain('pending')
+    expect(shasLidos).toEqual(['abc123'])
+  })
+
+  it('falha ao reler o CI no instante do merge: NÃO mescla e diz por quê', async () => {
+    let chamado = false
+    const r = await mesclarPr({
+      ...base,
+      lerCiAgora: async () => {
+        throw new Error('GitHub 502')
+      },
+      merge: async () => {
+        chamado = true
+        return true
+      },
+    })
+    expect(chamado).toBe(false)
+    expect(r.mesclado).toBe(false)
+    expect(r.motivo).toContain('reler a verificação')
+    expect(r.motivo).toContain('502')
   })
 
   it('NÃO mescla quando o QA reprovou', async () => {

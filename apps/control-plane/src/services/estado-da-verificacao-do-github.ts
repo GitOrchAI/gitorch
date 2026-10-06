@@ -70,6 +70,9 @@ const CONCLUSOES_QUE_NAO_REPROVAM = new Set(['success', 'neutral', 'skipped'])
  */
 const CONCLUSAO_CANCELADA = 'cancelled'
 
+/** A única conclusão que prova que um job rodou e passou. */
+const CONCLUSAO_DE_SUCESSO = 'success'
+
 export type EstadoDoCi = 'no checks' | 'pending' | 'green' | 'red' | 'cancelado'
 
 /**
@@ -81,22 +84,23 @@ export type EstadoDoCi = 'no checks' | 'pending' | 'green' | 'red' | 'cancelado'
  * falha real — não é reprovação, é "ainda não sei" (a mesma régua de
  * `pending`/`unknown`, só que aqui os checks JÁ terminaram, cancelados).
  * Quem decide o que fazer com cada estado é `decidirSobreVerificacao`.
+ *
+ * Verde exige PROVA: pelo menos um check-run `success`. Um conjunto só de
+ * `skipped`/`neutral` não mostra que nada rodou e passou — é o retrato de
+ * logo depois de um push, quando só o job condicional já terminou e os jobs
+ * reais ainda não foram registrados (fila do runner). Por isso vira
+ * `pending`, não `no checks`: ainda pode chegar check-run real, e `pending`
+ * tem teto próprio na vigília (`avisar-demora`), então nunca fica mudo.
  */
 export function estadoDoCi(runs: CheckDoGithub[]): EstadoDoCi {
   if (runs.length === 0) return 'no checks'
   if (runs.some((r) => r.status !== 'completed')) return 'pending'
   const naoAprovam = runs.filter((r) => !CONCLUSOES_QUE_NAO_REPROVAM.has(r.conclusion ?? ''))
-  if (naoAprovam.length === 0) return 'green'
+  if (naoAprovam.length === 0) {
+    return runs.some((r) => r.conclusion === CONCLUSAO_DE_SUCESSO) ? 'green' : 'pending'
+  }
   const existeFalhaReal = naoAprovam.some((r) => (r.conclusion ?? '') !== CONCLUSAO_CANCELADA)
   return existeFalhaReal ? 'red' : 'cancelado'
-}
-
-/**
- * Verde E terminado. É o que o rejulgamento pergunta: só reabre um veredito
- * quando tem certeza de que o motivo caiu.
- */
-export function ciTerminouVerde(runs: CheckDoGithub[]): boolean {
-  return runs.length > 0 && estadoDoCi(runs) === 'green'
 }
 
 /** Um check-run com o mínimo extra (`id`+`name`) para dar para investigar os
@@ -152,4 +156,113 @@ export async function investigarEstadoDoCi(
   const culpado = await investigarCancelamentoEmCadeia(jobs, buscarPassosDoJob)
   const estado: EstadoDoCi = estadoPuro === 'cancelado' && culpado.encontrado ? 'red' : estadoPuro
   return { estado, culpado }
+}
+
+/** Um workflow run do Actions, reduzido ao status. */
+export interface WorkflowRunDoGithub {
+  status?: string | undefined
+}
+
+/**
+ * Status de workflow run que ainda não terminou. Um run nesses estados pode
+ * ter jobs que ainda nem viraram check-run.
+ */
+const STATUS_DE_WORKFLOW_EM_ANDAMENTO = new Set([
+  'queued',
+  'in_progress',
+  'waiting',
+  'pending',
+  'requested',
+])
+
+/**
+ * Ajusta o estado dos check-runs pelos workflow runs do MESMO commit.
+ *
+ * Fecha a janela "check-runs ainda não registrados": o workflow run existe
+ * (na fila) antes de os jobs dele aparecerem como check-run. Só mexe em
+ * `green` e `no checks` — os dois estados que um job ainda por vir pode
+ * desmentir. `null` = não deu para ler: nunca vira verde por isso.
+ */
+export function ajustarPelosWorkflowsDoHead(
+  estado: EstadoDoCi,
+  workflows: readonly WorkflowRunDoGithub[] | null
+): EstadoDoCi {
+  if (estado !== 'green' && estado !== 'no checks') return estado
+  if (workflows === null) return estado === 'green' ? 'pending' : estado
+  const algumRodando = workflows.some((w) => STATUS_DE_WORKFLOW_EM_ANDAMENTO.has(w.status ?? ''))
+  return algumRodando ? 'pending' : estado
+}
+
+/** Um campo de texto de um objeto vindo da API, sem confiar no formato. */
+function textoDe(obj: unknown, campo: string): string | undefined {
+  if (typeof obj !== 'object' || obj === null) return undefined
+  const valor: unknown = Reflect.get(obj, campo)
+  return typeof valor === 'string' ? valor : undefined
+}
+
+function numeroDe(obj: unknown, campo: string): number | undefined {
+  if (typeof obj !== 'object' || obj === null) return undefined
+  const valor: unknown = Reflect.get(obj, campo)
+  return typeof valor === 'number' ? valor : undefined
+}
+
+function listaDe(obj: unknown, campo: string): unknown[] {
+  if (typeof obj !== 'object' || obj === null) return []
+  const valor: unknown = Reflect.get(obj, campo)
+  return Array.isArray(valor) ? valor : []
+}
+
+/**
+ * A ÚNICA leitura do estado do CI de um commit — quem decide julgar, rejulgar
+ * ou mesclar passa por aqui, para a régua nunca ter duas cópias.
+ *
+ * Lê os check-runs (erro de rede sobe para quem chamou), investiga
+ * cancelamento quando preciso e, se o resultado for `green` ou `no checks`,
+ * confere os workflow runs do mesmo commit. Estados que já são veredito
+ * (`red`, `pending`, `cancelado`) não gastam essa segunda leitura.
+ */
+export async function lerEstadoDoCiDoHead(args: {
+  repositorio: string
+  sha: string
+  ghGet: (caminho: string) => Promise<unknown>
+}): Promise<EstadoDoCiInvestigado> {
+  const { repositorio, sha, ghGet } = args
+  const respostaDosChecks = await ghGet(
+    `/repos/${repositorio}/commits/${sha}/check-runs?per_page=100`
+  )
+  const checkRuns: CheckDoGithubInvestigavel[] = listaDe(respostaDosChecks, 'check_runs').map(
+    (c) => ({
+      id: numeroDe(c, 'id'),
+      name: textoDe(c, 'name'),
+      status: textoDe(c, 'status'),
+      conclusion: textoDe(c, 'conclusion'),
+    })
+  )
+  const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
+    const job = await ghGet(`/repos/${repositorio}/actions/jobs/${jobId}`)
+    return listaDe(job, 'steps').map((p) => ({
+      name: textoDe(p, 'name') ?? '',
+      conclusion: textoDe(p, 'conclusion') ?? null,
+      completedAt: textoDe(p, 'completed_at') ?? null,
+    }))
+  })
+    // Crash inesperado na investigação: recua para a resposta pura, sem
+    // inventar culpado.
+    .catch(() => ({ estado: estadoDoCi(checkRuns), culpado: { encontrado: false as const } }))
+
+  if (investigado.estado !== 'green' && investigado.estado !== 'no checks') return investigado
+
+  let workflows: WorkflowRunDoGithub[] | null
+  try {
+    const resposta = await ghGet(
+      `/repos/${repositorio}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`
+    )
+    workflows = listaDe(resposta, 'workflow_runs').map((w) => ({ status: textoDe(w, 'status') }))
+  } catch {
+    workflows = null
+  }
+  return {
+    estado: ajustarPelosWorkflowsDoHead(investigado.estado, workflows),
+    culpado: investigado.culpado,
+  }
 }
