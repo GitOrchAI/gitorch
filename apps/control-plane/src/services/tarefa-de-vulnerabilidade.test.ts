@@ -6,9 +6,11 @@ import {
   marcaDoPacote,
   montarTarefaDoPacote,
   TETO_DE_TAREFAS_POR_CICLO,
+  JANELA_DE_ISSUE_FECHADA_MS,
 } from './tarefa-de-vulnerabilidade.js'
 import type { AlertaDeSeguranca } from './security-debt-collector.js'
 
+const AGORA = new Date('2026-10-06T12:00:00Z')
 let seq = 0
 function alerta(parcial: Partial<AlertaDeSeguranca>): AlertaDeSeguranca {
   seq += 1
@@ -33,7 +35,8 @@ function depsBase(alertas: AlertaDeSeguranca[], extra: Record<string, unknown> =
   return {
     alertas,
     autonomiaDeSeguranca: 'sugerir',
-    listarTarefasAbertas: vi.fn().mockResolvedValue([]),
+    listarTarefasExistentes: vi.fn().mockResolvedValue([]),
+    agora: () => AGORA,
     criarIssue: vi.fn().mockImplementation(async () => ({ numero: proximo++ })),
     ligarFichas: vi.fn().mockResolvedValue(undefined),
     ...extra,
@@ -122,16 +125,54 @@ describe('gerarTarefasDeVulnerabilidade', () => {
   it('idempotente: não recria quando já há issue aberta com a marca do pacote', async () => {
     const a1 = alerta({ pacote: 'sharp' })
     const deps = depsBase([a1], {
-      listarTarefasAbertas: vi
+      listarTarefasExistentes: vi
         .fn()
         .mockResolvedValue([
-          { numero: 55, corpo: `<!-- ${marcaDoPacote('npm', 'sharp')} -->\n...` },
+          { numero: 55, corpo: `<!-- ${marcaDoPacote('npm', 'sharp')} -->\n...`, fechadaEm: null },
         ]),
     })
     const r = await gerarTarefasDeVulnerabilidade(deps)
     expect(deps.criarIssue).not.toHaveBeenCalled()
     expect(deps.ligarFichas).toHaveBeenCalledWith([a1.numero], 55)
     expect(r.jaExistiam).toBe(1)
+  })
+
+  it('issue FECHADA recentemente com a marca do pacote + alerta ainda aberto: zero tarefas novas', async () => {
+    const a1 = alerta({ pacote: 'sharp', severidade: 'critical' })
+    const fechadaHaUmDia = new Date(AGORA.getTime() - 24 * 60 * 60 * 1000).toISOString()
+    const deps = depsBase([a1], {
+      listarTarefasExistentes: vi.fn().mockResolvedValue([
+        {
+          numero: 56,
+          corpo: `<!-- ${marcaDoPacote('npm', 'sharp')} -->\n...`,
+          fechadaEm: fechadaHaUmDia,
+        },
+      ]),
+    })
+    const r = await gerarTarefasDeVulnerabilidade(deps)
+    expect(deps.criarIssue).not.toHaveBeenCalled()
+    expect(r.criadas).toEqual([])
+    expect(r.fechadasRecentemente).toBe(1)
+    expect(deps.ligarFichas).toHaveBeenCalledWith([a1.numero], 56)
+  })
+
+  it('issue fechada FORA da janela: o alerta ainda aberto volta a virar tarefa', async () => {
+    const a1 = alerta({ pacote: 'sharp', severidade: 'critical' })
+    const fechadaHaMuito = new Date(
+      AGORA.getTime() - JANELA_DE_ISSUE_FECHADA_MS - 60_000
+    ).toISOString()
+    const deps = depsBase([a1], {
+      listarTarefasExistentes: vi.fn().mockResolvedValue([
+        {
+          numero: 57,
+          corpo: `<!-- ${marcaDoPacote('npm', 'sharp')} -->`,
+          fechadaEm: fechadaHaMuito,
+        },
+      ]),
+    })
+    const r = await gerarTarefasDeVulnerabilidade(deps)
+    expect(deps.criarIssue).toHaveBeenCalledTimes(1)
+    expect(r.fechadasRecentemente).toBe(0)
   })
 
   it(`teto: no máximo ${TETO_DE_TAREFAS_POR_CICLO} tarefas novas por ciclo, graves primeiro`, async () => {
@@ -157,7 +198,7 @@ describe('gerarTarefasDeVulnerabilidade', () => {
       const deps = depsBase(alertas, { autonomiaDeSeguranca: nivel })
       const r = await gerarTarefasDeVulnerabilidade(deps)
       expect(deps.criarIssue).not.toHaveBeenCalled()
-      expect(deps.listarTarefasAbertas).not.toHaveBeenCalled()
+      expect(deps.listarTarefasExistentes).not.toHaveBeenCalled()
       expect(r.autorizado).toBe(false)
       expect(r.motivo).toMatch(/Sugerir/)
     }
@@ -165,7 +206,7 @@ describe('gerarTarefasDeVulnerabilidade', () => {
 
   it('falha ao listar as tarefas existentes: não cria nada (sem como garantir que não duplica)', async () => {
     const deps = depsBase([alerta({ pacote: 'sharp' })], {
-      listarTarefasAbertas: vi.fn().mockRejectedValue(new Error('GitHub fora')),
+      listarTarefasExistentes: vi.fn().mockRejectedValue(new Error('GitHub fora')),
     })
     const r = await gerarTarefasDeVulnerabilidade(deps)
     expect(deps.criarIssue).not.toHaveBeenCalled()

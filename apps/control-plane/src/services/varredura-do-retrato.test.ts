@@ -487,6 +487,7 @@ describe('varrerRetratoDoProjeto — alertas de segurança (Fase 1.2/5.2)', () =
       autorizado: true,
       criadas: [{ pacote: 'sharp', issue: 90, destino: 'sprint-atual' as const }],
       jaExistiam: 0,
+      fechadasRecentemente: 0,
       adiadas: 0,
       semTarefa: 0,
       falhas: 0,
