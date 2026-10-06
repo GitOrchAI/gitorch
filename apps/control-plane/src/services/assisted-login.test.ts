@@ -1,21 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { stripAnsi, extractClaudeToken, parseDevicePrompt } from '@gitorch/agents'
 import { AssistedLoginService } from './assisted-login.js'
 
+// Diretórios temporários criados por cada fakeHandle da execução em curso:
+// cada teste (e cada processo) usa o SEU, então execuções simultâneas da suíte
+// no mesmo computador não apagam nem sobrescrevem os arquivos umas das outras.
+const homesTemporarios: string[] = []
+
 function fakeHandle() {
+  const hostHome = mkdtempSync(path.join(os.tmpdir(), 'gitorch-al-'))
+  homesTemporarios.push(hostHome)
   const emitter = new EventEmitter()
   let resolveExited: (v: { code: number | null }) => void = () => undefined
   const exited = new Promise<{ code: number | null }>((r) => {
     resolveExited = r
   })
   const handle = {
-    hostHome: '/tmp/gitorch-assisted-login-test',
+    hostHome,
     onStdout: (cb: (chunk: string) => void) => emitter.on('stdout', cb),
     writeStdin: vi.fn(),
     exited,
@@ -32,8 +39,9 @@ function fakeEngineConnections() {
   return { captureFromHome: vi.fn().mockResolvedValue({ runtime: 'x', status: 'connected' }) }
 }
 
-beforeEach(async () => {
-  await fs.rm('/tmp/gitorch-assisted-login-test', { recursive: true, force: true })
+afterEach(async () => {
+  const homes = homesTemporarios.splice(0)
+  await Promise.all(homes.map((dir) => fs.rm(dir, { recursive: true, force: true })))
 })
 
 describe('AssistedLoginService', () => {
