@@ -2,9 +2,10 @@
 // assume o trabalho. É o que transforma "atualizar dependência" de intenção
 // vaga em tarefa com pacote, versão e gravidade.
 //
-// Todas as rotas usadas aqui recusam a credencial do produto (403) e exigem a
-// credencial do cliente. Por isso "não consegui olhar" é um estado de primeira
-// classe: dizer zero alertas quando ninguém olhou seria mentir sobre segurança.
+// Quem chama escolhe a credencial (installation token do App, ou a do
+// cliente/dono). Qualquer resposta fora de 200/404 vira "não consegui olhar",
+// estado de primeira classe: dizer zero alertas quando ninguém olhou seria
+// mentir sobre segurança.
 
 const GITHUB_API = 'https://api.github.com'
 
@@ -111,6 +112,8 @@ export interface AlertaDeSeguranca {
   resumo: string
   /** Nulo quando ainda não existe versão que corrija. */
   versaoCorrigida: string | null
+  /** Identificador do aviso (GHSA-...), nulo quando a API não devolve. */
+  ghsa: string | null
   url: string
   criadoEm: string
   /** 'runtime' | 'development' | 'desconhecido' — Fase 5.2. */
@@ -136,7 +139,7 @@ export interface DividaDeSeguranca {
   naoVerificado: string[]
 }
 
-interface AlertaBruto {
+export interface AlertaBruto {
   number: number
   html_url?: string
   created_at?: string
@@ -147,8 +150,40 @@ interface AlertaBruto {
      *  vulnerabilidade afeta o produto publicado ou só ferramentas de dev. */
     scope?: string | null
   }
-  security_advisory?: { severity?: string; summary?: string }
-  security_vulnerability?: { first_patched_version?: { identifier?: string } }
+  security_advisory?: { severity?: string; summary?: string; ghsa_id?: string | null }
+  security_vulnerability?: { first_patched_version?: { identifier?: string } | null }
+}
+
+/**
+ * Converte um alerta do Dependabot (resposta da API ou do aviso do webhook,
+ * que têm o mesmo formato) no alerta do produto. Severidade fora das quatro
+ * conhecidas vira 'critical' e é sinalizada: superestimar é o lado seguro.
+ */
+export function normalizarAlertaDoDependabot(a: AlertaBruto): {
+  alerta: AlertaDeSeguranca
+  severidadeDesconhecida: boolean
+} {
+  const bruta = a.security_advisory?.severity?.toLowerCase()
+  const conhecida = SEVERIDADES.find((s) => s === bruta)
+  return {
+    alerta: {
+      numero: a.number,
+      severidade: conhecida ?? 'critical',
+      pacote: a.dependency?.package?.name ?? '',
+      ecossistema: a.dependency?.package?.ecosystem ?? '',
+      manifesto: a.dependency?.manifest_path ?? '',
+      resumo: a.security_advisory?.summary ?? '',
+      versaoCorrigida: a.security_vulnerability?.first_patched_version?.identifier ?? null,
+      ghsa: a.security_advisory?.ghsa_id ?? null,
+      url: a.html_url ?? '',
+      criadoEm: a.created_at ?? '',
+      escopo:
+        a.dependency?.scope === 'runtime' || a.dependency?.scope === 'development'
+          ? a.dependency.scope
+          : 'desconhecido',
+    },
+    severidadeDesconhecida: conhecida === undefined,
+  }
 }
 
 export async function coletarDividaDeSeguranca(deps: {
@@ -234,31 +269,9 @@ export async function coletarDividaDeSeguranca(deps: {
     }
 
     for (const a of lote) {
-      const bruta = a.security_advisory?.severity?.toLowerCase()
-      let severidade: Severidade
-      if (SEVERIDADES.includes(bruta as Severidade)) {
-        severidade = bruta as Severidade
-      } else {
-        // Severidade que a API devolveu fora das quatro conhecidas: virar
-        // 'low' esconderia risco real. Superestimar é o lado seguro.
-        severidade = 'critical'
-        severidadeDesconhecida = true
-      }
-      alertas.push({
-        numero: a.number,
-        severidade,
-        pacote: a.dependency?.package?.name ?? '',
-        ecossistema: a.dependency?.package?.ecosystem ?? '',
-        manifesto: a.dependency?.manifest_path ?? '',
-        resumo: a.security_advisory?.summary ?? '',
-        versaoCorrigida: a.security_vulnerability?.first_patched_version?.identifier ?? null,
-        url: a.html_url ?? '',
-        criadoEm: a.created_at ?? '',
-        escopo:
-          a.dependency?.scope === 'runtime' || a.dependency?.scope === 'development'
-            ? a.dependency.scope
-            : 'desconhecido',
-      })
+      const normalizado = normalizarAlertaDoDependabot(a)
+      if (normalizado.severidadeDesconhecida) severidadeDesconhecida = true
+      alertas.push(normalizado.alerta)
     }
 
     const proxima = proximaPaginaDoLink(linkHeader)

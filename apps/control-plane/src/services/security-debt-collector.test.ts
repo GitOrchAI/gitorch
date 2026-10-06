@@ -11,7 +11,11 @@ const ALERTA_BRUTO = {
     package: { name: 'uma-lib', ecosystem: 'npm' },
     manifest_path: 'pnpm-lock.yaml',
   },
-  security_advisory: { severity: 'medium', summary: 'resumo do problema' },
+  security_advisory: {
+    severity: 'medium',
+    summary: 'resumo do problema',
+    ghsa_id: 'GHSA-aaaa-bbbb-cccc',
+  },
   security_vulnerability: { first_patched_version: { identifier: '4.12.34' } },
 }
 
@@ -41,6 +45,7 @@ describe('coletarDividaDeSeguranca', () => {
         resumo: 'resumo do problema',
         escopo: 'desconhecido',
         versaoCorrigida: '4.12.34',
+        ghsa: 'GHSA-aaaa-bbbb-cccc',
         url: 'https://exemplo.invalido/alerta/182',
         criadoEm: '2026-01-02T03:04:05Z',
       },

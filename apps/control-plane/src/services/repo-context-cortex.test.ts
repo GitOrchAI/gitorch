@@ -110,6 +110,7 @@ describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
           resumo: 'resumo do problema',
           escopo: 'runtime',
           versaoCorrigida: '2.0.0',
+          ghsa: null,
           url: 'https://exemplo.invalido/alerta/42',
           criadoEm: '2026-01-01T00:00:00Z',
         },

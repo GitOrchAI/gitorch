@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { varrerRetratoDoProjeto, type VarreduraDoRetratoDeps } from './varredura-do-retrato.js'
 import { classificarOrigemEIssueDoPr, type SessaoParaOrigem } from '../routes/github-webhook.js'
+import type { AlertaDeSeguranca, DividaDeSeguranca } from './security-debt-collector.js'
+import type { EstadoDoItem } from './ficha-do-item.js'
 
 function ghGetFake(rotas: Record<string, unknown>) {
   return vi.fn(async (caminho: string) => {
@@ -25,7 +27,13 @@ describe('varrerRetratoDoProjeto', () => {
         atualizados.push({ tipo: args.tipo, numero: args.numero })
       },
     })
-    expect(resumo).toEqual({ prs: 1, issues: 1, alertas: 0 })
+    expect(resumo).toEqual({
+      prs: 1,
+      issues: 1,
+      alertas: 0,
+      alertasFechados: 0,
+      falhasDeAlerta: ['leitura-nao-configurada'],
+    })
     expect(atualizados).toContainEqual({ tipo: 'pr', numero: 10 })
     expect(atualizados).toContainEqual({ tipo: 'issue', numero: 20 })
   })
@@ -63,7 +71,13 @@ describe('varrerRetratoDoProjeto', () => {
       atualizarFicha: async () => {},
       backfillGrafo: { aplicar, teto: 1 },
     })
-    expect(resumo).toEqual({ prs: 2, issues: 1, alertas: 0 })
+    expect(resumo).toEqual({
+      prs: 2,
+      issues: 1,
+      alertas: 0,
+      alertasFechados: 0,
+      falhasDeAlerta: ['leitura-nao-configurada'],
+    })
     expect(aplicar).toHaveBeenCalledTimes(1)
     expect(aplicar).toHaveBeenCalledWith({ tipo: 'pr', numero: 10 })
   })
@@ -100,7 +114,13 @@ describe('varrerRetratoDoProjeto', () => {
       atualizarFicha: async () => {},
       backfillGrafo: { aplicar, teto: 5 },
     })
-    expect(resumo).toEqual({ prs: 10, issues: 0, alertas: 0 })
+    expect(resumo).toEqual({
+      prs: 10,
+      issues: 0,
+      alertas: 0,
+      alertasFechados: 0,
+      falhasDeAlerta: ['leitura-nao-configurada'],
+    })
     // todos os 10 itens são ao menos consultados (pra saber se já têm grafo)…
     expect(aplicar).toHaveBeenCalledTimes(10)
     // …mas só os 5 últimos (sem grafo ainda) de fato coletaram.
@@ -130,7 +150,13 @@ describe('varrerRetratoDoProjeto', () => {
       atualizarFicha: async () => {},
       reclassificarOrigem: { aplicar, teto: 5 },
     })
-    expect(resumo).toEqual({ prs: 1, issues: 0, alertas: 0 })
+    expect(resumo).toEqual({
+      prs: 1,
+      issues: 0,
+      alertas: 0,
+      alertasFechados: 0,
+      falhasDeAlerta: ['leitura-nao-configurada'],
+    })
     expect(aplicar).toHaveBeenCalledTimes(1)
     expect(aplicar).toHaveBeenCalledWith({
       numero: 583,
@@ -275,8 +301,207 @@ describe('varrerRetratoDoProjeto', () => {
         atualizados.push({ tipo: args.tipo, numero: args.numero })
       },
     })
-    expect(resumo).toEqual({ prs: 1, issues: 1, alertas: 0 })
+    expect(resumo).toEqual({
+      prs: 1,
+      issues: 1,
+      alertas: 0,
+      alertasFechados: 0,
+      falhasDeAlerta: ['leitura-nao-configurada'],
+    })
     expect(atualizados).toContainEqual({ tipo: 'pr', numero: 10 })
     expect(atualizados).toContainEqual({ tipo: 'issue', numero: 20 })
+  })
+})
+
+describe('varrerRetratoDoProjeto — alertas de segurança (Fase 1.2/5.2)', () => {
+  const semPrsNemIssues = () =>
+    ghGetFake({ '/repos/dono/repo/pulls?': [], '/repos/dono/repo/issues?': [] })
+
+  function alertaDe(numero: number, parcial: Partial<AlertaDeSeguranca> = {}): AlertaDeSeguranca {
+    return {
+      numero,
+      severidade: 'high',
+      pacote: 'sharp',
+      ecossistema: 'npm',
+      manifesto: 'pnpm-lock.yaml',
+      resumo: 'resumo',
+      versaoCorrigida: '0.34.5',
+      ghsa: `GHSA-${numero}`,
+      url: `https://github.com/dono/repo/security/dependabot/${numero}`,
+      criadoEm: '2026-10-01T00:00:00Z',
+      escopo: 'runtime',
+      ...parcial,
+    }
+  }
+
+  function divida(alertas: AlertaDeSeguranca[], naoVerificado: string[] = []): DividaDeSeguranca {
+    return {
+      temConfiguracao: true,
+      alertas,
+      porSeveridade: { critical: 0, high: alertas.length, medium: 0, low: 0 },
+      naoVerificado,
+    }
+  }
+
+  it('alerta novo vira ficha tipo alerta com pacote, GHSA, gravidade, escopo e correção', async () => {
+    const fichas: Array<{ tipo: string; numero: number; estado: EstadoDoItem }> = []
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: semPrsNemIssues(),
+      atualizarFicha: async (args) => {
+        fichas.push(args)
+      },
+      alertas: {
+        ler: async () => ({
+          tipo: 'lido',
+          divida: divida([alertaDe(7)]),
+          lerFichaAtual: vi.fn(),
+        }),
+        numerosAbertosNaFicha: async () => [],
+      },
+    })
+    expect(resumo.alertas).toBe(1)
+    expect(resumo.falhasDeAlerta).toEqual([])
+    const ficha = fichas.find((f) => f.tipo === 'alerta')
+    expect(ficha?.numero).toBe(7)
+    expect(ficha?.estado.status).toBe('open')
+    expect(ficha?.estado.alerta).toMatchObject({
+      pacote: 'sharp',
+      ghsa: 'GHSA-7',
+      gravidade: 'high',
+      escopo: 'runtime',
+      versaoCorrigida: '0.34.5',
+      destino: 'sprint-atual',
+    })
+  })
+
+  it('alerta que fechou no GitHub vira ficha fechada (com o estado real do GitHub)', async () => {
+    const fichas: Array<{ tipo: string; numero: number; estado: EstadoDoItem }> = []
+    const lerFichaAtual = vi.fn(async (_numero: number) => ({
+      status: 'fixed',
+      verificacao: 'high',
+    }))
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: semPrsNemIssues(),
+      atualizarFicha: async (args) => {
+        fichas.push(args)
+      },
+      alertas: {
+        ler: async () => ({ tipo: 'lido', divida: divida([alertaDe(7)]), lerFichaAtual }),
+        numerosAbertosNaFicha: async () => [3, 7],
+      },
+    })
+    expect(lerFichaAtual).toHaveBeenCalledTimes(1)
+    expect(lerFichaAtual).toHaveBeenCalledWith(3)
+    expect(fichas).toContainEqual(
+      expect.objectContaining({
+        tipo: 'alerta',
+        numero: 3,
+        estado: expect.objectContaining({ status: 'fixed' }),
+      })
+    )
+    expect(resumo.alertasFechados).toBe(1)
+  })
+
+  it('falha de API na leitura dos alertas não zera nada: nenhuma ficha fechada, falha contada', async () => {
+    const atualizarFicha = vi.fn(async () => {})
+    const numerosAbertosNaFicha = vi.fn(async () => [3, 7])
+    const onWarn = vi.fn()
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: semPrsNemIssues(),
+      atualizarFicha,
+      onWarn,
+      alertas: {
+        ler: async () => ({
+          tipo: 'lido',
+          divida: divida([], ['alertas']),
+          lerFichaAtual: vi.fn(),
+        }),
+        numerosAbertosNaFicha,
+      },
+    })
+    expect(atualizarFicha).not.toHaveBeenCalled()
+    expect(numerosAbertosNaFicha).not.toHaveBeenCalled()
+    expect(resumo.falhasDeAlerta).toContain('alertas')
+    expect(onWarn).toHaveBeenCalledWith(expect.stringMatching(/alertas/))
+  })
+
+  it('leitura parcial (teto de páginas) grava o que leu mas não fecha ficha nenhuma', async () => {
+    const lerFichaAtual = vi.fn()
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: semPrsNemIssues(),
+      atualizarFicha: async () => {},
+      alertas: {
+        ler: async () => ({
+          tipo: 'lido',
+          divida: divida([alertaDe(7)], ['alertas-parcial']),
+          lerFichaAtual,
+        }),
+        numerosAbertosNaFicha: async () => [3, 7],
+      },
+    })
+    expect(resumo.alertas).toBe(1)
+    expect(lerFichaAtual).not.toHaveBeenCalled()
+    expect(resumo.falhasDeAlerta).toEqual(['alertas-parcial'])
+  })
+
+  it('exceção ao ler os alertas é contada e logada, sem derrubar PRs e issues', async () => {
+    const onWarn = vi.fn()
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: semPrsNemIssues(),
+      atualizarFicha: async () => {},
+      onWarn,
+      alertas: {
+        ler: async () => {
+          throw new Error('rede caiu')
+        },
+        numerosAbertosNaFicha: async () => [],
+      },
+    })
+    expect(resumo.falhasDeAlerta).toEqual(['alertas'])
+    expect(onWarn).toHaveBeenCalledWith(expect.stringMatching(/rede caiu/))
+  })
+
+  it('sem credencial que alcance o projeto: pula com mensagem clara, sem fingir zero', async () => {
+    const onWarn = vi.fn()
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: semPrsNemIssues(),
+      atualizarFicha: async () => {},
+      onWarn,
+      alertas: {
+        ler: async () => ({ tipo: 'sem-credencial', motivo: 'nenhuma credencial alcança' }),
+        numerosAbertosNaFicha: async () => [],
+      },
+    })
+    expect(resumo.falhasDeAlerta).toEqual(['sem-credencial'])
+    expect(onWarn).toHaveBeenCalledWith(expect.stringMatching(/nenhuma credencial alcança/))
+  })
+
+  it('entrega os alertas lidos para a geração de tarefas e devolve o resumo', async () => {
+    const gerarTarefas = vi.fn(async () => ({
+      autorizado: true,
+      criadas: [{ pacote: 'sharp', issue: 90, destino: 'sprint-atual' as const }],
+      jaExistiam: 0,
+      adiadas: 0,
+      semTarefa: 0,
+      falhas: 0,
+    }))
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: semPrsNemIssues(),
+      atualizarFicha: async () => {},
+      alertas: {
+        ler: async () => ({ tipo: 'lido', divida: divida([alertaDe(7)]), lerFichaAtual: vi.fn() }),
+        numerosAbertosNaFicha: async () => [],
+        gerarTarefas,
+      },
+    })
+    expect(gerarTarefas).toHaveBeenCalledWith([expect.objectContaining({ numero: 7 })])
+    expect(resumo.tarefasDeSeguranca?.criadas).toHaveLength(1)
   })
 })

@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { PrismaClient, Prisma } from '@prisma/client'
 import crypto from 'node:crypto'
+import { Transform } from 'node:stream'
 import {
   GitHubWebhookNormalizer,
   GitHubSyncEngine,
@@ -10,6 +11,8 @@ import {
 
 import type { F6AgentRole } from '@gitorch/agents'
 import { atualizarFichaDoItem, type EstadoDoItem } from '../services/ficha-do-item.js'
+import { estadoDaFichaDoAlertaDoDependabot } from '../services/ficha-do-alerta.js'
+import type { AlertaBruto } from '../services/security-debt-collector.js'
 import { casarPrComSessao, existeSessaoLigada } from '../services/casar-pr-com-sessao.js'
 import {
   classificarOrigem,
@@ -41,6 +44,38 @@ declare module 'fastify' {
   interface FastifyRequest {
     rawBody?: Buffer
   }
+}
+
+/**
+ * Guarda uma cópia dos bytes do corpo em `request.rawBody` enquanto eles
+ * seguem para o parser de JSON. O GitHub assina exatamente os bytes que
+ * enviou; reconstruir o corpo com `JSON.stringify` muda números como
+ * `"score":0.0` (vira `0`) e a assinatura de um aviso legítimo deixa de
+ * bater. Os avisos de alerta de segurança trazem esses números sempre.
+ */
+export function copiarCorpoCru(
+  request: FastifyRequest,
+  _reply: FastifyReply,
+  payload: NodeJS.ReadableStream
+): Promise<Transform & { receivedEncodedLength: number }> {
+  const pedacos: Buffer[] = []
+  const copia = Object.assign(
+    new Transform({
+      transform(pedaco: Buffer, _codificacao, pronto) {
+        pedacos.push(pedaco)
+        copia.receivedEncodedLength += pedaco.length
+        pronto(null, pedaco)
+      },
+      flush(pronto) {
+        request.rawBody = Buffer.concat(pedacos)
+        pronto()
+      },
+    }),
+    { receivedEncodedLength: 0 }
+  )
+  payload.on('error', (err) => copia.destroy(err))
+  payload.pipe(copia)
+  return Promise.resolve(copia)
 }
 
 const normalizer = new GitHubWebhookNormalizer()
@@ -525,12 +560,16 @@ export function estadoDoAlertaAPartirDoPayload(
   tipoDeAlerta: 'dependabot_alert' | 'code_scanning_alert' | 'secret_scanning_alert'
 ): EstadoDoItem {
   if (tipoDeAlerta === 'dependabot_alert') {
-    const alerta = payload['dependabot_alert'] as
-      { state?: string; security_advisory?: { severity?: string } } | undefined
-    return {
-      status: alerta?.state ?? 'unknown',
-      verificacao: alerta?.security_advisory?.severity ?? null,
+    const alerta = payload['dependabot_alert'] as (AlertaBruto & { state?: string }) | undefined
+    if (!alerta || typeof alerta.number !== 'number') {
+      return {
+        status: alerta?.state ?? 'unknown',
+        verificacao: alerta?.security_advisory?.severity ?? null,
+      }
     }
+    // Mesma ficha que a varredura grava (ficha-do-alerta.ts): o aviso nunca
+    // apaga pacote, escopo e destino que a varredura já tinha escrito.
+    return estadoDaFichaDoAlertaDoDependabot(alerta)
   }
   if (tipoDeAlerta === 'code_scanning_alert') {
     const alerta = payload['alert'] as { state?: string; rule?: { severity?: string } } | undefined
@@ -570,26 +609,29 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           timeWindow: '1 minute',
         },
       },
+      preParsing: copiarCorpoCru,
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const signature = request.headers['x-hub-signature-256'] as string | undefined
       const event = request.headers['x-github-event'] as string | undefined
       const deliveryId = request.headers['x-github-delivery'] as string | undefined
-      const payload = request.rawBody || JSON.stringify(request.body)
+      // A assinatura é conferida sobre os bytes crus (ver `copiarCorpoCru`),
+      // nunca sobre um corpo reconstruído.
+      const payload = request.rawBody?.toString('utf8')
 
       if (!payload) {
         return reply.code(400).send({ error: 'Missing payload' })
       }
 
       // Verify HMAC signature using decorated verifier
-      const verified = app.verifyGitHubWebhook(payload.toString(), signature)
+      const verified = app.verifyGitHubWebhook(payload, signature)
       if (!verified.valid) {
         app.log.warn({ deliveryId, event }, verified.error || 'Invalid GitHub webhook signature')
         return reply.code(verified.status).send({ error: verified.error || 'Invalid signature' })
       }
 
       // Parse payload to get GitHub identifiers
-      const parsedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload
+      const parsedPayload = JSON.parse(payload)
 
       // Identify project by GitHub installation ID, repo ID, or repo full name.
       // O wizard cria o Project só com wingId (owner/repo) e deixa

@@ -13,6 +13,25 @@ export interface EstadoDoItem {
   rascunho?: boolean | null
   ultimoCommitEm?: string | null
   arquivosMexidos?: string[] | null
+  /** Só em `tipo='alerta'` do Dependabot (Fase 1.2/5.2). */
+  alerta?: DadosDoAlertaNaFicha | null
+}
+
+/** O que a ficha guarda de um alerta de dependência e o que foi decidido. */
+export interface DadosDoAlertaNaFicha {
+  fonte: 'dependabot'
+  pacote: string
+  ecossistema: string
+  ghsa: string | null
+  gravidade: 'critical' | 'high' | 'medium' | 'low'
+  /** runtime = biblioteca do produto publicado; development = só ferramenta. */
+  escopo: 'runtime' | 'development' | 'desconhecido'
+  versaoCorrigida: string | null
+  temCorrecao: boolean
+  manifesto: string
+  url: string
+  destino: 'sprint-atual' | 'backlog' | 'sem-tarefa'
+  motivo: string
 }
 
 export interface EntendimentoDoItem {
