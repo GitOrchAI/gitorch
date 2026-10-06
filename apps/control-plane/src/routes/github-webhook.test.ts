@@ -246,6 +246,24 @@ describe('GitHub Webhook Routes', () => {
     expect(res.payload).toContain('"received":true')
   })
 
+  test('corpo assinado que não é JSON devolve 400, não 500', async () => {
+    const corpoCru = 'isto não é json'
+    const signature =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(corpoCru).digest('hex')
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'content-type': 'text/plain',
+        'x-hub-signature-256': signature,
+        'x-github-event': 'dependabot_alert',
+        'x-github-delivery': 'delivery_nao_json',
+      },
+      payload: corpoCru,
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
   test('corpo cru com assinatura errada continua recusado', async () => {
     const corpoCru = '{"action":"created","repository":{"id":123}}'
     const res = await app.inject({

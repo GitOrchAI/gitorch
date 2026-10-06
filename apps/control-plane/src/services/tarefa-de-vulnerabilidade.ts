@@ -3,7 +3,8 @@
 // Master delega; média e baixa vão para o backlog. Regras contra inundar o
 // repositório do cliente:
 //   - uma tarefa por PACOTE (todos os alertas do pacote juntos);
-//   - idempotente pela marca estável no corpo (não recria se há issue aberta);
+//   - idempotente pela marca estável no corpo (não recria se há issue aberta
+//     ou fechada há menos de `JANELA_DE_ISSUE_FECHADA_MS` para o pacote);
 //   - teto de tarefas novas por ciclo, graves primeiro;
 //   - só escreve se a autonomia de SEGURANÇA do projeto permitir propor.
 
@@ -19,6 +20,9 @@ export const ETIQUETA_DE_SEGURANCA = 'gitorch:seguranca'
 /** Backlog: visível no quadro, mas fora da fila do Scrum Master. */
 export const ETIQUETA_DE_BACKLOG = 'gitorch:backlog'
 export const TETO_DE_TAREFAS_POR_CICLO = 3
+/** Issue fechada (recusada pelo dono, ou fechada pelo PR antes de o alerta
+ *  sumir) segura uma tarefa nova do mesmo pacote por este tempo. */
+export const JANELA_DE_ISSUE_FECHADA_MS = 30 * 24 * 60 * 60 * 1000
 
 const PREFIXO_DA_MARCA = 'gitorch-seguranca'
 const ORDEM: Record<Severidade, number> = { critical: 0, high: 1, medium: 2, low: 3 }
@@ -164,6 +168,8 @@ export interface ResumoDasTarefasDeSeguranca {
   motivo?: string
   criadas: Array<{ pacote: string; issue: number; destino: 'sprint-atual' | 'backlog' }>
   jaExistiam: number
+  /** Pacotes que não ganharam tarefa porque a issue foi fechada há pouco. */
+  fechadasRecentemente: number
   adiadas: number
   semTarefa: number
   falhas: number
@@ -173,14 +179,18 @@ export async function gerarTarefasDeVulnerabilidade(deps: {
   alertas: AlertaDeSeguranca[]
   /** `Project.autonomiaDeSeguranca`; ausente/desconhecido = só olhar. */
   autonomiaDeSeguranca: string | null | undefined
-  /** Issues abertas com `ETIQUETA_DE_SEGURANCA` (número e corpo). */
-  listarTarefasAbertas: () => Promise<Array<{ numero: number; corpo: string | null }>>
+  /** Issues com `ETIQUETA_DE_SEGURANCA`: todas as abertas e as fechadas
+   *  dentro da janela (`fechadaEm` nulo = aberta). */
+  listarTarefasExistentes: () => Promise<
+    Array<{ numero: number; corpo: string | null; fechadaEm: string | null }>
+  >
   criarIssue: (t: { titulo: string; corpo: string; etiquetas: string[] }) => Promise<{
     numero: number
   }>
   /** Grava na ficha de cada alerta a issue que cuida dele. */
   ligarFichas: (numerosDosAlertas: number[], issue: number) => Promise<void>
   teto?: number
+  agora?: () => Date
   onWarn?: (m: string) => void
 }): Promise<ResumoDasTarefasDeSeguranca> {
   const { grupos, semTarefa } = agruparAlertasPorPacote(deps.alertas)
@@ -188,6 +198,7 @@ export async function gerarTarefasDeVulnerabilidade(deps: {
     autorizado: true,
     criadas: [],
     jaExistiam: 0,
+    fechadasRecentemente: 0,
     adiadas: 0,
     semTarefa: semTarefa.length,
     falhas: 0,
@@ -202,11 +213,22 @@ export async function gerarTarefasDeVulnerabilidade(deps: {
     return resumo
   }
 
-  let existentes: Map<string, number>
+  // Por marca: a issue que segura o pacote. Aberta tem preferência sobre
+  // fechada; fechada fora da janela não segura nada.
+  const limite = (deps.agora?.() ?? new Date()).getTime() - JANELA_DE_ISSUE_FECHADA_MS
+  let existentes: Map<string, { numero: number; aberta: boolean }>
   try {
     existentes = new Map()
-    for (const issue of await deps.listarTarefasAbertas()) {
-      for (const marca of marcasNoCorpo(issue.corpo)) existentes.set(marca, issue.numero)
+    for (const issue of await deps.listarTarefasExistentes()) {
+      const aberta = issue.fechadaEm === null
+      if (!aberta) {
+        const fechadaEm = Date.parse(issue.fechadaEm ?? '')
+        if (!Number.isFinite(fechadaEm) || fechadaEm < limite) continue
+      }
+      for (const marca of marcasNoCorpo(issue.corpo)) {
+        if (existentes.get(marca)?.aberta) continue
+        existentes.set(marca, { numero: issue.numero, aberta })
+      }
     }
   } catch (err) {
     // Sem a lista não há como garantir que não duplica: não cria nada.
@@ -234,8 +256,9 @@ export async function gerarTarefasDeVulnerabilidade(deps: {
   for (const grupo of grupos) {
     const jaExiste = existentes.get(grupo.marca)
     if (jaExiste !== undefined) {
-      resumo.jaExistiam += 1
-      await ligar(grupo, jaExiste)
+      if (jaExiste.aberta) resumo.jaExistiam += 1
+      else resumo.fechadasRecentemente += 1
+      await ligar(grupo, jaExiste.numero)
       continue
     }
     if (tentativas >= teto) {

@@ -630,8 +630,14 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(verified.status).send({ error: verified.error || 'Invalid signature' })
       }
 
-      // Parse payload to get GitHub identifiers
-      const parsedPayload = JSON.parse(payload)
+      // Parse payload to get GitHub identifiers. Corpo assinado que não é
+      // JSON é pedido malformado (400), não falha do servidor.
+      let parsedPayload
+      try {
+        parsedPayload = JSON.parse(payload)
+      } catch {
+        return reply.code(400).send({ error: 'Invalid JSON payload' })
+      }
 
       // Identify project by GitHub installation ID, repo ID, or repo full name.
       // O wizard cria o Project só com wingId (owner/repo) e deixa
