@@ -323,7 +323,21 @@ import {
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
 import { atualizarFichaDoItem } from '../services/ficha-do-item.js'
-import { varrerRetratoDoProjeto, CADENCIA_DO_RETRATO_MS } from '../services/varredura-do-retrato.js'
+import {
+  varrerRetratoDoProjeto,
+  CADENCIA_DO_RETRATO_MS,
+  type LeituraDosAlertas,
+} from '../services/varredura-do-retrato.js'
+import {
+  coletarDividaDeSeguranca,
+  type AlertaBruto,
+  type DividaDeSeguranca,
+} from '../services/security-debt-collector.js'
+import { estadoDaFichaDoAlertaDoDependabot } from '../services/ficha-do-alerta.js'
+import {
+  gerarTarefasDeVulnerabilidade,
+  ETIQUETA_DE_SEGURANCA,
+} from '../services/tarefa-de-vulnerabilidade.js'
 import { atualizarGrafoDeVinculos } from '../services/grafo-de-vinculos.js'
 import { origemPrecisaDeReclassificacao } from '../services/origem-do-item.js'
 import {
@@ -7607,11 +7621,108 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /** Resposta da API que tem cara de alerta do Dependabot (número presente). */
+  const ehAlertaBruto = (x: unknown): x is AlertaBruto & { state?: string } =>
+    typeof x === 'object' && x !== null && typeof (x as { number?: unknown }).number === 'number'
+
+  /**
+   * Fase 1.2/5.2: lê os alertas do Dependabot com a credencial que alcança o
+   * projeto — primeiro a do cliente/dono (`lerCredencialQueAlcancaOProjeto`),
+   * depois o installation token do App que a varredura já tem. A primeira que
+   * lê a lista inteira vence; se nenhuma alcançar, a falha volta contada.
+   */
+  const lerAlertasDoProjeto = async (args: {
+    projeto: {
+      id: string
+      wingId: string
+      userId: string | null
+      encryptedClientToken: string | null
+    }
+    tokenDoApp: string
+  }): Promise<LeituraDosAlertas> => {
+    const candidatas: Array<{ origem: string; token: string }> = []
+    const doClienteOuDono = await lerCredencialQueAlcancaOProjeto({
+      prisma: app.prisma,
+      projectId: args.projeto.id,
+      userId: args.projeto.userId,
+      engineConnections: app.engineConnections,
+      encryptedClientTokenJaLido: args.projeto.encryptedClientToken,
+    })
+    if (doClienteOuDono) candidatas.push({ origem: 'cliente ou dono', token: doClienteOuDono })
+    candidatas.push({ origem: 'App do produto', token: args.tokenDoApp })
+
+    let ultima: { divida: DividaDeSeguranca; token: string } | null = null
+    const recusadas: string[] = []
+    for (const c of candidatas) {
+      const divida = await coletarDividaDeSeguranca({
+        repository: args.projeto.wingId,
+        token: c.token,
+        fetchImpl: ghComGuarda,
+      })
+      ultima = { divida, token: c.token }
+      if (!divida.naoVerificado.includes('alertas')) break
+      recusadas.push(c.origem)
+    }
+    if (!ultima) {
+      return { tipo: 'sem-credencial', motivo: 'nenhuma credencial alcança o repositório' }
+    }
+    if (recusadas.length > 0) {
+      app.log.warn(
+        `[Scheduler] alertas de ${args.projeto.wingId}: a leitura falhou com a credencial de ${recusadas.join(' e de ')}`
+      )
+    }
+    const tokenQueLeu = ultima.token
+    return {
+      tipo: 'lido',
+      divida: ultima.divida,
+      lerFichaAtual: async (numero) => {
+        const bruto = await ghGet(
+          `/repos/${args.projeto.wingId}/dependabot/alerts/${numero}`,
+          tokenQueLeu
+        )
+        if (!ehAlertaBruto(bruto)) throw new Error(`resposta sem alerta para #${numero}`)
+        return estadoDaFichaDoAlertaDoDependabot(bruto)
+      },
+    }
+  }
+
+  /** Issues abertas marcadas como tarefa de segurança (para não duplicar). */
+  const listarTarefasDeSegurancaAbertas = async (
+    repo: string,
+    token: string
+  ): Promise<Array<{ numero: number; corpo: string | null }>> => {
+    const saida: Array<{ numero: number; corpo: string | null }> = []
+    for (let pagina = 1; pagina <= 5; pagina += 1) {
+      const lote = await ghGet(
+        `/repos/${repo}/issues?state=open&labels=${encodeURIComponent(ETIQUETA_DE_SEGURANCA)}&per_page=100&page=${pagina}`,
+        token
+      )
+      if (!Array.isArray(lote)) throw new Error('resposta inesperada ao listar issues')
+      for (const item of lote as Array<{
+        number?: unknown
+        body?: unknown
+        pull_request?: unknown
+      }>) {
+        if (item.pull_request || typeof item.number !== 'number') continue
+        saida.push({ numero: item.number, corpo: typeof item.body === 'string' ? item.body : null })
+      }
+      if (lote.length < 100) return saida
+    }
+    // Mais de 500 abertas: sem a lista inteira não dá para garantir que não duplica.
+    throw new Error('tarefas de segurança abertas demais para conferir')
+  }
+
   const varrerRetratos = async (): Promise<void> => {
     const agora = new Date()
     const projetos = await app.prisma.project.findMany({
       where: { isActive: true },
-      select: { id: true, wingId: true },
+      select: {
+        id: true,
+        wingId: true,
+        userId: true,
+        encryptedClientToken: true,
+        autonomiaDeSeguranca: true,
+      },
     })
 
     for (const projeto of projetos) {
@@ -7628,11 +7739,68 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             onWarn: (m) => app.log.warn(m),
           })) ??
           undefined
-        if (!token) continue
+        if (!token) {
+          app.log.warn(
+            `[Scheduler] varredura-do-retrato: ${projeto.wingId} pulado — o App do produto não alcança o repositório`
+          )
+          continue
+        }
 
         const resumo = await varrerRetratoDoProjeto({
           repo: projeto.wingId,
           ghGet: (caminho) => ghGet(caminho, token),
+          // Fase 1.2/5.2: alertas do Dependabot → ficha → tarefa pela gravidade.
+          alertas: {
+            ler: () => lerAlertasDoProjeto({ projeto, tokenDoApp: token }),
+            numerosAbertosNaFicha: async () => {
+              const linhas = await app.prisma.repoItem.findMany({
+                where: {
+                  projectId: projeto.id,
+                  tipo: 'alerta',
+                  AND: [
+                    { estado: { path: ['status'], equals: 'open' } },
+                    { estado: { path: ['alerta', 'fonte'], equals: 'dependabot' } },
+                  ],
+                },
+                select: { numero: true },
+              })
+              return linhas.map((l) => l.numero)
+            },
+            gerarTarefas: (alertas) =>
+              gerarTarefasDeVulnerabilidade({
+                alertas,
+                autonomiaDeSeguranca: projeto.autonomiaDeSeguranca,
+                listarTarefasAbertas: () => listarTarefasDeSegurancaAbertas(projeto.wingId, token),
+                // Mesmo caminho único de criação de issue (quadro + guarda
+                // de autonomia do repositório) das tarefas de conserto.
+                criarIssue: (tarefa) =>
+                  nascerDesejo(
+                    {
+                      projectId: projeto.id,
+                      repo: projeto.wingId,
+                      titulo: tarefa.titulo,
+                      corpo: tarefa.corpo,
+                      etiquetas: tarefa.etiquetas,
+                      log: {
+                        onError: (m) => app.log.error(m),
+                        onWarn: (m) => app.log.warn(m),
+                      },
+                    },
+                    {
+                      prisma: app.prisma,
+                      engineConnections: app.engineConnections,
+                      onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+                    }
+                  ),
+                ligarFichas: async (numeros, issue) => {
+                  await app.prisma.repoItem.updateMany({
+                    where: { projectId: projeto.id, tipo: 'alerta', numero: { in: numeros } },
+                    data: { issueNumber: issue },
+                  })
+                },
+                onWarn: (m) => app.log.warn(`[Scheduler] ${projeto.wingId}: ${m}`),
+              }),
+          },
           atualizarFicha: (args) =>
             atualizarFichaDoItem({
               prisma: app.prisma as never,
@@ -7651,9 +7819,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             aplicar: async (args) => {
               // `TipoDoItem` inclui 'alerta', mas o grafo de vínculos só
               // existe para issue/PR (varrerRetratoDoProjeto nunca chama
-              // este backfill com 'alerta' hoje — alertas de segurança têm
-              // coleta própria, ver o comentário no fim de
-              // varredura-do-retrato.ts). O corte é o que estreita o tipo
+              // este backfill com 'alerta' — alertas de segurança têm
+              // laço próprio, `varrerAlertas` em varredura-do-retrato.ts).
+              // O corte é o que estreita o tipo
               // para o que `atualizarGrafoDeVinculos` aceita, sem cast.
               // Retorna `false` (não coletou) em todo caminho de saída
               // antecipada — é esse retorno que diz à varredura pra NÃO

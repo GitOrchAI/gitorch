@@ -9,6 +9,9 @@ import {
   estadoDaIssueAPartirDoPayload,
 } from '../routes/github-webhook.js'
 import type { EstadoDoItem, TipoDoItem } from './ficha-do-item.js'
+import type { AlertaDeSeguranca, DividaDeSeguranca } from './security-debt-collector.js'
+import { estadoDaFichaDoAlerta } from './ficha-do-alerta.js'
+import type { ResumoDasTarefasDeSeguranca } from './tarefa-de-vulnerabilidade.js'
 
 /** Cadência da varredura de retrato — separada da de `vigiarPrsOrfaos` (3h): a
  *  ficha precisa ficar em dia bem mais rápido que a decisão de agir sobre um
@@ -67,6 +70,43 @@ export interface VarreduraDoRetratoDeps {
     aplicar: (args: { numero: number; pr: PrCru }) => Promise<boolean>
     teto: number
   }
+  /** Fase 1.2/5.2: alertas do Dependabot. Ausente = a varredura não lê
+   *  alertas e diz isso no retorno (`leitura-nao-configurada`), nunca zero
+   *  calado. */
+  alertas?: {
+    ler: () => Promise<LeituraDosAlertas>
+    /** Números das fichas de alerta do Dependabot ainda abertas no banco. */
+    numerosAbertosNaFicha: () => Promise<number[]>
+    /** Fase 5.2: transforma os alertas lidos em tarefas (sprint ou backlog). */
+    gerarTarefas?: (alertas: AlertaDeSeguranca[]) => Promise<ResumoDasTarefasDeSeguranca>
+  }
+}
+
+export interface ResumoDaVarreduraDoRetrato {
+  prs: number
+  issues: number
+  /** Alertas abertos lidos do GitHub e gravados na ficha neste ciclo. */
+  alertas: number
+  /** Fichas de alerta que estavam abertas e o GitHub já fechou. */
+  alertasFechados: number
+  /** O que não deu para ler ou gravar. Vazio = leitura completa. */
+  falhasDeAlerta: string[]
+  tarefasDeSeguranca?: ResumoDasTarefasDeSeguranca
+}
+
+/** O resultado de tentar ler os alertas do Dependabot de um projeto. */
+export type LeituraDosAlertas =
+  | { tipo: 'sem-credencial'; motivo: string }
+  | {
+      tipo: 'lido'
+      divida: DividaDeSeguranca
+      /** Ficha atual de um alerta que saiu da lista de abertos (lê o estado real). */
+      lerFichaAtual: (numero: number) => Promise<EstadoDoItem>
+    }
+
+/** Rótulos de `naoVerificado` que dizem que a lista de abertos não está completa. */
+function leituraIncompleta(naoVerificado: string[]): boolean {
+  return naoVerificado.some((r) => r.startsWith('alertas') || r === 'repositorio-invalido')
 }
 
 interface PrCru {
@@ -92,7 +132,7 @@ interface IssueCru {
 
 export async function varrerRetratoDoProjeto(
   deps: VarreduraDoRetratoDeps
-): Promise<{ prs: number; issues: number; alertas: number }> {
+): Promise<ResumoDaVarreduraDoRetrato> {
   let prs = 0
   let issues = 0
   // Issue #877 item 5: contador COMPARTILHADO entre os dois laços (PRs e
@@ -188,10 +228,91 @@ export async function varrerRetratoDoProjeto(
     }
   }
 
-  // Alertas de segurança: a Fase 5.2 estende esta função para gravar a ficha
-  // de cada alerta usando `coletarDividaDeSeguranca` (security-debt-collector.ts)
-  // — não duplicado aqui porque aquele serviço exige a credencial do CLIENTE
-  // (403 na do produto), diferente de `ghGet` acima, e a Fase 5 é quem decide
-  // como as duas credenciais convivem nesta mesma varredura.
-  return { prs, issues, alertas: 0 }
+  return { prs, issues, ...(await varrerAlertas(deps)) }
+}
+
+async function varrerAlertas(
+  deps: VarreduraDoRetratoDeps
+): Promise<Omit<ResumoDaVarreduraDoRetrato, 'prs' | 'issues'>> {
+  const resumo: Omit<ResumoDaVarreduraDoRetrato, 'prs' | 'issues'> = {
+    alertas: 0,
+    alertasFechados: 0,
+    falhasDeAlerta: [],
+  }
+  if (!deps.alertas) {
+    resumo.falhasDeAlerta.push('leitura-nao-configurada')
+    return resumo
+  }
+  const avisar = (m: string): void =>
+    deps.onWarn?.(`varredura-do-retrato: alertas de ${deps.repo}: ${m}`)
+
+  let leitura: LeituraDosAlertas
+  try {
+    leitura = await deps.alertas.ler()
+  } catch (err) {
+    resumo.falhasDeAlerta.push('alertas')
+    avisar(`leitura falhou: ${err}`)
+    return resumo
+  }
+  if (leitura.tipo === 'sem-credencial') {
+    resumo.falhasDeAlerta.push('sem-credencial')
+    avisar(`projeto pulado: ${leitura.motivo}`)
+    return resumo
+  }
+
+  // 'configuracao' fala do arquivo dependabot.yml, não da lista de alertas.
+  const naoVerificado = leitura.divida.naoVerificado.filter((r) => r !== 'configuracao')
+  resumo.falhasDeAlerta.push(...naoVerificado)
+
+  const abertos = new Set<number>()
+  for (const alerta of leitura.divida.alertas) {
+    abertos.add(alerta.numero)
+    try {
+      await deps.atualizarFicha({
+        tipo: 'alerta',
+        numero: alerta.numero,
+        estado: estadoDaFichaDoAlerta(alerta, 'open'),
+      })
+      resumo.alertas += 1
+    } catch (err) {
+      resumo.falhasDeAlerta.push('ficha-do-alerta')
+      avisar(`ficha do alerta #${alerta.numero} não gravada: ${err}`)
+    }
+  }
+
+  // Só fecha ficha quando a lista de abertos veio inteira: com leitura
+  // parcial ou falha, "não está na lista" não prova que fechou.
+  if (!leituraIncompleta(naoVerificado)) {
+    try {
+      for (const numero of await deps.alertas.numerosAbertosNaFicha()) {
+        if (abertos.has(numero)) continue
+        try {
+          await deps.atualizarFicha({
+            tipo: 'alerta',
+            numero,
+            estado: await leitura.lerFichaAtual(numero),
+          })
+          resumo.alertasFechados += 1
+        } catch (err) {
+          resumo.falhasDeAlerta.push('alerta-fechado')
+          avisar(`não consegui conferir o alerta #${numero} que saiu da lista de abertos: ${err}`)
+        }
+      }
+    } catch (err) {
+      resumo.falhasDeAlerta.push('fichas-abertas')
+      avisar(`não consegui listar as fichas de alerta abertas: ${err}`)
+    }
+  }
+
+  if (deps.alertas.gerarTarefas && leitura.divida.alertas.length > 0) {
+    try {
+      resumo.tarefasDeSeguranca = await deps.alertas.gerarTarefas(leitura.divida.alertas)
+    } catch (err) {
+      resumo.falhasDeAlerta.push('tarefas')
+      avisar(`geração de tarefas falhou: ${err}`)
+    }
+  }
+
+  if (naoVerificado.length > 0) avisar(`leitura incompleta (${naoVerificado.join(', ')})`)
+  return resumo
 }

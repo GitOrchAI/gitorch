@@ -209,6 +209,58 @@ describe('GitHub Webhook Routes', () => {
     expect(res.statusCode).toBe(200)
     expect(trigger).toHaveBeenCalledWith('qa', 'proj_123', undefined, 'aviso-do-github')
   })
+
+  // O GitHub assina os BYTES que enviou. O aviso de alerta de segurança traz
+  // números como `"score":0.0`, que voltam como `0` se o corpo for
+  // reconstruído a partir do JSON já lido — a assinatura deixa de bater e o
+  // aviso legítimo é recusado. A verificação tem que usar o corpo cru.
+  test('aceita aviso de alerta assinado sobre os bytes crus (número com casa decimal zero)', async () => {
+    app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.findUnique = vi.fn().mockResolvedValue(null)
+    app.prisma.webhookDelivery.createMany = vi.fn().mockResolvedValue({ count: 1 })
+    app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
+    app.prisma.project.update = vi.fn().mockResolvedValue({})
+
+    const corpoCru =
+      '{"action":"created","repository":{"id":123},' +
+      '"dependabot_alert":{"number":7,"state":"open",' +
+      '"security_advisory":{"severity":"high","cvss":{"score":0.0}}}}'
+    expect(JSON.stringify(JSON.parse(corpoCru))).not.toBe(corpoCru)
+    const signature =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(corpoCru).digest('hex')
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'content-type': 'application/json',
+        'x-hub-signature-256': signature,
+        'x-github-event': 'dependabot_alert',
+        'x-github-delivery': 'delivery_alerta',
+      },
+      payload: corpoCru,
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.payload).toContain('"received":true')
+  })
+
+  test('corpo cru com assinatura errada continua recusado', async () => {
+    const corpoCru = '{"action":"created","repository":{"id":123}}'
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'content-type': 'application/json',
+        'x-hub-signature-256': 'sha256=' + '0'.repeat(64),
+        'x-github-event': 'dependabot_alert',
+        'x-github-delivery': 'delivery_alerta_falsa',
+      },
+      payload: corpoCru,
+    })
+    expect(res.statusCode).toBe(401)
+  })
 })
 
 // Isolado num describe próprio (achados I1/M2): request.ip via app.inject()
@@ -319,7 +371,29 @@ describe('estadoDoAlertaAPartirDoPayload — Fase 1.2', () => {
       { dependabot_alert: { state: 'open', security_advisory: { severity: 'high' } } },
       'dependabot_alert'
     )
-    expect(estado).toEqual({ status: 'open', verificacao: 'high' })
+    expect(estado).toMatchObject({ status: 'open', verificacao: 'high' })
+  })
+
+  it('dependabot_alert: grava na ficha pacote, escopo e correção (Fase 5.2)', () => {
+    const estado = estadoDoAlertaAPartirDoPayload(
+      {
+        dependabot_alert: {
+          number: 3,
+          state: 'open',
+          dependency: { package: { name: 'vite', ecosystem: 'npm' }, scope: 'development' },
+          security_advisory: { severity: 'medium', ghsa_id: 'GHSA-xxxx-yyyy-zzzz' },
+          security_vulnerability: { first_patched_version: null },
+        },
+      },
+      'dependabot_alert'
+    )
+    expect(estado.alerta).toMatchObject({
+      pacote: 'vite',
+      escopo: 'development',
+      ghsa: 'GHSA-xxxx-yyyy-zzzz',
+      temCorrecao: false,
+      destino: 'sem-tarefa',
+    })
   })
 
   it('code_scanning_alert: lê state e severidade da rule', () => {
