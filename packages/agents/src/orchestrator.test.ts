@@ -6,6 +6,7 @@ import {
   createCliRuntimeAdapter,
   type RuntimeCommandRunner,
 } from './runtime-adapter'
+import * as agentMissionModule from './agent-mission'
 
 const { mockAllocateWorkspace, mockHibernateWorkspace } = vi.hoisted(() => {
   return {
@@ -118,6 +119,58 @@ test('records Synapse execution as blocked when the mission fails (exitCode != 0
   const completedEvent = synapse.events().find((event) => event.type === 'execution.completed')
   expect(completedEvent).toBeDefined()
   expect(completedEvent?.payload.status).toBe('blocked')
+})
+
+test('fetches attachments during initialization when wishId is provided', async () => {
+  const mockFetchMissionAttachments = vi
+    .spyOn(agentMissionModule, 'fetchMissionAttachments')
+    .mockResolvedValue([{ name: 'test.txt', content: 'mock content' }])
+
+  const allocate = vi.fn().mockResolvedValue({ path: '/tmp/ws' })
+  const hibernate = vi.fn().mockResolvedValue(undefined)
+  const runner: RuntimeCommandRunner = async () => ({
+    exitCode: 0,
+    stdout: 'mission complete',
+    stderr: '',
+    durationMs: 10,
+  })
+
+  const registry = new RuntimeRegistry()
+  registry.register(
+    createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: [], runner })
+  )
+  const synapse = new SynapseClient()
+  const orchestrator = new AgentOrchestrator({
+    registry,
+    synapse,
+    workspace: { allocateWorkspace: allocate, hibernateWorkspace: hibernate },
+  })
+
+  await orchestrator.runMission({
+    id: 'mission-with-attachments',
+    projectId: 'project-attachments',
+    repository: 'owner/repo',
+    role: 'po',
+    goal: 'Test attachments fetching',
+    context: [],
+    wishId: 'wish-123',
+    runtime: { runtime: 'codex' },
+    credentialRef: {
+      connectionId: 'conn-1',
+      ownerScope: 'organization',
+      runtime: 'codex',
+      providedSecrets: [],
+    },
+  })
+
+  expect(mockFetchMissionAttachments).toHaveBeenCalledWith('wish-123')
+  const completedEvent = synapse.events().find((event) => event.type === 'execution.completed')
+  expect(completedEvent).toBeDefined()
+  expect(completedEvent?.payload.summary).toContain(
+    '[GitOrch] Arquivos consumidos na inicialização da missão: test.txt'
+  )
+
+  mockFetchMissionAttachments.mockRestore()
 })
 
 test('bubbles up step-level failure and recovery status to the workspace provider when the runtime adapter fails', async () => {
