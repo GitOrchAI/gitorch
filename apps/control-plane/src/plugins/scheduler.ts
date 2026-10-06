@@ -337,6 +337,7 @@ import { estadoDaFichaDoAlertaDoDependabot } from '../services/ficha-do-alerta.j
 import {
   gerarTarefasDeVulnerabilidade,
   ETIQUETA_DE_SEGURANCA,
+  JANELA_DE_ISSUE_FECHADA_MS,
 } from '../services/tarefa-de-vulnerabilidade.js'
 import { atualizarGrafoDeVinculos } from '../services/grafo-de-vinculos.js'
 import { origemPrecisaDeReclassificacao } from '../services/origem-do-item.js'
@@ -7686,30 +7687,47 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
-  /** Issues abertas marcadas como tarefa de segurança (para não duplicar). */
-  const listarTarefasDeSegurancaAbertas = async (
+  /**
+   * Issues marcadas como tarefa de segurança, para não duplicar: todas as
+   * abertas e as fechadas dentro da janela (issue recusada pelo dono ou
+   * fechada pelo PR antes de o alerta sumir não pode virar tarefa nova).
+   */
+  const listarTarefasDeSegurancaExistentes = async (
     repo: string,
     token: string
-  ): Promise<Array<{ numero: number; corpo: string | null }>> => {
-    const saida: Array<{ numero: number; corpo: string | null }> = []
-    for (let pagina = 1; pagina <= 5; pagina += 1) {
-      const lote = await ghGet(
-        `/repos/${repo}/issues?state=open&labels=${encodeURIComponent(ETIQUETA_DE_SEGURANCA)}&per_page=100&page=${pagina}`,
-        token
-      )
-      if (!Array.isArray(lote)) throw new Error('resposta inesperada ao listar issues')
-      for (const item of lote as Array<{
-        number?: unknown
-        body?: unknown
-        pull_request?: unknown
-      }>) {
-        if (item.pull_request || typeof item.number !== 'number') continue
-        saida.push({ numero: item.number, corpo: typeof item.body === 'string' ? item.body : null })
+  ): Promise<Array<{ numero: number; corpo: string | null; fechadaEm: string | null }>> => {
+    const etiqueta = encodeURIComponent(ETIQUETA_DE_SEGURANCA)
+    const desde = new Date(Date.now() - JANELA_DE_ISSUE_FECHADA_MS).toISOString()
+    const consultas = [
+      `/repos/${repo}/issues?state=open&labels=${etiqueta}&per_page=100`,
+      // `since` filtra por última atualização; fechar uma issue a atualiza.
+      `/repos/${repo}/issues?state=closed&labels=${etiqueta}&since=${encodeURIComponent(desde)}&per_page=100`,
+    ]
+    const saida: Array<{ numero: number; corpo: string | null; fechadaEm: string | null }> = []
+    for (const consulta of consultas) {
+      let completa = false
+      for (let pagina = 1; pagina <= 5 && !completa; pagina += 1) {
+        const lote = await ghGet(`${consulta}&page=${pagina}`, token)
+        if (!Array.isArray(lote)) throw new Error('resposta inesperada ao listar issues')
+        for (const item of lote as Array<{
+          number?: unknown
+          body?: unknown
+          pull_request?: unknown
+          closed_at?: unknown
+        }>) {
+          if (item.pull_request || typeof item.number !== 'number') continue
+          saida.push({
+            numero: item.number,
+            corpo: typeof item.body === 'string' ? item.body : null,
+            fechadaEm: typeof item.closed_at === 'string' ? item.closed_at : null,
+          })
+        }
+        completa = lote.length < 100
       }
-      if (lote.length < 100) return saida
+      // Mais de 500: sem a lista inteira não dá para garantir que não duplica.
+      if (!completa) throw new Error('tarefas de segurança demais para conferir')
     }
-    // Mais de 500 abertas: sem a lista inteira não dá para garantir que não duplica.
-    throw new Error('tarefas de segurança abertas demais para conferir')
+    return saida
   }
 
   const varrerRetratos = async (): Promise<void> => {
@@ -7770,7 +7788,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               gerarTarefasDeVulnerabilidade({
                 alertas,
                 autonomiaDeSeguranca: projeto.autonomiaDeSeguranca,
-                listarTarefasAbertas: () => listarTarefasDeSegurancaAbertas(projeto.wingId, token),
+                listarTarefasExistentes: () =>
+                  listarTarefasDeSegurancaExistentes(projeto.wingId, token),
                 // Mesmo caminho único de criação de issue (quadro + guarda
                 // de autonomia do repositório) das tarefas de conserto.
                 criarIssue: (tarefa) =>
