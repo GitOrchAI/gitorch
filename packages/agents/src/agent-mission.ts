@@ -45,7 +45,10 @@ export async function fetchMissionAttachments(
   if (!wishId) return []
 
   const baseUrl =
-    apiBaseUrl || process.env['GITORCH_API_URL'] || process.env['CONTROL_PLANE_URL'] || 'http://127.0.0.1:4000'
+    apiBaseUrl ||
+    process.env['GITORCH_API_URL'] ||
+    process.env['CONTROL_PLANE_URL'] ||
+    'http://127.0.0.1:4000'
   try {
     const response = await fetch(`${baseUrl}/api/v1/pedidos/${wishId}/anexos`)
     if (!response.ok) {
