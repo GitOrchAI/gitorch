@@ -31,10 +31,44 @@ export interface BuildAgentMissionInput {
   runtime?: AgentRuntimeSelection
   evidenceRefs?: string[]
   userId?: string
+  wishId?: string
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
   executionLimits?: ExecutionLimits
   attachments?: Array<{ name: string; content: string }>
+}
+
+export async function fetchMissionAttachments(
+  wishId?: string,
+  apiBaseUrl?: string
+): Promise<Array<{ name: string; content: string }>> {
+  if (!wishId) return []
+
+  const baseUrl =
+    apiBaseUrl || process.env['GITORCH_API_URL'] || process.env['CONTROL_PLANE_URL'] || 'http://127.0.0.1:4000'
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/pedidos/${wishId}/anexos`)
+    if (!response.ok) {
+      console.warn(
+        `Failed to fetch attachments for wish ${wishId}: ${response.status} ${response.statusText}`
+      )
+      return []
+    }
+
+    const data = (await response.json()) as {
+      anexos: Array<{ fileName: string; textContent: string | null }>
+    }
+    if (!data.anexos || !Array.isArray(data.anexos)) {
+      return []
+    }
+
+    return data.anexos
+      .filter((a) => a.textContent !== null)
+      .map((a) => ({ name: a.fileName, content: a.textContent! }))
+  } catch (error) {
+    console.error(`Error fetching attachments for wish ${wishId}:`, error)
+    return []
+  }
 }
 
 export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {

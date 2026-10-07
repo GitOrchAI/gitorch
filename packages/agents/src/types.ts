@@ -57,6 +57,7 @@ export interface AgentMission {
   credentialRef: RuntimeCredentialRef
   evidenceRefs: string[]
   userId?: string
+  wishId?: string
   executionLimits?: GuestExecutionLimits & ExecutionLimits
   attachments?: Array<{ name: string; content: string }>
 }

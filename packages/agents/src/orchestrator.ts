@@ -5,6 +5,7 @@ import {
   missionStateReducer,
   type BuildAgentMissionInput,
   workspaceManager,
+  fetchMissionAttachments,
 } from './agent-mission'
 import {
   type RuntimeExecutionResult,
@@ -246,6 +247,16 @@ export class AgentOrchestrator {
   }
 
   async runMission(input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
+    let fetchedAttachments: Array<{ name: string; content: string }> = []
+    if (input.wishId) {
+      try {
+        fetchedAttachments = await fetchMissionAttachments(input.wishId)
+        input.attachments = [...(input.attachments || []), ...fetchedAttachments]
+      } catch {
+        // Ignore fetch errors
+      }
+    }
+
     let mission = buildAgentMission(input)
     const actor: SynapseActor = { id: `agent-${mission.role}`, role: mission.role }
     const scope: SynapseScope = {
@@ -376,9 +387,15 @@ export class AgentOrchestrator {
       }
     }
 
+    let finalSummary = result.output
+    if (fetchedAttachments.length > 0) {
+      const fileNames = fetchedAttachments.map((a) => a.name).join(', ')
+      finalSummary += `\n[GitOrch] Arquivos consumidos na inicialização da missão: ${fileNames}`
+    }
+
     this.synapse.completeExecution(record.id, {
       completedAt: new Date().toISOString(),
-      summary: result.output,
+      summary: finalSummary,
       evidenceRefs: mission.evidenceRefs,
       nextCandidateActions: [],
       status: result.exitCode === 0 ? 'completed' : 'blocked',
