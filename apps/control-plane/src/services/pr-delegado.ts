@@ -12,6 +12,7 @@
 
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { associacaoDeParticipante, type AssociacaoDeParticipante } from './participante-do-repo.js'
+import { ehPrDeSeguranca } from './pr-de-seguranca.js'
 
 /** O que a decisão lê de uma sessão: quem chama pode entregar a linha inteira ou só estes campos. */
 export type SessaoParaDelegacao = Pick<LinhaDeSessao, 'issueNumber' | 'pullRequestNumber'>
@@ -42,7 +43,16 @@ export function ehPrDelegado(args: {
   authorAssociation?: string | null | undefined
   /** `user.type` do autor segundo o GitHub ('Bot' fica fora). */
   tipoDoAutor?: string | null | undefined
+  /** `head.ref` do PR, quando quem chama o tem. */
+  ramoDoPr?: string | null | undefined
 }): ResultadoPrDelegado {
+  // 0) O pull request do aplicador de segurança nunca é entrega encomendada,
+  // nem de participante: é o dono que o revisa e mescla. Vem antes de tudo,
+  // inclusive da linha de sessão.
+  if (ehPrDeSeguranca({ ramo: args.ramoDoPr, corpo: args.corpo })) {
+    return { delegado: false, issueNumber: null }
+  }
+
   // 1) A linha guardada — autoritativa.
   const porLinha = args.sessoes.find((s) => s.pullRequestNumber === args.numeroDoPr)
   if (porLinha) return { delegado: true, issueNumber: porLinha.issueNumber }

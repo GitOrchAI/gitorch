@@ -12,6 +12,8 @@ const base = {
   entendimentoPresente: true,
   baseDoPr: 'main',
   branchPadrao: 'main',
+  ramoDoPr: 'feat/entrega-do-dev',
+  corpoDoPr: 'Closes #12',
   lerCiAgora: async (_sha: string) => 'green',
 }
 
@@ -242,5 +244,56 @@ describe('mesclarPr — só mescla PR que MIRA a branch padrão do projeto', () 
       merge: async () => true,
     })
     expect(naMain.mesclado).toBe(false)
+  })
+
+  // O pull request do aplicador de segurança só é mesclado pelo dono, depois de
+  // revisar. A porta do merge o recusa mesmo que todas as outras camadas falhem
+  // e o QA, o CI e a "entrega encomendada" digam que pode.
+  describe('pull request do aplicador de segurança', () => {
+    it('NÃO mescla um PR com ramo gitorch/seguranca/, com tudo verde e "delegado"', async () => {
+      let chamado = false
+      const r = await mesclarPr({
+        ...base,
+        ramoDoPr: 'gitorch/seguranca/permissoes-ci-yml',
+        merge: async () => {
+          chamado = true
+          return true
+        },
+      })
+      expect(chamado).toBe(false)
+      expect(r.mesclado).toBe(false)
+      expect(r.motivo).toContain('segurança')
+      expect(r.motivo).toContain('dono')
+    })
+
+    it('NÃO mescla um PR com a marca de segurança no corpo, mesmo com outro nome de ramo', async () => {
+      let chamado = false
+      const r = await mesclarPr({
+        ...base,
+        ramoDoPr: 'qualquer-outro',
+        corpoDoPr: '<!-- gitorch:seguranca -->\n\n## O que muda',
+        merge: async () => {
+          chamado = true
+          return true
+        },
+      })
+      expect(chamado).toBe(false)
+      expect(r.mesclado).toBe(false)
+    })
+
+    it('NÃO mescla quando não deu para ler o ramo do PR (não dá para provar que não é de segurança)', async () => {
+      let chamado = false
+      const r = await mesclarPr({
+        ...base,
+        ramoDoPr: null,
+        merge: async () => {
+          chamado = true
+          return true
+        },
+      })
+      expect(chamado).toBe(false)
+      expect(r.mesclado).toBe(false)
+      expect(r.motivo).toContain('ramo')
+    })
   })
 })

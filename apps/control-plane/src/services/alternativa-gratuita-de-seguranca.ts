@@ -1,27 +1,42 @@
-// Fase 5.5: quando o plano do GitHub não permite a melhoria paga (Fase 5.4),
-// a alternativa gratuita é o MESMO gitleaks já rodando em
-// .github/workflows/ci.yml deste repositório (linha 97-114) — nunca uma
-// ferramenta nova. E, sem a proteção paga, o GUARDA do próprio GitOrch passa
-// a exigir revisão antes de mesclar (nunca confia cegamente no repositório
-// do cliente estar limpo).
+// Quando o recurso pago de varredura de senhas não existe no repositório
+// (privado, sem Advanced Security), a alternativa gratuita é o MESMO gitleaks já
+// rodando em .github/workflows/ci.yml deste repositório — nunca uma ferramenta
+// nova. E, sem a proteção paga, o GUARDA do próprio GitOrch passa a exigir
+// revisão antes de mesclar (nunca confia cegamente no repositório do cliente
+// estar limpo).
 
-/** Cópia adaptada do bloco real de .github/workflows/ci.yml deste
- *  repositório — versão do gitleaks pinada, mesmo motivo (build
- *  reprodutível, sem depender de Action de terceiro que exige cadastro de
- *  organização). Ao propor, sempre conferir se a versão ainda é a mais
- *  recente que o próprio ci.yml usa — copiar sem atualizar duplicaria a
- *  manutenção. */
+/** Onde o workflow é gravado no repositório do cliente (sempre por pull request). */
+export const CAMINHO_DO_WORKFLOW_DE_SENHAS = '.github/workflows/gitorch-varredura-de-senhas.yml'
+
+/**
+ * A versão do gitleaks é a MESMA de `GITLEAKS_VERSION` em
+ * .github/workflows/ci.yml deste repositório: um teste compara os dois. Versão
+ * pinada: build reproduzível, sem depender de Action de terceiro que exige
+ * cadastro de organização.
+ */
+export const GITLEAKS_VERSION = '8.30.1'
+
+/**
+ * O commit de `actions/checkout` que o ci.yml deste repositório já usa. Toda
+ * Action do arquivo gerado fica fixada por SHA completo: uma tag no arquivo
+ * piora o próprio check "Actions fixadas por SHA" da nota de segurança.
+ */
+export const ACTION_CHECKOUT_SHA = '3d3c42e5aac5ba805825da76410c181273ba90b1'
+
+/** Cópia adaptada do bloco real de ci.yml, com permissão mínima e Actions por SHA. */
 export function workflowDeAlternativaGratuita(): string {
   return `name: Secret scan (GitOrch)
 on: [pull_request, push]
+permissions:
+  contents: read
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@${ACTION_CHECKOUT_SHA}
       - name: Secret scan
         env:
-          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_VERSION: ${GITLEAKS_VERSION}
         run: |
           set -euo pipefail
           curl --retry 3 --retry-delay 5 -fsSL -o /tmp/gitleaks.tar.gz \\

@@ -88,9 +88,10 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     } as unknown as import('@prisma/client').PrismaClient
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: {},
       agora: new Date(),
-      projeto: { id: 'p1', wingId: 'repo', devPlan: 'free' },
+      projeto: { id: 'p1', wingId: 'repo' },
       token: 'tok',
       depsVigia,
       prisma: prismaMock,
@@ -108,7 +109,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
   })
 
   const agora = new Date('2026-09-15T12:00:00.000Z')
-  const projeto = { id: 'proj-1', wingId: 'org/repo', devPlan: 'free' }
+  const projeto = { id: 'proj-1', wingId: 'org/repo' }
   const token = 'gh-token'
 
   function config(policy: string) {
@@ -154,7 +155,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
         return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
       }
       if (url === '/repos/org/repo/pulls/42')
-        return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+        return { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'main' } }
       if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
       if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
       if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return SEM_WORKFLOW_RODANDO
@@ -163,6 +164,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     const ghSend = vi.fn(async () => ({}))
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -190,7 +192,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
         return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
       }
       if (url === '/repos/org/repo/pulls/42')
-        return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+        return { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'main' } }
       if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
       if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) {
         return { check_runs: [{ status: 'completed', conclusion: 'skipped' }] }
@@ -201,6 +203,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     const ghSend = vi.fn(async () => ({}))
 
     await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -227,7 +230,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
         return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
       }
       if (url === '/repos/org/repo/pulls/42') {
-        return { head: { sha: 'sha1' }, base: { ref: 'jules-1084-abc' } }
+        return { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'jules-1084-abc' } }
       }
       if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
       return null
@@ -235,6 +238,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     const ghSend = vi.fn(async () => ({}))
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -261,10 +265,14 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
   describe('Dependabot expresso só mescla o que mira a branch padrão', () => {
     const configDependabot = { cuidaPorOrigem: { dependabot: 'sim' } }
 
-    function ghDoDependabot(baseRef: string, workflowsAgora: unknown = SEM_WORKFLOW_RODANDO) {
+    function ghDoDependabot(
+      baseRef: string,
+      workflowsAgora: unknown = SEM_WORKFLOW_RODANDO,
+      ramo = 'dependabot/npm_and_yarn/x'
+    ) {
       return vi.fn(async (url: string) => {
         if (url === '/repos/org/repo/pulls/42')
-          return { head: { sha: 'sha1' }, base: { ref: baseRef } }
+          return { head: { sha: 'sha1', ref: ramo }, base: { ref: baseRef } }
         if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
         if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
         if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return workflowsAgora
@@ -277,6 +285,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     it('verde na varredura, mas workflow rodando no instante do merge → NÃO mescla', async () => {
       const ghSend = vi.fn(async () => ({}))
       const result = await decidirAcaoNoPrOrfaoIntegrado({
+        guardaDeSeguranca: async () => false,
         runtimeConfig: configDependabot,
         agora,
         projeto,
@@ -297,6 +306,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       const ghSend = vi.fn(async () => ({}))
       const registrarNoPainel = vi.fn()
       const result = await decidirAcaoNoPrOrfaoIntegrado({
+        guardaDeSeguranca: async () => false,
         runtimeConfig: configDependabot,
         agora,
         projeto,
@@ -317,10 +327,31 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       )
     })
 
+    it('ramo do aplicador de segurança no caminho expresso → NÃO mescla', async () => {
+      const ghSend = vi.fn(async () => ({}))
+      const result = await decidirAcaoNoPrOrfaoIntegrado({
+        guardaDeSeguranca: async () => false,
+        runtimeConfig: configDependabot,
+        agora,
+        projeto,
+        token,
+        depsVigia: buildDepsVigia(),
+        prisma: getPrismaMock(true, {}, 'dependabot'),
+        ghGet: ghDoDependabot('main', SEM_WORKFLOW_RODANDO, 'gitorch/seguranca/permissoes-ci-yml'),
+        ghSend,
+        registrarNoPainel: vi.fn(),
+        onWarn: vi.fn(),
+      })
+      expect(ghSend).not.toHaveBeenCalled()
+      expect(result.acao).toBe('ignorar')
+      expect(result.motivo).toContain('melhoria de segurança')
+    })
+
     it('base = outro ramo → NÃO mescla e NÃO registra "merge feito" no painel', async () => {
       const ghSend = vi.fn(async () => ({}))
       const registrarNoPainel = vi.fn()
       const result = await decidirAcaoNoPrOrfaoIntegrado({
+        guardaDeSeguranca: async () => false,
         runtimeConfig: configDependabot,
         agora,
         projeto,
@@ -355,11 +386,12 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
           },
         ]
       }
-      if (url === '/repos/org/repo/pulls/42') return { head: { sha: 'sha1' } }
+      if (url === '/repos/org/repo/pulls/42') return { head: { sha: 'sha1', ref: 'feat/entrega' } }
       return null
     })
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -385,6 +417,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -405,6 +438,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
 
   it('CI vermelho nao mescla', async () => {
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -429,6 +463,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -450,6 +485,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
 
   it('rascunho nao mescla', async () => {
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -467,6 +503,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
 
   it('politica nao nao mescla (kill switch)', async () => {
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('nao'),
       agora,
       projeto,
@@ -488,10 +525,11 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
         return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
       }
       if (url === '/repos/org/repo/pulls/42')
-        return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+        return { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'main' } }
       return null
     })
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -519,6 +557,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -548,6 +587,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     })
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -571,6 +611,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     const depsVigia = buildDepsVigia({ mergeable: false }) // causa conflito, e origem='jules'
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: config('sim'),
       agora,
       projeto,
@@ -580,7 +621,11 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
       ghGet: vi.fn().mockImplementation(async (path: string) => {
         if (path.includes('/pulls/42/files')) return [{ filename: 'src/index.ts' }]
         if (path.includes('/commits?')) return [{ sha: 'abc', commit: { message: 'Fix' } }]
-        return { base: { ref: 'main' }, head: { sha: 'xyz' }, title: 'Test PR' }
+        return {
+          base: { ref: 'main' },
+          head: { sha: 'xyz', ref: 'feat/entrega' },
+          title: 'Test PR',
+        }
       }),
       ghSend: vi.fn(),
       registrarNoPainel: vi.fn(),
@@ -604,6 +649,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
   it('(5) perguntar-se-cuida e mesclar nunca resultam em escalar (mapiam para ignorar por enquanto)', async () => {
     // Para perguntar-se-cuida: configuracao 'perguntar' e issue null pra disparar rápido
     let result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: { cuidaPorOrigem: { jules: 'perguntar' } },
       agora,
       projeto,
@@ -662,6 +708,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     } as unknown as PrismaClient
 
     const result = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: { cuidaPorOrigem: { jules: 'perguntar' } },
       agora,
       projeto,
@@ -693,7 +740,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
 
 describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha do PR', () => {
   const agora = new Date('2026-09-15T12:00:00.000Z')
-  const projeto = { id: 'proj-1', wingId: 'org/repo', devPlan: 'free' }
+  const projeto = { id: 'proj-1', wingId: 'org/repo' }
   const token = 'gh-token'
 
   type Args = { where: { projectId_tipo_numero: { tipo: string; numero: number } } }
@@ -725,7 +772,8 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
     if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
       return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
     }
-    if (url === '/repos/org/repo/pulls/42') return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+    if (url === '/repos/org/repo/pulls/42')
+      return { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'main' } }
     if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
     if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
     if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return SEM_WORKFLOW_RODANDO
@@ -740,6 +788,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
     const ghSend = vi.fn(async () => ({}))
     const registrarNoPainel = vi.fn(async () => undefined)
     const resultado = await decidirAcaoNoPrOrfaoIntegrado({
+      guardaDeSeguranca: async () => false,
       runtimeConfig: { cuidaPorOrigem: typeof cuida === 'string' ? { jules: cuida } : cuida },
       agora,
       projeto,
@@ -871,6 +920,54 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
     expect(textos.some((t) => t.includes('foi mesclado com sucesso'))).toBe(true)
   })
 
+  describe('guarda de segurança (a sondagem do dia, nunca o plano do dev)', () => {
+    async function decidirComGuarda(guardaDeSeguranca: () => Promise<boolean>) {
+      const { prisma } = prismaComFichas({
+        pr: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento },
+      })
+      const ghSend = vi.fn(async () => ({}))
+      const ghGet = vi.fn(async (url: string) => ghGetDeAprovado(url))
+      const resultado = await decidirAcaoNoPrOrfaoIntegrado({
+        guardaDeSeguranca,
+        runtimeConfig: { cuidaPorOrigem: { jules: 'sim' } },
+        agora,
+        projeto,
+        token,
+        depsVigia: buildDepsVigia({}),
+        prisma,
+        ghGet,
+        ghSend,
+        registrarNoPainel: vi.fn(async () => undefined),
+        onWarn: vi.fn(),
+      })
+      return { resultado, ghSend, ghGet }
+    }
+
+    it('guarda que exige revisão: o PR aprovado e verde NÃO é mesclado', async () => {
+      const guarda = vi.fn(async () => true)
+      const { resultado, ghSend } = await decidirComGuarda(guarda)
+      expect(guarda).toHaveBeenCalledTimes(1)
+      expect(ghSend).not.toHaveBeenCalled()
+      expect(resultado.motivo).not.toBe('Mesclado com sucesso')
+    })
+
+    it('guarda que não exige: o mesmo PR é mesclado', async () => {
+      const guarda = vi.fn(async () => false)
+      const { resultado, ghSend } = await decidirComGuarda(guarda)
+      expect(guarda).toHaveBeenCalledTimes(1)
+      expect(resultado).toEqual({ acao: 'ignorar', motivo: 'Mesclado com sucesso' })
+      expect(ghSend).toHaveBeenCalled()
+    })
+
+    it('o vigia não lê mais a visibilidade nem a pasta de workflows por PR (a guarda resolve isso uma vez por dia)', async () => {
+      const { ghGet } = await decidirComGuarda(async () => false)
+      const lidos = ghGet.mock.calls.map((c) => String(c[0]))
+      expect(lidos.some((u) => u.includes('/contents/'))).toBe(false)
+      // a única leitura do repositório que sobra é a da branch padrão, para o porteiro do merge
+      expect(lidos.filter((u) => u === '/repos/org/repo')).toHaveLength(1)
+    })
+  })
+
   it('o instante do último commit gravado no PR entra na janela de construção', async () => {
     const haUmaHora = new Date(agora.getTime() - 60 * 60_000).toISOString()
     const { prisma } = prismaComFichas({
@@ -936,6 +1033,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
       const registrarNoPainel = vi.fn(async () => undefined)
       const onWarn = vi.fn()
       const resultado = await decidirAcaoNoPrOrfaoIntegrado({
+        guardaDeSeguranca: async () => false,
         runtimeConfig: { cuidaPorOrigem: { jules: 'sim' } },
         agora,
         projeto,
@@ -955,7 +1053,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
 
     it('cabeça viva igual à aprovada: mescla, e o sha do PUT é o da cabeça viva', async () => {
       const { resultado, ghSend } = await decidirComLeituras(() => ({
-        head: { sha: 'sha1' },
+        head: { sha: 'sha1', ref: 'feat/entrega' },
         base: { ref: 'main' },
       }))
       expect(resultado).toEqual({ acao: 'ignorar', motivo: 'Mesclado com sucesso' })
@@ -969,7 +1067,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
 
     it('cabeça viva DIFERENTE da que o QA aprovou: não chama o merge e o painel traz a recusa com motivo', async () => {
       const { resultado, ghSend, registrarNoPainel } = await decidirComLeituras(() => ({
-        head: { sha: 'sha2' },
+        head: { sha: 'sha2', ref: 'feat/entrega' },
         base: { ref: 'main' },
       }))
       expect(mesclou(ghSend)).toBe(false)
@@ -985,7 +1083,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
     it('a cabeça muda entre a leitura da base e a porta do merge: não mescla', async () => {
       // A cabeça muda DEPOIS da leitura da base e antes da porta do merge.
       const { ghSend } = await decidirComLeituras((chamada) => ({
-        head: { sha: chamada === 1 ? 'sha1' : 'sha2' },
+        head: { sha: chamada === 1 ? 'sha1' : 'sha2', ref: 'feat/entrega' },
         base: { ref: 'main' },
       }))
       expect(mesclou(ghSend)).toBe(false)
@@ -995,7 +1093,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
       const { resultado, ghSend, registrarNoPainel, onWarn } = await decidirComLeituras(
         (chamada) => {
           if (chamada >= 2) throw new Error('github fora do ar')
-          return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+          return { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'main' } }
         }
       )
       expect(mesclou(ghSend)).toBe(false)
@@ -1007,9 +1105,43 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
       expect(textos.some((t) => t.includes('commit atual'))).toBe(true)
     })
 
+    // O pull request do aplicador de segurança é do dono: o motor do vigia
+    // nunca o mescla, mesmo com QA aprovado, verificação verde e origem "jules".
+    it('pull request de segurança (ramo gitorch/seguranca/): não mescla e o painel traz o motivo', async () => {
+      const { resultado, ghSend, registrarNoPainel } = await decidirComLeituras(() => ({
+        head: { sha: 'sha1', ref: 'gitorch/seguranca/permissoes-ci-yml' },
+        base: { ref: 'main' },
+      }))
+      expect(mesclou(ghSend)).toBe(false)
+      expect(resultado.acao).toBe('ignorar')
+      expect(resultado.motivo).toContain('melhoria de segurança')
+      const textos = textosDoPainel(registrarNoPainel)
+      expect(textos.some((t) => t.includes('mesclando'))).toBe(false)
+    })
+
+    it('a marca de segurança no corpo do PR basta para não mesclar', async () => {
+      const { ghSend } = await decidirComLeituras(() => ({
+        head: { sha: 'sha1', ref: 'feat/entrega' },
+        base: { ref: 'main' },
+        body: '<!-- gitorch:seguranca -->\n\n## O que muda',
+      }))
+      expect(mesclou(ghSend)).toBe(false)
+    })
+
+    it('leitura do PR sem o ramo: não mescla', async () => {
+      const { resultado, ghSend } = await decidirComLeituras(() => ({
+        head: { sha: 'sha1' },
+        base: { ref: 'main' },
+      }))
+      expect(mesclou(ghSend)).toBe(false)
+      expect(resultado.motivo).toContain('ramo')
+    })
+
     it('leitura viva sem sha: não mescla', async () => {
       const { resultado, ghSend } = await decidirComLeituras((chamada) =>
-        chamada >= 2 ? { base: { ref: 'main' } } : { head: { sha: 'sha1' }, base: { ref: 'main' } }
+        chamada >= 2
+          ? { base: { ref: 'main' } }
+          : { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'main' } }
       )
       expect(mesclou(ghSend)).toBe(false)
       expect(resultado.motivo).toContain('commit atual')

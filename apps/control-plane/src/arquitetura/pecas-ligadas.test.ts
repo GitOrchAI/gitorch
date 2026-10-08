@@ -35,10 +35,7 @@ const AS_PECAS = [
 ] as const
 
 /** As ainda não ligadas. Cada fase seguinte remove as suas. */
-const PENDENTES: ReadonlySet<string> = new Set<string>([
-  'aplicarMelhoriaDeSeguranca',
-  'workflowDeAlternativaGratuita',
-])
+const PENDENTES: ReadonlySet<string> = new Set<string>([])
 
 const raizDoSrc = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -129,7 +126,7 @@ describe('as peças da ligação têm quem as chame', () => {
   })
 
   it('o detector enxerga um chamador real (controle: peça já ligada)', () => {
-    expect(chamadoresDe('planoPermiteMelhoria')).toContain(join('services', 'decisao-do-vigia.ts'))
+    expect(chamadoresDe('criarGuardaDeSegurancaDoVigia')).toContain(join('plugins', 'scheduler.ts'))
   })
 
   it('o detector não confunde comentário com chamada', () => {

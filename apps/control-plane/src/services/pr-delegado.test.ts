@@ -213,3 +213,51 @@ describe('ehPrDelegado — participante do repositório', () => {
     ).toEqual({ delegado: false, issueNumber: null })
   })
 })
+
+// O pull request do aplicador de segurança nunca é entrega encomendada, seja
+// qual for a conta que o abriu (a do dono inclusive): é o dono que revisa e
+// mescla. Sem isto, a associação OWNER faria dele um "participante" julgável e,
+// com QA aprovado e CI verde, mesclável pelo produto.
+describe('ehPrDelegado — pull request do aplicador de segurança', () => {
+  const base = {
+    numeroDoPr: 77,
+    autor: 'dono-do-repo',
+    corpo: '## O que muda',
+    sessoes: [] as LinhaDeSessao[],
+    issueComEtiquetaDeDelegacao: () => false,
+    authorAssociation: 'OWNER',
+    tipoDoAutor: 'User',
+  }
+
+  it('autor OWNER com ramo gitorch/seguranca/: NÃO é delegado nem participante', () => {
+    expect(ehPrDelegado({ ...base, ramoDoPr: 'gitorch/seguranca/permissoes-ci-yml' })).toEqual({
+      delegado: false,
+      issueNumber: null,
+    })
+  })
+
+  it('a marca no corpo basta, mesmo sem o ramo', () => {
+    expect(ehPrDelegado({ ...base, corpo: '<!-- gitorch:seguranca -->\n\n## O que muda' })).toEqual(
+      { delegado: false, issueNumber: null }
+    )
+  })
+
+  it('nem uma linha de sessão apontando para ele o faz delegado', () => {
+    expect(
+      ehPrDelegado({
+        ...base,
+        ramoDoPr: 'gitorch/seguranca/alternativa-de-varredura-de-senhas',
+        sessoes: [linha({ issueNumber: 9, pullRequestNumber: 77 })],
+      })
+    ).toEqual({ delegado: false, issueNumber: null })
+  })
+
+  it('o mesmo autor com um ramo comum segue participante, como antes', () => {
+    expect(ehPrDelegado({ ...base, ramoDoPr: 'feature/x' })).toEqual({
+      delegado: true,
+      issueNumber: null,
+      origem: 'participante',
+      associacao: 'OWNER',
+    })
+  })
+})

@@ -6,12 +6,14 @@
 import type { Prisma, PrismaClient } from '@prisma/client'
 import { limparSurrogatesEmJson } from './texto-seguro.js'
 
-export type TipoDoItem = 'pr' | 'issue' | 'alerta' | 'seguranca' | 'conformidade'
+export type TipoDoItem =
+  'pr' | 'issue' | 'alerta' | 'seguranca' | 'conformidade' | 'sondagem' | 'melhorias'
 
-/** Fichas que guardam uma MEDIDA do repositório (nota de segurança, conformidade),
- *  não um pedido, uma tarefa ou um alerta: uma por repositório, com `numero = 0`,
- *  escritas só pela varredura de segurança e fora da lista de itens do painel. */
-export const TIPOS_DE_FICHA_MEDIDA = ['seguranca', 'conformidade'] as const
+/** Fichas que guardam uma MEDIDA ou um registro do repositório (nota de segurança,
+ *  conformidade, a sondagem do que o GitHub oferece e as melhorias aplicadas), não
+ *  um pedido, uma tarefa ou um alerta: uma por repositório, com `numero = 0`,
+ *  escritas só pela etapa de segurança e fora da lista de itens do painel. */
+export const TIPOS_DE_FICHA_MEDIDA = ['seguranca', 'conformidade', 'sondagem', 'melhorias'] as const
 
 export interface EstadoDoItem {
   status: string

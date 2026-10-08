@@ -1,57 +1,70 @@
+// A guarda extra do vigia: sem a proteção de senhas do GitHub e sem a
+// alternativa gratuita (gitleaks) rodando no repositório, o GitOrch passa a
+// exigir revisão humana antes de mesclar.
+//
+// A resposta sai da SONDAGEM do repositório (ver `sondagem-de-seguranca.ts`),
+// lida do próprio GitHub e guardada por projeto por dia; antes, cada PR de cada
+// passada relia a pasta de workflows e cada arquivo dela.
+
 import { exigeRevisaoSemAlternativa } from './alternativa-gratuita-de-seguranca.js'
+import {
+  obterSondagem,
+  recursoDeSegredosDisponivel,
+  type CredencialDaSondagem,
+  type PrismaDaSondagem,
+  type SondagemDoRepositorio,
+} from './sondagem-de-seguranca.js'
+import { erroDeRedeSeguro } from './leitor-de-seguranca.js'
 
-export async function calcularExigeRevisaoDeSeguranca(deps: {
-  planoPermite: boolean
-  wingId: string
-  ghGet: (path: string) => Promise<unknown>
-  onWarn: (message: string) => void
-}): Promise<boolean> {
-  if (deps.planoPermite) {
-    return false
-  }
+/**
+ * `false` quando não há o que bloquear ou quando não deu para saber: uma
+ * leitura que falha nunca trava o merge de ninguém.
+ */
+export function calcularExigeRevisaoDeSeguranca(sondagem: SondagemDoRepositorio | null): boolean {
+  if (sondagem === null) return false
+  const planoPermite = recursoDeSegredosDisponivel(sondagem)
+  if (planoPermite) return false
+  if (sondagem.workflows.estado === 'erro') return false
+  const alternativaInstalada = sondagem.workflows.itens.some((w) => w.temGitleaks)
+  return exigeRevisaoSemAlternativa({ planoPermite, alternativaInstalada })
+}
 
-  let files: Array<{ name: string; path: string }>
-  try {
-    const response = await deps.ghGet(`/repos/${deps.wingId}/contents/.github/workflows`)
-    if (!Array.isArray(response)) {
-      deps.onWarn(`[calcularExigeRevisaoDeSeguranca] retorno inesperado: não é array`)
-      return false
-    }
-    files = response as Array<{ name: string; path: string }>
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (message.includes('404')) {
-      // .github/workflows not found implies no alternative workflow
-      return exigeRevisaoSemAlternativa({
-        planoPermite: deps.planoPermite,
-        alternativaInstalada: false,
-      })
-    }
-    deps.onWarn(`[calcularExigeRevisaoDeSeguranca] erro na API: ${message}`)
-    return false
-  }
-
-  let alternativaInstalada = false
-  for (const file of files) {
-    if (file.name.endsWith('.yml') || file.name.endsWith('.yaml')) {
+/**
+ * A guarda de UM projeto para a passada do vigia: a primeira pergunta resolve a
+ * sondagem (cache do dia ou leitura nova) e todas as outras, de todos os PRs da
+ * passada, reaproveitam a mesma promessa. Nunca lança.
+ */
+export function criarGuardaDeSegurancaDoVigia(deps: {
+  prisma: PrismaDaSondagem
+  projectId: string
+  repositorio: string
+  credenciais: readonly CredencialDaSondagem[]
+  fetchImpl: typeof fetch
+  agora: () => Date
+  onWarn: (mensagem: string) => void
+}): () => Promise<boolean> {
+  let resolvida: Promise<boolean> | null = null
+  return () => {
+    resolvida ??= (async () => {
       try {
-        const fileData = (await deps.ghGet(`/repos/${deps.wingId}/contents/${file.path}`)) as {
-          content?: string
-        }
-        if (fileData.content) {
-          const text = Buffer.from(fileData.content, 'base64').toString('utf-8')
-          if (text.includes('gitleaks')) {
-            alternativaInstalada = true
-            break
-          }
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        deps.onWarn(`[calcularExigeRevisaoDeSeguranca] falha lendo ${file.name}: ${message}`)
+        const obtida = await obterSondagem({
+          prisma: deps.prisma,
+          projectId: deps.projectId,
+          repositorio: deps.repositorio,
+          credenciais: deps.credenciais,
+          fetchImpl: deps.fetchImpl,
+          agora: deps.agora(),
+          exigirAdmin: false,
+          onWarn: deps.onWarn,
+        })
+        return calcularExigeRevisaoDeSeguranca(obtida?.sondagem ?? null)
+      } catch (erro) {
+        deps.onWarn(
+          `[exigir-revisao-de-seguranca] erro ao sondar ${deps.repositorio}: ${erroDeRedeSeguro(erro, '')}`
+        )
         return false
       }
-    }
+    })()
+    return resolvida
   }
-
-  return exigeRevisaoSemAlternativa({ planoPermite: deps.planoPermite, alternativaInstalada })
 }

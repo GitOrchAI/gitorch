@@ -49,6 +49,7 @@ export async function acharTarefaDoItem(deps: AcharTarefaDeps): Promise<VinculoD
     corpo: deps.corpo,
     sessoes: deps.sessoes,
     issueComEtiquetaDeDelegacao: deps.issueComEtiquetaDeDelegacao,
+    ramoDoPr: deps.headRefName,
   })
   if (porTexto.delegado && porTexto.issueNumber !== null) {
     return { issueNumber: porTexto.issueNumber, origemDoVinculo: 'texto' }
