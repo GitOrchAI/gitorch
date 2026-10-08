@@ -118,7 +118,7 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
   function getPrismaMock(
     entendimento: boolean,
     issueState: Record<string, unknown> = {},
-    origem = 'jules'
+    origem = 'jules_gitorch'
   ) {
     return {
       repoItem: {
@@ -688,5 +688,227 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
         where: expect.objectContaining({ projectId: 'proj-1', numero: 10 }),
       })
     )
+  })
+})
+
+describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha do PR', () => {
+  const agora = new Date('2026-09-15T12:00:00.000Z')
+  const projeto = { id: 'proj-1', wingId: 'org/repo', devPlan: 'free' }
+  const token = 'gh-token'
+
+  type Args = { where: { projectId_tipo_numero: { tipo: string; numero: number } } }
+
+  /** Prisma que responde por (tipo, número): cada ficha só aparece se o vigia
+   *  pedir exatamente ela. */
+  function prismaComFichas(fichas: {
+    pr?: Record<string, unknown> | null
+    issue?: Record<string, unknown> | null
+  }) {
+    const findUnique = vi.fn(async (args: Args) => {
+      const { tipo } = args.where.projectId_tipo_numero
+      if (tipo === 'pr') return fichas.pr ?? null
+      if (tipo === 'issue') return fichas.issue ?? null
+      return null
+    })
+    return { prisma: { repoItem: { findUnique } } as unknown as PrismaClient, findUnique }
+  }
+
+  const estadoPadrao = { rascunho: false, ultimoCommitEm: null, fechadoEAbandonado: false }
+  const entendimento = {
+    deOndeVeio: 'issue 10',
+    oQueMuda: 'a ficha',
+    queAjusteE: 'pequeno',
+    porQueExiste: 'pedido do dono',
+  }
+
+  function ghGetDeAprovado(url: string) {
+    if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
+      return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
+    }
+    if (url === '/repos/org/repo/pulls/42') return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+    if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
+    if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
+    if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return SEM_WORKFLOW_RODANDO
+    return null
+  }
+
+  async function decidir(
+    prisma: PrismaClient,
+    over: Partial<Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]> = {},
+    cuida: string | Record<string, string> = 'sim'
+  ) {
+    const ghSend = vi.fn(async () => ({}))
+    const registrarNoPainel = vi.fn(async () => undefined)
+    const resultado = await decidirAcaoNoPrOrfaoIntegrado({
+      runtimeConfig: { cuidaPorOrigem: typeof cuida === 'string' ? { jules: cuida } : cuida },
+      agora,
+      projeto,
+      token,
+      depsVigia: buildDepsVigia(over),
+      prisma,
+      ghGet: vi.fn(async (url: string) => ghGetDeAprovado(url)),
+      ghSend,
+      registrarNoPainel,
+      onWarn: vi.fn(),
+    })
+    return { resultado, ghSend, registrarNoPainel }
+  }
+
+  const textosDoPainel = (registrar: { mock: { calls: unknown[][] } }): string[] =>
+    registrar.mock.calls.map((c) => String(c[2]))
+
+  it('lê a ficha do PR (tipo pr, número do PR) e nunca a da issue', async () => {
+    const { prisma, findUnique } = prismaComFichas({
+      pr: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento },
+    })
+    await decidir(prisma)
+    expect(findUnique).toHaveBeenCalledTimes(1)
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { projectId_tipo_numero: { projectId: 'proj-1', tipo: 'pr', numero: 42 } },
+    })
+  })
+
+  it('a origem gravada no PR chega ao motor (outro_bot nunca é julgado)', async () => {
+    const { prisma } = prismaComFichas({
+      pr: { origem: 'outro_bot', estado: estadoPadrao, entendimento },
+      // armadilha: a ficha da issue diz que é do dev assíncrono
+      issue: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento },
+    })
+    const { resultado, ghSend } = await decidir(prisma)
+    expect(resultado).toEqual({
+      acao: 'ignorar',
+      motivo: 'origem "outro_bot" configurada para não cuidar',
+    })
+    expect(ghSend).not.toHaveBeenCalled()
+  })
+
+  it('o entendimento gravado no PR chega ao motor e libera o merge', async () => {
+    const { prisma } = prismaComFichas({
+      pr: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento },
+    })
+    const { resultado, ghSend } = await decidir(prisma)
+    expect(resultado).toEqual({ acao: 'ignorar', motivo: 'Mesclado com sucesso' })
+    expect(ghSend).toHaveBeenCalledWith(
+      'PUT',
+      '/repos/org/repo/pulls/42/merge',
+      token,
+      expect.any(Object)
+    )
+  })
+
+  it('sem entendimento no PR não mescla, mesmo que a ficha da issue tenha um', async () => {
+    const { prisma } = prismaComFichas({
+      pr: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento: null },
+      issue: { origem: null, estado: estadoPadrao, entendimento },
+    })
+    const { ghSend } = await decidir(prisma)
+    expect(ghSend).not.toHaveBeenCalledWith(
+      'PUT',
+      '/repos/org/repo/pulls/42/merge',
+      expect.anything(),
+      expect.anything()
+    )
+  })
+
+  it.each([['jules_gitorch'], ['jules_fora']])(
+    'origem %s com tudo em ordem mescla: é entrega do dev assíncrono',
+    async (origem) => {
+      const { prisma } = prismaComFichas({ pr: { origem, estado: estadoPadrao, entendimento } })
+      const { resultado, ghSend } = await decidir(prisma)
+      expect(resultado).toEqual({ acao: 'ignorar', motivo: 'Mesclado com sucesso' })
+      expect(ghSend).toHaveBeenCalledWith(
+        'PUT',
+        '/repos/org/repo/pulls/42/merge',
+        token,
+        expect.any(Object)
+      )
+    }
+  )
+
+  it.each([
+    ['nula', null],
+    ['desconhecido', 'desconhecido'],
+    ['pessoa', 'pessoa'],
+    ['assistente', 'assistente'],
+  ])(
+    'origem %s, mesmo com rótulo do dev, entendimento, aprovação e CI verde, NÃO mescla',
+    async (_nome, origem) => {
+      const { prisma } = prismaComFichas({ pr: { origem, estado: estadoPadrao, entendimento } })
+      // `headSha` presente e todos os baldes em "sim": nada além da origem
+      // impede o motor de chegar à decisão de mesclar.
+      const { resultado, ghSend } = await decidir(
+        prisma,
+        { headSha: 'sha1', sinais: { autor: 'alguem', labels: ['jules'], corpo: null } },
+        { jules: 'sim', pessoa: 'sim', assistente: 'sim', dependabot: 'sim' }
+      )
+      expect(ghSend).not.toHaveBeenCalledWith(
+        'PUT',
+        '/repos/org/repo/pulls/42/merge',
+        expect.anything(),
+        expect.anything()
+      )
+      expect(resultado.motivo).toContain('esta entrega não foi encomendada pelo produto')
+    }
+  )
+
+  it('recusa da mesclagem segura: o painel não diz que está mesclando e traz o motivo', async () => {
+    const { prisma } = prismaComFichas({
+      pr: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento: null },
+    })
+    const { registrarNoPainel } = await decidir(prisma)
+    const textos = textosDoPainel(registrarNoPainel)
+    expect(textos.some((t) => t.includes('mesclando'))).toBe(false)
+    expect(textos.some((t) => t.includes('sem registrar o entendimento do pedido'))).toBe(true)
+  })
+
+  it('mesclagem feita: o painel registra que os critérios bateram e que mesclou', async () => {
+    const { prisma } = prismaComFichas({
+      pr: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento },
+    })
+    const { registrarNoPainel } = await decidir(prisma)
+    const textos = textosDoPainel(registrarNoPainel)
+    expect(textos.some((t) => t.includes('mesclando'))).toBe(true)
+    expect(textos.some((t) => t.includes('foi mesclado com sucesso'))).toBe(true)
+  })
+
+  it('o instante do último commit gravado no PR entra na janela de construção', async () => {
+    const haUmaHora = new Date(agora.getTime() - 60 * 60_000).toISOString()
+    const { prisma } = prismaComFichas({
+      pr: {
+        origem: 'jules_gitorch',
+        estado: { ...estadoPadrao, ultimoCommitEm: haUmaHora },
+        entendimento,
+      },
+    })
+    const { resultado } = await decidir(prisma)
+    expect(resultado).toEqual({ acao: 'ignorar', motivo: '#42 ainda está em construção' })
+  })
+
+  it('ficha do PR ausente não quebra: cai em desconhecido e segue o balde padrão', async () => {
+    const { prisma, findUnique } = prismaComFichas({ pr: null })
+    const { resultado, ghSend } = await decidir(prisma)
+    expect(findUnique).toHaveBeenCalledTimes(1)
+    // sem ficha não há entendimento: o motor não mescla
+    expect(resultado.acao).not.toBe('escalar')
+    expect(ghSend).not.toHaveBeenCalledWith(
+      'PUT',
+      '/repos/org/repo/pulls/42/merge',
+      expect.anything(),
+      expect.anything()
+    )
+  })
+
+  it('PR sem tarefa de origem também lê a ficha do PR (a origem não depende da issue)', async () => {
+    const { prisma, findUnique } = prismaComFichas({
+      pr: { origem: 'outro_bot', estado: estadoPadrao, entendimento: null },
+    })
+    const { resultado } = await decidir(prisma, { issueNumber: null })
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { projectId_tipo_numero: { projectId: 'proj-1', tipo: 'pr', numero: 42 } },
+    })
+    expect(resultado).toEqual({
+      acao: 'ignorar',
+      motivo: 'origem "outro_bot" configurada para não cuidar',
+    })
   })
 })

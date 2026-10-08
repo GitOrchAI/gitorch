@@ -23,7 +23,7 @@ import type {
   montarContextoExecutivoDaPergunta,
   DepsDoContextoExecutivo,
 } from './contexto-executivo-da-pergunta.js'
-import type { OrigemDoItem } from './origem-do-item.js'
+import { ehEntregaDoDevAssincrono, type OrigemDoItem } from './origem-do-item.js'
 import { montarContextoDoItem } from './tudo-sobre-o-item.js'
 
 type AcaoDoVigia = ReturnType<
@@ -117,29 +117,32 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       })
     ).estado
 
-  if (depsVigia.issueNumber !== null) {
-    const ficha = await lerFichaDoItem({
-      prisma: prisma as never,
-      projectId: projeto.id,
-      tipo: 'issue',
-      numero: depsVigia.issueNumber,
+  // A origem, o entendimento e o último commit moram na ficha do PULL REQUEST
+  // (é nele que a classificação do webhook e o formulário de entendimento
+  // gravam), não na da tarefa de origem. A ficha pode ainda não existir: aí
+  // a origem fica "desconhecido" e não há entendimento, e o motor não mescla.
+  const ficha = await lerFichaDoItem({
+    prisma: prisma as never,
+    projectId: projeto.id,
+    tipo: 'pr',
+    numero: depsVigia.numero,
+  })
+  if (ficha) {
+    origem = ficha.origem || 'desconhecido'
+    emConstrucaoHa = horasEmConstrucao({
+      rascunho: depsVigia.rascunho,
+      ultimoCommitEm: ficha.estado.ultimoCommitEm ?? null,
+      agora,
     })
-    if (ficha) {
-      origem = ficha.origem || 'desconhecido'
-      emConstrucaoHa = horasEmConstrucao({
-        rascunho: depsVigia.rascunho,
-        ultimoCommitEm: ficha.estado.ultimoCommitEm ?? null,
-        agora,
-      })
 
-      const isIssueOpen = await depsVigia.issueAberta
-      if (
-        isIssueOpen &&
-        !(ficha.estado as unknown as Record<string, unknown>)['fechadoEAbandonado'] &&
-        ficha.entendimento
-      ) {
-        entendimentoCompleto = true
-      }
+    // O entendimento só vale enquanto a tarefa de origem segue aberta.
+    const isIssueOpen = await depsVigia.issueAberta
+    if (
+      isIssueOpen &&
+      !(ficha.estado as unknown as Record<string, unknown>)['fechadoEAbandonado'] &&
+      ficha.entendimento
+    ) {
+      entendimentoCompleto = true
     }
   }
 
@@ -469,12 +472,6 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     }
   }
   if (acaoMotor.acao === 'mesclar') {
-    await registrarNoPainel(
-      projeto.id,
-      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
-      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
-    )
-
     try {
       const baseDoMerge = await lerBaseParaMerge()
       const result = await mesclarPr({
@@ -482,7 +479,9 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
         ciState: depsVigia.verificacao === 'verde' ? 'green' : 'red',
         vereditoDoQa: vereditoDoQa ?? 'unknown',
         diffTruncado: diffTruncado,
-        delegado: true,
+        // A origem real da ficha do PR, não o rótulo: o rótulo da automação
+        // basta para o vigia olhar o PR, mas não prova que alguém o encomendou.
+        delegado: ehEntregaDoDevAssincrono(origem),
         ...baseDoMerge,
         shaRevisado: currentHeadSha ?? '',
         shaAtual: currentHeadSha ?? '',
@@ -503,6 +502,14 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       })
 
       if (result.mesclado) {
+        // O registro do motor só entra quando a mesclagem de fato acontece:
+        // se a trava recusar, o painel mostra a recusa e o motivo, nunca
+        // "mesclando".
+        await registrarNoPainel(
+          projeto.id,
+          chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+          `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+        )
         await registrarNoPainel(
           projeto.id,
           `gitorch-merge:${projeto.wingId}:${depsVigia.numero}`,

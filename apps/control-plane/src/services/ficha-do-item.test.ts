@@ -116,6 +116,182 @@ describe('atualizarFichaDoItem', () => {
   })
 })
 
+describe('atualizarFichaDoItem: a ficha só ganha vínculo, nunca perde', () => {
+  const base = { projectId: 'proj-1', tipo: 'pr' as const, numero: 583 }
+
+  it('issueNumber null depois de preenchido não apaga o vínculo (webhook sem issue de origem)', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: 'jules_gitorch',
+      issueNumber: 580,
+    })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: 'jules_gitorch',
+      issueNumber: null,
+    })
+    expect(ficha.issueNumber).toBe(580)
+  })
+
+  it('origem null depois de preenchida não apaga a origem', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: 'assistente',
+    })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: null,
+    })
+    expect(ficha.origem).toBe('assistente')
+  })
+
+  it('um valor novo e preenchido continua valendo (reclassificação de origem e de issue)', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: 'jules_fora',
+    })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: 'jules_gitorch',
+      issueNumber: 580,
+    })
+    expect(ficha.origem).toBe('jules_gitorch')
+    expect(ficha.issueNumber).toBe(580)
+  })
+
+  it('entendimento null depois de preenchido não apaga o entendimento', async () => {
+    const prisma = prismaFake()
+    const entendimento = {
+      deOndeVeio: 'issue 580',
+      oQueMuda: 'a ficha',
+      queAjusteE: 'pequeno',
+      porQueExiste: 'pedido do dono',
+    }
+    await atualizarFichaDoItem({ prisma, ...base, estado: { status: 'open' }, entendimento })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      entendimento: null,
+    })
+    expect(ficha.entendimento).toEqual(entendimento)
+  })
+
+  it('vinculoOrigem e conferencia são preenchidos e nunca regridem para null', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      tipo: 'issue',
+      estado: { status: 'open' },
+      vinculoOrigem: 'formal',
+      conferencia: { veredito: 'ok' },
+    })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      tipo: 'issue',
+      estado: { status: 'open' },
+      vinculoOrigem: null,
+      conferencia: null,
+    })
+    expect(ficha.vinculoOrigem).toBe('formal')
+    expect(ficha.conferencia).toEqual({ veredito: 'ok' })
+  })
+
+  it('sem estado a ficha existente mantém o estado e os campos derivados', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open', conflito: true, rascunho: false },
+      origem: 'jules_gitorch',
+      issueNumber: 580,
+      vinculoOrigem: 'formal',
+    })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      entendimento: {
+        deOndeVeio: 'a',
+        oQueMuda: 'b',
+        queAjusteE: 'c',
+        porQueExiste: 'd',
+      },
+    })
+    expect(ficha.estado).toEqual({ status: 'open', conflito: true, rascunho: false })
+    expect(ficha.origem).toBe('jules_gitorch')
+    expect(ficha.issueNumber).toBe(580)
+    expect(ficha.vinculoOrigem).toBe('formal')
+  })
+
+  it('sem estado numa ficha que não existe cria com um estado mínimo, nunca sem estado', async () => {
+    const prisma = prismaFake()
+    const ficha = await atualizarFichaDoItem({ prisma, ...base, origem: 'pessoa' })
+    expect(ficha.estado).toEqual({ status: 'desconhecido' })
+    expect(ficha.origem).toBe('pessoa')
+  })
+
+  it('com estado, o estado é trocado por inteiro mas os campos derivados ficam nas colunas', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open', conflito: true },
+      origem: 'jules_gitorch',
+      issueNumber: 580,
+      vinculoOrigem: 'formal',
+      conferencia: { veredito: 'ok' },
+    })
+    const ficha = await atualizarFichaDoItem({ prisma, ...base, estado: { status: 'merged' } })
+    expect(ficha.estado).toEqual({ status: 'merged' })
+    expect(ficha.origem).toBe('jules_gitorch')
+    expect(ficha.issueNumber).toBe(580)
+    expect(ficha.vinculoOrigem).toBe('formal')
+    expect(ficha.conferencia).toEqual({ veredito: 'ok' })
+  })
+
+  it('o upsert não manda nenhuma coluna de vínculo no update quando o valor vem null', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: null,
+      issueNumber: null,
+      entendimento: null,
+      vinculoOrigem: null,
+      conferencia: null,
+    })
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      origem: null,
+      issueNumber: null,
+    })
+    const segunda = (prisma.repoItem.upsert as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      update: Record<string, unknown>
+    }
+    expect(Object.keys(segunda.update)).toEqual(['estado'])
+  })
+})
+
 describe('lerFichaDoItem', () => {
   it('devolve null quando a ficha não existe', async () => {
     const prisma = prismaFake()

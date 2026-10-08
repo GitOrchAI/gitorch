@@ -329,6 +329,7 @@ import {
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
 import { atualizarFichaDoItem } from '../services/ficha-do-item.js'
+import { lancarErroDoGitHub, pularSeFreioDeCotaAtivo } from '../services/freio-de-cota-do-github.js'
 import {
   varrerRetratoDoProjeto,
   CADENCIA_DO_RETRATO_MS,
@@ -8521,7 +8522,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       signal: AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
     })
     if (!resp.ok) {
-      throw new Error(`GitHub GET ${path} failed (${resp.status})`)
+      // Erro tipado (status + cabeçalhos de limite); a mensagem é a de sempre.
+      lancarErroDoGitHub(`GitHub GET ${path} failed (${resp.status})`, resp, path)
     }
     return resp.json()
   }
@@ -8559,7 +8561,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       signal: AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
     })
     if (!resp.ok) {
-      throw new Error(`GitHub ${method} ${path} failed (${resp.status})`)
+      lancarErroDoGitHub(`GitHub ${method} ${path} failed (${resp.status})`, resp, path)
     }
     return resp.json()
   }
@@ -10134,11 +10136,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       porProjeto.set(l.projectId, lista)
     }
 
+    const donosJaAvisados = new Set<string>()
     for (const [projectId, entregas] of porProjeto) {
       const projeto = await app.prisma.project
         .findUnique({ where: { id: projectId }, select: { wingId: true, isActive: true } })
         .catch(() => null)
       if (!projeto?.isActive) continue
+
+      // Cota do GitHub esgotada para este dono: nem mint de token, nem leitura.
+      if (
+        pularSeFreioDeCotaAtivo({
+          etapa: 'varrerTarefasEntregues',
+          repositorio: projeto.wingId,
+          agora: new Date(),
+          jaAvisados: donosJaAvisados,
+          info: (m) => app.log.info(`[Scheduler] ${m}`),
+        })
+      ) {
+        continue
+      }
 
       const githubToken =
         process.env['GITORCH_GITHUB_TOKEN'] ??
@@ -10160,7 +10176,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           },
           ...(corpo ? { body: JSON.stringify(corpo) } : {}),
         })
-        if (!r.ok) throw new Error(`GitHub ${metodo} ${caminho} falhou (${r.status})`)
+        if (!r.ok) {
+          lancarErroDoGitHub(`GitHub ${metodo} ${caminho} falhou (${r.status})`, r, caminho)
+        }
         return r.json()
       }
 
@@ -10191,6 +10209,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           app.log.warn(
             `[Scheduler] ${projeto.wingId}: não consegui conferir a tarefa #${entrega.issueNumber}: ${(err as Error).message}`
           )
+          // Limite de taxa: insistir nas outras tarefas só gasta mais cota.
+          if (
+            pularSeFreioDeCotaAtivo({
+              etapa: 'varrerTarefasEntregues',
+              repositorio: projeto.wingId,
+              agora: new Date(),
+              jaAvisados: donosJaAvisados,
+              info: (m) => app.log.info(`[Scheduler] ${m}`),
+            })
+          ) {
+            break
+          }
         }
       }
     }
@@ -10218,7 +10248,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return
     }
 
+    const donosJaAvisados = new Set<string>()
     for (const projeto of projetos) {
+      // Cota do GitHub esgotada para este dono: nem mint de token, nem leitura.
+      if (
+        pularSeFreioDeCotaAtivo({
+          etapa: 'varrerArvoreDosPlanos',
+          repositorio: projeto.wingId,
+          agora: new Date(),
+          jaAvisados: donosJaAvisados,
+          info: (m) => app.log.info(`[Scheduler] ${m}`),
+        })
+      ) {
+        continue
+      }
+
       const githubToken =
         process.env['GITORCH_GITHUB_TOKEN'] ??
         (await mintInstallationToken({
@@ -10240,7 +10284,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           ...(corpo ? { body: JSON.stringify(corpo) } : {}),
         })
         if (!resposta.ok) {
-          throw new Error(`GitHub ${metodo} ${caminho} falhou (${resposta.status})`)
+          lancarErroDoGitHub(
+            `GitHub ${metodo} ${caminho} falhou (${resposta.status})`,
+            resposta,
+            caminho
+          )
         }
         return resposta.json()
       }

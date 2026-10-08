@@ -65,6 +65,7 @@ describe('MIGRATION_LEDGER', () => {
       'anexo-pedido-migration.sql',
       'guest-quota-migration.sql',
       'pipeline-intelligence-migration.sql',
+      'repo-item-ligacao-migration.sql',
     ])
   })
 })
