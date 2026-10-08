@@ -1,5 +1,4 @@
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
-import { adquirirTravaDeParecer } from './trava-de-parecer.js'
 import {
   RAILS_SCHEMAS,
   buildStepPrompt,
@@ -262,6 +261,36 @@ export interface VigiliaDoJulgamentoOptions {
    * separadas divergiriam em silêncio.
    */
   registrarConserto?: (args: { sessionName: string; chave: string; agora: Date }) => Promise<void>
+  /**
+   * Toma a trava de "este commit deste PR já tem um julgamento em curso".
+   * `true` = esta missão é a dona e pode julgar e publicar; `false` = outra
+   * missão já tomou (ou acabou de publicar) este commit, e esta não repete nada.
+   *
+   * Tomada ANTES de o motor rodar, e não só na hora de publicar: duas missões
+   * do QA do mesmo projeto chegam a rodar juntas, e cada uma fazia o julgamento
+   * inteiro (chamada ao motor, aviso ao dev, tentativa de mescla, conta na
+   * história do projeto) antes de a publicação sequer ser disputada.
+   *
+   * Vive nesta família, e não em `prisma`/`projectId` soltos, de propósito:
+   * esses dois também ligam o grafo de vínculos no prompt do juiz, e ligar a
+   * trava não pode mudar o que o motor lê. Sendo obrigatória no retorno de
+   * `montarOpcoesDoJulgamento`, esquecer de ligá-la quebra a build.
+   */
+  adquirirTrava?: (args: { numeroDoPr: number; headSha: string }) => Promise<boolean>
+  /**
+   * Solta a trava de um commit que esta missão tomou e NÃO chegou a publicar
+   * (o motor caiu, a cota acabou): sem isso a nova tentativa, inclusive a troca
+   * automática de motor, perderia a trava para uma missão que já não existe.
+   */
+  liberarTrava?: (args: { numeroDoPr: number; headSha: string }) => Promise<void>
+  /**
+   * Encurta a trava de um commit cujo parecer esta missão JÁ publicou. Tomada
+   * antes do motor, a trava vale o tempo de um julgamento inteiro; com o parecer
+   * no GitHub, só resta cobrir a defasagem da lista de reviews, e este gancho
+   * reduz a validade a essa folga. Sem ele, o commit ficaria barrado por todo o
+   * tempo de um julgamento depois de já julgado.
+   */
+  assentarTrava?: (args: { numeroDoPr: number; headSha: string }) => Promise<void>
 }
 
 import type { PrismaClient } from '@prisma/client'
@@ -370,6 +399,11 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    * linha de configuração, e não uma arqueologia de código apagado.
    */
   julgarEntregaDeTerceiro?: boolean | undefined
+  /**
+   * Só alimentam o grafo de vínculos que entra no prompt do juiz (issue #877).
+   * A trava do parecer NÃO depende deles: vem dos ganchos `adquirirTrava`,
+   * `liberarTrava` e `assentarTrava`.
+   */
   prisma?: Pick<PrismaClient, 'repoItem'>
   projectId?: string
   onWarn?: (message: string) => void
@@ -467,8 +501,126 @@ export async function dispensarParecerAntigo(
   }
 }
 
+/**
+ * O que esta missão sabe da trava do parecer: quais commits ela tomou e se já
+ * publicou. Uma por chamada de `runQaMissionViaRails` — nada é compartilhado
+ * entre missões a não ser a própria trava, no banco.
+ */
+interface GuardaDoParecer {
+  /**
+   * Toma a trava do commit. Idempotente por (PR, commit): a primeira chamada
+   * decide e as seguintes devolvem a mesma resposta, sem ir ao banco de novo.
+   * Os dois pontos que precisam dela (o início do julgamento e a publicação do
+   * parecer) podem pedir sem se coordenar, e nunca se disputam entre si.
+   * Sem o gancho `adquirirTrava`, não há trava e a resposta é sempre `true`.
+   */
+  tomar: (numeroDoPr: number, headSha: string) => Promise<boolean>
+  /** Registra que o parecer foi de fato publicado no GitHub. */
+  registrarPublicacao: () => void
+  /**
+   * Encerra a participação desta missão na trava: com o parecer publicado,
+   * encurta a validade para a folga; sem ele, solta o que foi tomado.
+   */
+  encerrar: () => Promise<void>
+}
+
+function criarGuardaDoParecer(
+  options: Pick<
+    QaRailsMissionOptions,
+    'adquirirTrava' | 'liberarTrava' | 'assentarTrava' | 'onWarn'
+  >
+): GuardaDoParecer {
+  const respostas = new Map<string, Promise<boolean>>()
+  const tomadas: Array<{ numeroDoPr: number; headSha: string }> = []
+  let publicou = false
+
+  // O erro que derrubou a missão (ou o parecer que ela publicou) é o que
+  // importa e segue adiante; mexer na trava é um favor às próximas missões, que
+  // no pior caso esperam a validade dela vencer. Falhar em silêncio, porém,
+  // esconderia o motivo.
+  const avisarFalha = (
+    alvo: { numeroDoPr: number; headSha: string },
+    acao: string,
+    err: unknown
+  ) => {
+    const avisar = options.onWarn ?? console.warn
+    avisar(
+      `[qa] PR #${alvo.numeroDoPr}: não consegui ${acao} a trava do commit ${alvo.headSha}: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
+
+  return {
+    tomar(numeroDoPr, headSha) {
+      const chave = `${numeroDoPr}@${headSha}`
+      let resposta = respostas.get(chave)
+      if (!resposta) {
+        resposta = (async () => {
+          if (!options.adquirirTrava) return true
+          const tomou = await options.adquirirTrava({ numeroDoPr, headSha })
+          if (tomou) tomadas.push({ numeroDoPr, headSha })
+          return tomou
+        })()
+        respostas.set(chave, resposta)
+      }
+      return resposta
+    },
+    registrarPublicacao() {
+      publicou = true
+    },
+    async encerrar() {
+      const gancho = publicou ? options.assentarTrava : options.liberarTrava
+      if (!gancho) return
+      for (const alvo of tomadas) {
+        try {
+          await gancho(alvo)
+        } catch (err) {
+          avisarFalha(alvo, publicou ? 'encurtar' : 'soltar', err)
+        }
+      }
+    },
+  }
+}
+
+/** O que `postarReview` informa: o parecer saiu, saiu como comentário, ou não foi dele. */
+type ResultadoDaPublicacao = 'publicado' | 'publicado-como-comentario' | 'perdeu-a-trava'
+
+/**
+ * A missão do QA de uma entrega. Envolve o julgamento para que a trava do
+ * parecer nunca fique presa a uma missão que morreu antes de publicar: se o
+ * julgamento lança sem ter publicado, a trava volta e o erro ORIGINAL segue
+ * adiante, para o failover de motor do scheduler tentar de novo. A missão que
+ * termina sem publicar, mesmo sem erro, também solta o que tomou.
+ *
+ * Depois que o parecer sai, a trava NÃO é solta: ela é ENCURTADA para a folga
+ * (`assentarTravaDeParecer`) e segura, até vencer, uma segunda missão que tenha
+ * lido a lista de reviews antes da publicação. Isso vale também quando o
+ * julgamento lança depois de publicar.
+ *
+ * LIMITE CONHECIDO: soltar não prova posse (ver `liberarTravaDeParecer`). Uma
+ * missão que dure mais do que a validade em voo da trava e então lance erro
+ * pode soltar a trava que outra tomou no mesmo commit; o efeito é, no pior
+ * caso, um segundo julgamento do mesmo commit.
+ */
 export async function runQaMissionViaRails(
   options: QaRailsMissionOptions
+): Promise<QaRailsMissionResult> {
+  const guarda = criarGuardaDoParecer(options)
+  let resultado: QaRailsMissionResult
+  try {
+    resultado = await julgarEntregaViaRails(options, guarda)
+  } catch (err) {
+    await guarda.encerrar()
+    throw err
+  }
+  await guarda.encerrar()
+  return resultado
+}
+
+async function julgarEntregaViaRails(
+  options: QaRailsMissionOptions,
+  guarda: GuardaDoParecer
 ): Promise<QaRailsMissionResult> {
   // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do QA)
   // sob `tickEmAndamento` — mesma classe de defeito do Crítico. `mesclarPr`
@@ -1343,31 +1495,36 @@ export async function runQaMissionViaRails(
   // explicação completa do recuo por COMMENT (422, PR da própria identidade
   // do GitOrch) mais abaixo, junto de `reviewEvent` — a MESMA lógica vale
   // aqui, só que chamada mais cedo.
-  const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
-    // Acquire the lock for publishing the review
-    if (options.prisma) {
-      const headShaStr = pr?.head?.sha ?? target.head?.sha ?? 'unknown'
-      const lockAcquired = await adquirirTravaDeParecer({
-        prisma: options.prisma,
-        projectId: options.projectId!,
-        numeroDoPr: target.number,
-        headSha: headShaStr,
-        agora: new Date(),
-      })
-      if (!lockAcquired) {
-        options.onWarn?.(
-          `[qa] ${options.repository} #${target.number}: already publishing a review for head ${headShaStr} — skipping duplicate`
-        )
-        return true
-      }
+  const headDoParecer = pr?.head?.sha ?? target.head?.sha ?? 'unknown'
+
+  // A resposta de quem NÃO é o dono do julgamento deste commit: nada de motor,
+  // de review, de aviso ao dev nem de mescla — a missão que tomou a trava faz
+  // tudo isso, e repetir é exatamente o defeito que a trava existe para barrar.
+  const resultadoDeQuemPerdeuATrava = (): QaRailsMissionResult => {
+    options.onWarn?.(
+      `[qa] ${options.repository} #${target.number}: outra missão já julga o commit ${headDoParecer} — esta não repete`
+    )
+    return {
+      exitCode: 0,
+      output: `QA: PR #${target.number} já está sendo julgado neste commit por outra missão.`,
+      stderr: '',
+      noOp: true,
     }
+  }
+
+  const postarReview = async (evento: string, corpo: string): Promise<ResultadoDaPublicacao> => {
+    // A trava já foi tomada no início do julgamento (resposta memoizada); aqui
+    // ela só impede que um ponto de publicação novo, que esqueça de tomá-la,
+    // publique sem dono.
+    if (!(await guarda.tomar(target.number, headDoParecer))) return 'perdeu-a-trava'
 
     try {
       await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
         event: evento,
         body: corpo,
       })
-      return false
+      guarda.registrarPublicacao()
+      return 'publicado'
     } catch (err) {
       const recusouProprioPr =
         err instanceof GithubExecutionError &&
@@ -1378,7 +1535,8 @@ export async function runQaMissionViaRails(
         event: 'COMMENT',
         body: `${corpo}\n\n_(publicado como comentário: o autor da PR é a própria identidade do GitOrch)_`,
       })
-      return true
+      guarda.registrarPublicacao()
+      return 'publicado-como-comentario'
     }
   }
 
@@ -1423,12 +1581,16 @@ export async function runQaMissionViaRails(
   // seria idêntica a uma reprovação comum aos olhos daquela exceção, e o
   // próximo tique cobraria de novo.
   if (delegado && ehEntregaSemConteudo(pr)) {
-    await postarReview(
+    // A cobrança de um diff vazio também é um julgamento: duas missões a
+    // repetiriam, e o dev receberia o mesmo aviso duas vezes. `postarReview`
+    // toma a trava antes de publicar, e quem perde sai antes do aviso ao dev.
+    const cobranca = await postarReview(
       'REQUEST_CHANGES',
       `${JULES_MARKER}\n${MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA}\n` +
         'GitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.' +
         (participante ? `\n\n${avisoAoParticipante('request_changes', false)}` : '')
     )
+    if (cobranca === 'perdeu-a-trava') return resultadoDeQuemPerdeuATrava()
 
     const textoParaODev = textoDeEntregaSemConteudo(target.number)
     if (linhaDaEntrega && options.avisarSessao) {
@@ -1529,6 +1691,12 @@ export async function runQaMissionViaRails(
       noOp: true,
     }
   }
+
+  // A partir daqui o julgamento custa o motor e tem efeitos (parecer, aviso ao
+  // dev, mescla, conta na história do projeto). Só UMA missão por commit chega
+  // lá: a que toma a trava. As outras devolvem uma acordada vazia, sem limpar a
+  // pendência nem ler mais nada, porque quem julga já faz isso.
+  if (!(await guarda.tomar(target.number, headDoParecer))) return resultadoDeQuemPerdeuATrava()
 
   // `julgar`: se esta entrega chegou a ficar marcada como pendente, a marca
   // sai AQUI — dentro do próprio laço do juiz, no mesmo instante em que a
@@ -1791,7 +1959,7 @@ export async function runQaMissionViaRails(
   if (effectiveVerdict === 'approve') {
     // Caminho resiliente (o GitHub decide se pode aprovar) + o campo do padrão
     // Shrimp: o resumo do veredito é o Goal.
-    await postarReview(
+    const aprovacao = await postarReview(
       reviewEvent,
       // O texto da aprovação usa a MARCA como pedaço do corpo, e não uma
       // cópia à mão de "verdict: APPROVE": é essa mesma marca que a leitura
@@ -1800,6 +1968,7 @@ export async function runQaMissionViaRails(
       // mexer no texto aqui deixaria a leitura cega sem quebrar teste nenhum.
       `${JULES_MARKER}${marcaDoLegado}${marcaDaTarefa}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${buildEntendimentoSection(verdict.entendimento)}\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
     )
+    if (aprovacao === 'perdeu-a-trava') return resultadoDeQuemPerdeuATrava()
 
     // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
     // antes dos três de sempre — sem prova de delegação, a missão nem tenta
@@ -1978,10 +2147,11 @@ export async function runQaMissionViaRails(
       }
     }
   } else {
-    await postarReview(
+    const reprovacao = await postarReview(
       reviewEvent,
       `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}${marcaDaTarefa}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${explicacaoDoCancelamento}${avisoDeNaoMesclar}`
     )
+    if (reprovacao === 'perdeu-a-trava') return resultadoDeQuemPerdeuATrava()
 
     // Este julgamento entra na conta do repositório ANTES de decidir se pede
     // retrabalho: a reprovação da vez faz parte da sequência que está sendo

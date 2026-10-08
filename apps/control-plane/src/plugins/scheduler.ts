@@ -204,6 +204,12 @@ import {
   type PrismaDoHistorico,
 } from '../services/historico-de-julgamento.js'
 import {
+  adquirirTravaDeParecer,
+  assentarTravaDeParecer,
+  liberarTravaDeParecer,
+  type PrismaDaTravaDeParecer,
+} from '../services/trava-de-parecer.js'
+import {
   aguardaSegundaLeituraDoAmbiente,
   decidirConsertoDePublicacao,
   notaDeConserto,
@@ -1154,8 +1160,9 @@ export function montarOpcoesDeDelegacao(args: {
  * Monta as opções da família `VigiliaDoJulgamentoOptions` (ver
  * qa-rails-mission.ts) que o julgamento do QA recebe:
  * `registrarPendencia`/`limparPendencia`/`registrarAvisoDeDemora`/
- * `registrarFracassoDeMerge` ligadas ao Prisma real, e `avisarDono` quando
- * um notificador foi montado.
+ * `registrarFracassoDeMerge` ligadas ao Prisma real, a trava do parecer
+ * (`adquirirTrava`/`liberarTrava`/`assentarTrava`, que segura o segundo
+ * julgamento do mesmo commit), e `avisarDono` quando um notificador foi montado.
  *
  * Achado 1 da revisão da Tarefa 7: as três primeiras foram ADICIONADAS à
  * interface de `runQaMissionViaRails` mas nunca chegavam a este ponto de
@@ -1187,7 +1194,7 @@ export function montarOpcoesDeDelegacao(args: {
  * como `Pick` optativo, igual sempre foi.
  */
 export function montarOpcoesDoJulgamento(args: {
-  prisma: PrismaDevSession
+  prisma: PrismaDevSession & PrismaDaTravaDeParecer
   /**
    * O projeto DESTA iteração. Vem pronto porque só quem itera sabe de quem é o
    * repositório: `wingId` não é único global (dois clientes podem cadastrar o
@@ -1234,6 +1241,36 @@ export function montarOpcoesDoJulgamento(args: {
         prisma: args.prisma as unknown as PrismaDoHistorico,
         projectId: args.projectId,
         estado,
+      }),
+    // A trava de "um parecer por commit". Ela vive aqui, e não em `prisma`/
+    // `projectId` soltos no `runQaMissionViaRails`, porque esses dois também
+    // ligam o grafo de vínculos no prompt do juiz: ligar a trava não pode mudar
+    // o que o motor lê. Antes de existir como gancho obrigatório, a trava só
+    // valia se o chamador lembrasse de passar o banco, e nenhum lembrava: duas
+    // missões do QA do mesmo projeto julgavam o mesmo commit e publicavam dois
+    // pareceres.
+    adquirirTrava: (a) =>
+      adquirirTravaDeParecer({
+        prisma: args.prisma,
+        projectId: args.projectId,
+        numeroDoPr: a.numeroDoPr,
+        headSha: a.headSha,
+        agora: new Date(),
+      }),
+    liberarTrava: (a) =>
+      liberarTravaDeParecer({
+        prisma: args.prisma,
+        projectId: args.projectId,
+        numeroDoPr: a.numeroDoPr,
+        headSha: a.headSha,
+      }),
+    assentarTrava: (a) =>
+      assentarTravaDeParecer({
+        prisma: args.prisma,
+        projectId: args.projectId,
+        numeroDoPr: a.numeroDoPr,
+        headSha: a.headSha,
+        agora: new Date(),
       }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
@@ -4863,7 +4900,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       // nunca é gravado, o teto de 90min nunca amadurece, o
                       // dono nunca é avisado.
                       ...montarOpcoesDoJulgamento({
-                        prisma: app.prisma as unknown as PrismaDevSession,
+                        prisma: app.prisma as unknown as PrismaDevSession & PrismaDaTravaDeParecer,
                         projectId: project.id,
                         avisarDono,
                       }),
