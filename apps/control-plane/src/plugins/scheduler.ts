@@ -361,6 +361,18 @@ import { atualizarGrafoDeVinculos } from '../services/grafo-de-vinculos.js'
 import { origemPrecisaDeReclassificacao } from '../services/origem-do-item.js'
 import { montarVinculoDoRetrato } from '../services/vinculo-no-retrato.js'
 import {
+  criarLeitorDoQuadro,
+  criarResolvedorComCache,
+  montarConferenciaDoRetrato,
+} from '../services/conferencia-no-retrato.js'
+import {
+  JANELA_DO_CACHE_DO_QUADRO_MS,
+  lerQuadroComCache,
+  lerQuadroCompleto,
+} from '../services/leitura-do-quadro-em-cache.js'
+import { rodarAjusteDoPoComPrisma } from '../services/ajuste-de-tarefas-do-po.js'
+import { registrarForaDaSprintComPrisma } from '../services/reavaliar-fora-da-sprint-no-painel.js'
+import {
   classificarOrigemEIssueDoPr,
   estadoDoPrAPartirDoPayload,
 } from '../routes/github-webhook.js'
@@ -4912,6 +4924,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                         `[Scheduler] reavaliação de bloqueios falhou em ${project.wingId}; tenta na próxima vez que o PO rodar`
                       )
                     }
+                    // Fase 4.2: reescreve (até 3) as tarefas fora do padrão, com o
+                    // MESMO `execute` e depois da reavaliação. Só avisa se falhar.
+                    await rodarAjusteDeTarefasForaDoPadrao({
+                      project,
+                      railsToken,
+                      execute,
+                      contextBlocks,
+                    }).catch((err) => {
+                      app.log.warn(
+                        err,
+                        `[Scheduler] ajuste de tarefas fora do padrão falhou em ${project.wingId}; tenta na próxima missão do PO`
+                      )
+                    })
                     return poResult
                   })()
                 : await (async () => {
@@ -6413,6 +6438,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
+   * Fase 4.2 da ligação das peças: o PO reescreve, no máximo 3 por missão, as
+   * tarefas que a conferência da varredura do retrato (4.1) marcou fora do
+   * padrão de 8 campos. O `execute` real só existe dentro de uma missão, então
+   * isto roda como extra do PO. O motor só preenche o formulário; as travas, a
+   * validação e a escrita são do aplicador (`aplicar-ajuste-de-tarefa.ts`):
+   * só issue aberta, só com autonomia "cuidar" e o interruptor ligado, nunca
+   * por cima de edição humana recente, sessão do dev viva ou entrega em
+   * julgamento, e sempre guardando o original (reversível). A escrita sai por
+   * `ghSend`, isto é, pela porta com a guarda de autonomia do repositório.
+   * Best-effort: nunca lança para fora — o PO tem outro trabalho.
+   */
+  const rodarAjusteDeTarefasForaDoPadrao = async (args: {
+    project: { id: string; wingId: string; autonomia?: string | null }
+    railsToken: string | undefined
+    execute: StepExecutor
+    contextBlocks: string[]
+  }): Promise<void> => {
+    const token = args.railsToken
+    if (!token) return
+    await rodarAjusteDoPoComPrisma({
+      prisma: app.prisma,
+      project: args.project,
+      ghGet: (caminho) => ghGet(caminho, token),
+      ghSend: (metodo, caminho, corpo) => ghSend(metodo, caminho, token, corpo),
+      execute: args.execute,
+      contextBlocks: args.contextBlocks,
+      info: (m) => app.log.info(`[Scheduler] ${m}`),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+  }
+
+  /**
    * ESTEIRA-T8 (D54): entre o sensor e a delegação existe SEMPRE análise. Roda
    * junto do RA na agenda: varre a infra (Actions/Dependabot), e para cada
    * achado NOVO o RA entende a causa e o PO escreve a issue padrão Shrimp — no
@@ -7898,6 +7955,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return saida
   }
 
+  // Qual é o quadro de cada projeto (e a credencial que o alcança), guardado por
+  // 25 min: achá-lo custa 1 ou 2 consultas, e ele não muda a cada 30 min. O mesmo
+  // caminho único dos nascimentos de desejo (`resolverQuadroDoRepositorio`),
+  // que serve também a conta pessoal (credencial do próprio cliente).
+  const resolverQuadroDaConferencia = criarResolvedorComCache(
+    async (projectId: string) => {
+      const resolvido = await resolverQuadroDoRepositorio(
+        { projectId },
+        { prisma: app.prisma, engineConnections: app.engineConnections }
+      )
+      if (!resolvido.quadro) {
+        app.log.info(
+          `[Scheduler] conferência das tarefas: quadro de ${projectId} não lido: ${resolvido.motivo ?? 'motivo desconhecido'}`
+        )
+        return null
+      }
+      return { quadroId: resolvido.quadro.projectId, token: resolvido.quadro.boardToken }
+    },
+    { validadeMs: JANELA_DO_CACHE_DO_QUADRO_MS }
+  )
+
   const varrerRetratos = async (): Promise<void> => {
     const agora = new Date()
     const projetos = await app.prisma.project.findMany({
@@ -8105,6 +8183,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             cacheNegativo: semVinculoDaTarefa,
             fetchImpl: fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS),
             info: (m) => app.log.info(`[Scheduler] ${m}`),
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          }),
+          // Fase 4.1: confere cada tarefa (8 campos, peso, quadro e sprint) com o
+          // que a lista de issues abertas já trouxe. Só LÊ o quadro (uma vez por
+          // ciclo, em cache de 25 min compartilhado com o custo da ordem) e o
+          // freio de cota o pula; grava na coluna `conferencia` da ficha.
+          conferirTarefa: montarConferenciaDoRetrato({
+            prisma: app.prisma,
+            projectId: projeto.id,
+            repo: projeto.wingId,
+            lerQuadro: criarLeitorDoQuadro({
+              resolverQuadro: () => resolverQuadroDaConferencia(projeto.id),
+              fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+              freioAtivo: () =>
+                pularSeFreioDeCotaAtivo({
+                  etapa: 'conferência das tarefas',
+                  repositorio: projeto.wingId,
+                  agora: new Date(),
+                  jaAvisados: new Set<string>(),
+                  info: (m) => app.log.info(`[Scheduler] ${m}`),
+                }),
+            }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           }),
         })
@@ -12206,21 +12306,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           }))
         if (!quadroId) return null
 
-        let leituraIncompleta = false
-        const itens = await leitor.listarItensDoQuadro(quadroId, {
-          campoDePeso: 'Peso',
-          // A fila da D1 só considera TASK (ver filtrar-fila-de-tasks.ts) —
-          // e o tipo de cada item mora no corpo, no marcador
-          // `gitorch:node:<wish>:tipo:i` que o backlog-executor já grava.
-          comCorpo: true,
-          onTruncado: () => {
-            leituraIncompleta = true
-          },
-        })
+        // A leitura do quadro (itens com peso, corpo e sprint) é a MESMA que a
+        // conferência das tarefas faz, de 30 em 30 min: passa pelo cache de 25 min
+        // em memória (chave = id do quadro) em vez de pagar as páginas duas vezes.
+        // O corpo é onde mora o tipo de cada item, e a fila da D1 só considera
+        // TASK (ver filtrar-fila-de-tasks.ts) — marcador `gitorch:node:<wish>:tipo:i`
+        // que o backlog-executor já grava.
+        const lido = await lerQuadroComCache(quadroId, () => lerQuadroCompleto(leitor, quadroId))
         // Leitura cortada pelo teto de páginas: a fila que sobrou não é a
         // fila real, e calcular espera sobre uma fila incompleta produziria
         // um número que não sustenta. Silêncio, tenta de novo na próxima.
-        if (leituraIncompleta) return null
+        if (lido.truncado) return null
+        const itens = lido.itens
 
         // Só TASK entra na conta de sequenciamento — fase, épico, feature e
         // incidente são agrupadores/eventos, e o produto NUNCA atribui peso
@@ -12366,6 +12463,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         await avisarComContextoReal(projeto, candidato, rodada)
       },
+      // Fase 4.3: com a fila que acabou de ser lida (sem ler nada de novo), a
+      // tarefa que a conferência viu fora da sprint e que tem peso e lugar na fila
+      // vira só um evento de painel com o motivo da peça. A sprint não puxa backlog
+      // (decisão do dono): nada é escrito na sprint, no quadro ou no GitHub.
+      aoLerAFila: async (projeto, fila) => {
+        await registrarForaDaSprintComPrisma({
+          prisma: app.prisma,
+          projectId: projeto.id,
+          repo: projeto.wingId,
+          fila,
+        })
+      },
+      onErroDoGancho: (projeto, err) =>
+        app.log.warn(
+          err,
+          `[Scheduler] tarefas fora da sprint de ${projeto.wingId}: não consegui registrar no painel; tenta na próxima passada`
+        ),
       onErro: (projeto, err) =>
         app.log.warn(
           err,

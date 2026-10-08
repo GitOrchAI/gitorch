@@ -90,6 +90,17 @@ export interface VarreduraDoRetratoDeps {
     /** Relógio em milissegundos (injetável em teste). */
     agora?: () => number
   }
+  /** Fase 4.1: confere a tarefa (padrão dos 8 campos, peso, quadro e sprint) com o
+   *  que a própria lista de issues abertas já trouxe — nenhuma chamada nova ao
+   *  GitHub aqui. Roda DEPOIS de a ficha da issue ser gravada (o gancho grava
+   *  na coluna de conferência da ficha). Um erro do gancho vira aviso e a
+   *  varredura segue. Ausente = a varredura não confere tarefa (como antes). */
+  conferirTarefa?: (issue: {
+    numero: number
+    titulo: string
+    corpo: string
+    etiquetas: string[]
+  }) => Promise<void>
   /** Fase 1.2/5.2: alertas do Dependabot. Ausente = a varredura não lê
    *  alertas e diz isso no retorno (`leitura-nao-configurada`), nunca zero
    *  calado. */
@@ -148,6 +159,9 @@ interface IssueCru {
   number: number
   state?: string
   pull_request?: unknown
+  /** Só usados por `conferirTarefa` — a rota `/issues` já devolve título e corpo. */
+  title?: string
+  body?: string | null
   /** A rota `/issues` devolve objetos; aceita-se também o texto puro. */
   labels?: Array<string | { name?: string }> | null
 }
@@ -180,6 +194,22 @@ export async function varrerRetratoDoProjeto(
       tentativasDeBackfill += 1
       deps.onWarn?.(
         `varredura-do-retrato: backfill do grafo de vínculos falhou para ${tipo} #${numero} (${deps.repo}): ${err}`
+      )
+    }
+  }
+
+  const tentarConferir = async (issue: IssueCru, etiquetas: string[]): Promise<void> => {
+    if (!deps.conferirTarefa || typeof issue.title !== 'string') return
+    try {
+      await deps.conferirTarefa({
+        numero: issue.number,
+        titulo: issue.title,
+        corpo: issue.body ?? '',
+        etiquetas,
+      })
+    } catch (err) {
+      deps.onWarn?.(
+        `varredura-do-retrato: conferência da tarefa falhou para issue #${issue.number} (${deps.repo}): ${err}`
       )
     }
   }
@@ -241,13 +271,11 @@ export async function varrerRetratoDoProjeto(
       // é uma issue lá dentro) — `pull_request` presente é a marca de que
       // esta linha já foi contada na varredura de PRs acima.
       if (issue.pull_request) continue
-      etiquetasPorIssue.set(
-        issue.number,
-        (issue.labels ?? []).flatMap((l) => {
-          const nome = typeof l === 'string' ? l : l.name
-          return nome ? [nome] : []
-        })
-      )
+      const etiquetas = (issue.labels ?? []).flatMap((l) => {
+        const nome = typeof l === 'string' ? l : l.name
+        return nome ? [nome] : []
+      })
+      etiquetasPorIssue.set(issue.number, etiquetas)
       await deps.atualizarFicha({
         tipo: 'issue',
         numero: issue.number,
@@ -255,6 +283,7 @@ export async function varrerRetratoDoProjeto(
       })
       issues += 1
       await tentarBackfill('issue', issue.number)
+      await tentarConferir(issue, etiquetas)
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {

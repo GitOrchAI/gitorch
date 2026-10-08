@@ -3,6 +3,8 @@
 // (registrarNoPainelUmaVez, registro-no-painel.ts) — esta tabela nunca
 // guarda uma lista de acontecimentos, só o retrato de agora.
 
+import type { Prisma, PrismaClient } from '@prisma/client'
+
 export type TipoDoItem = 'pr' | 'issue' | 'alerta'
 
 export interface EstadoDoItem {
@@ -83,7 +85,9 @@ export interface PrismaDaFichaDoItem {
  *  - `estado` é o retrato de agora e é TROCADO por inteiro quando vem.
  *    Nada derivado mora nele (por isso o vínculo tem coluna própria).
  *  - `origem`, `issueNumber`, `entendimento`, `vinculoOrigem` e `conferencia`
- *    só PREENCHEM: valor ausente, `undefined` ou `null` nunca apaga o que já
+ *    só PREENCHEM (a `conferencia` ainda MESCLA por chaves: o valor novo troca
+ *    as chaves que traz e preserva as outras, como o original guardado e o
+ *    histórico das reescritas): valor ausente, `undefined` ou `null` nunca apaga o que já
  *    está gravado (o webhook e a varredura chegam sem a issue de origem
  *    muitas vezes, e isso não pode desfazer um vínculo já achado). Um valor
  *    preenchido novo continua valendo, porque a origem pode ser reclassificada.
@@ -106,7 +110,7 @@ export async function atualizarFichaDoItem(deps: {
   entendimento?: EntendimentoDoItem | null
   /** Como o vínculo com o pedido foi achado (só preenche). */
   vinculoOrigem?: string | null
-  /** Resultado da conferência da tarefa (só preenche). */
+  /** Resultado da conferência da tarefa (mescla por chaves; nunca troca o JSON inteiro). */
   conferencia?: ConferenciaDoItem | null
 }): Promise<RepoItemRecord> {
   const where = {
@@ -118,7 +122,19 @@ export async function atualizarFichaDoItem(deps: {
   if (deps.issueNumber != null) update['issueNumber'] = deps.issueNumber
   if (deps.entendimento != null) update['entendimento'] = deps.entendimento
   if (deps.vinculoOrigem != null) update['vinculoOrigem'] = deps.vinculoOrigem
-  if (deps.conferencia != null) update['conferencia'] = deps.conferencia
+  if (deps.conferencia != null) {
+    // Trocar o JSON inteiro apagaria `original`, `historico` e `ajuste`, que são
+    // a única cópia de um texto que o GitOrch já reescreveu. (A leitura e a
+    // escrita aqui não são atômicas; o escritor concorrente do dia a dia usa
+    // `mesclarConferenciaDoItem`, que é.)
+    const atual = await deps.prisma.repoItem.findUnique({ where })
+    const existente = atual?.conferencia
+    const preservada =
+      existente !== null && typeof existente === 'object' && !Array.isArray(existente)
+        ? existente
+        : {}
+    update['conferencia'] = { ...preservada, ...deps.conferencia }
+  }
 
   const linha = await deps.prisma.repoItem.upsert({
     where,
@@ -150,4 +166,56 @@ export async function lerFichaDoItem(deps: {
       projectId_tipo_numero: { projectId: deps.projectId, tipo: deps.tipo, numero: deps.numero },
     },
   })
+}
+
+/** Quantas vezes a mesclagem relê e tenta de novo quando outra escrita passa no meio. */
+const TENTATIVAS_DA_MESCLAGEM = 4
+
+/**
+ * Mescla chaves na conferência da ficha SEM apagar as que ela já tem.
+ *
+ * Três escritores dividem a coluna: a varredura de 30 min (resultado da
+ * conferência), a missão do PO (o texto original e o resultado do ajuste) e o
+ * desfazer. Cada um grava só as suas chaves; trocar o JSON inteiro faria o
+ * último apagar o trabalho dos outros — o original guardado, por exemplo.
+ * A escrita só vale se a linha não mudou desde a leitura (`atualizadoEm`);
+ * se mudou, relê e mescla de novo, em vez de sobrescrever.
+ *
+ * Devolve `false` quando a ficha não existe ou a disputa não acabou.
+ */
+export async function mesclarConferenciaDoItem(deps: {
+  prisma: Pick<PrismaClient, 'repoItem'>
+  projectId: string
+  tipo: TipoDoItem
+  numero: number
+  parcial: Record<string, unknown>
+}): Promise<boolean> {
+  const where = {
+    projectId_tipo_numero: { projectId: deps.projectId, tipo: deps.tipo, numero: deps.numero },
+  }
+  for (let tentativa = 0; tentativa < TENTATIVAS_DA_MESCLAGEM; tentativa += 1) {
+    const linha = await deps.prisma.repoItem.findUnique({
+      where,
+      select: { conferencia: true, atualizadoEm: true },
+    })
+    if (!linha) return false
+    const atual =
+      linha.conferencia !== null &&
+      typeof linha.conferencia === 'object' &&
+      !Array.isArray(linha.conferencia)
+        ? (linha.conferencia as Record<string, unknown>)
+        : {}
+    const mesclada = { ...atual, ...deps.parcial } as Prisma.InputJsonObject
+    const { count } = await deps.prisma.repoItem.updateMany({
+      where: {
+        projectId: deps.projectId,
+        tipo: deps.tipo,
+        numero: deps.numero,
+        atualizadoEm: linha.atualizadoEm,
+      },
+      data: { conferencia: mesclada },
+    })
+    if (count > 0) return true
+  }
+  return false
 }

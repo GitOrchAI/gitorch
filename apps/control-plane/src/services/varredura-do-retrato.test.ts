@@ -644,3 +644,91 @@ describe('varrerRetratoDoProjeto: vínculo da tarefa', () => {
     )
   })
 })
+
+describe('varrerRetratoDoProjeto: conferência da tarefa', () => {
+  const issuesDoGitHub = [
+    {
+      number: 20,
+      state: 'open',
+      title: 'Tarefa no padrão',
+      body: 'corpo vinte',
+      labels: [{ name: 'gitorch:task' }, 'bug'],
+    },
+    { number: 21, state: 'open', title: 'Sem corpo', body: null, labels: [] },
+    { number: 22, state: 'open', title: 'PR disfarçado', pull_request: { url: 'x' } },
+    { number: 23, state: 'open' }, // resposta sem título: não dá para conferir
+  ]
+
+  function rotas() {
+    return ghGetFake({
+      '/repos/dono/repo/pulls?': [],
+      '/repos/dono/repo/issues?': issuesDoGitHub,
+    })
+  }
+
+  it('entrega título, corpo e etiquetas de cada issue (nunca PR) ao gancho, sem chamada nova ao GitHub', async () => {
+    const ghGet = rotas()
+    const conferirTarefa = vi.fn(async () => undefined)
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      conferirTarefa,
+    })
+    expect(conferirTarefa.mock.calls).toEqual([
+      [
+        {
+          numero: 20,
+          titulo: 'Tarefa no padrão',
+          corpo: 'corpo vinte',
+          etiquetas: ['gitorch:task', 'bug'],
+        },
+      ],
+      [{ numero: 21, titulo: 'Sem corpo', corpo: '', etiquetas: [] }],
+    ])
+    // só as duas leituras de sempre: PRs e issues
+    expect(ghGet).toHaveBeenCalledTimes(2)
+  })
+
+  it('o gancho roda DEPOIS de a ficha da issue ser gravada', async () => {
+    const ordem: string[] = []
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: rotas(),
+      atualizarFicha: async (a) => {
+        ordem.push(`ficha ${a.tipo} ${a.numero}`)
+      },
+      conferirTarefa: async (i) => {
+        ordem.push(`confere ${i.numero}`)
+      },
+    })
+    expect(ordem.indexOf('ficha issue 20')).toBeLessThan(ordem.indexOf('confere 20'))
+    expect(ordem.indexOf('ficha issue 21')).toBeLessThan(ordem.indexOf('confere 21'))
+  })
+
+  it('erro do gancho vira aviso e a varredura segue para a próxima issue', async () => {
+    const avisos: string[] = []
+    const conferirTarefa = vi.fn(async (i: { numero: number }) => {
+      if (i.numero === 20) throw new Error('quadro fora do ar')
+    })
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: rotas(),
+      atualizarFicha: async () => {},
+      conferirTarefa,
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(conferirTarefa).toHaveBeenCalledTimes(2)
+    expect(resumo.issues).toBe(3)
+    expect(avisos.some((a) => a.includes('#20') && a.includes('quadro fora do ar'))).toBe(true)
+  })
+
+  it('sem o gancho, nada muda (comportamento de antes)', async () => {
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: rotas(),
+      atualizarFicha: async () => {},
+    })
+    expect(resumo.issues).toBe(3)
+  })
+})

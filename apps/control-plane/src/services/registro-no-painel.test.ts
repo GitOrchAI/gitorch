@@ -9,7 +9,7 @@
 // faz os dois passarem (GREEN).
 
 import { describe, expect, it, vi } from 'vitest'
-import { registrarNoPainelUmaVez } from './registro-no-painel.js'
+import { registrarNoPainelSeForNovo, registrarNoPainelUmaVez } from './registro-no-painel.js'
 
 function prismaFake(eventosExistentes: Array<{ payload: unknown }>) {
   const create = vi.fn().mockResolvedValue({})
@@ -111,5 +111,20 @@ describe('registrarNoPainelUmaVez', () => {
       texto: 'automação falhando',
       chave: 'automacao:dono/repo:wf:123',
     })
+  })
+})
+
+describe('registrarNoPainelSeForNovo — devolve se gravou', () => {
+  it('true na primeira vez, false quando a chave já existia', async () => {
+    const eventos: Array<{ payload: unknown }> = []
+    const prisma = prismaFake(eventos)
+    prisma.event.create.mockImplementation(async ({ data }: { data: { payload: unknown } }) => {
+      eventos.push({ payload: data.payload })
+      return {}
+    })
+    const args = { prisma: prisma as never, projectId: 'p', chave: 'k', texto: 't' }
+    expect(await registrarNoPainelSeForNovo(args)).toBe(true)
+    expect(await registrarNoPainelSeForNovo(args)).toBe(false)
+    expect(eventos).toHaveLength(1)
   })
 })

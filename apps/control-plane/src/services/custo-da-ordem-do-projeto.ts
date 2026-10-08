@@ -96,6 +96,14 @@ export interface DepsDeCustoDaOrdem {
     candidato: CandidatoDeTroca,
     rodada: number
   ) => Promise<void>
+  /**
+   * Fase 4.3: a fila que acabou de ser lida, entregue a quem quiser usá-la
+   * SEM ler o quadro de novo. Só observa (a avaliação do custo da ordem não
+   * depende do que ele faz): um gancho que falha vai para `onErroDoGancho` e a
+   * pergunta ao dono segue normalmente.
+   */
+  aoLerAFila?: (projeto: ProjetoParaAvaliar, fila: PedidoNaFila[]) => Promise<void>
+  onErroDoGancho?: (projeto: ProjetoParaAvaliar, err: unknown) => void
   /** Um projeto não pode travar os outros. Chamado, nunca lançado de novo. */
   onErro?: (projeto: ProjetoParaAvaliar, err: unknown) => void
   /** Injetável para teste — mesmo padrão de `DepsDaOrdem.agora` (ordem-dos-pedidos.ts). */
@@ -183,6 +191,14 @@ export async function avaliarCustoDaOrdemDosProjetos(
     try {
       const fila = await deps.filaDoQuadro(projeto)
       if (!fila) continue // não deu para ler com confiança — tenta na próxima passada
+
+      if (deps.aoLerAFila) {
+        try {
+          await deps.aoLerAFila(projeto, fila)
+        } catch (err) {
+          deps.onErroDoGancho?.(projeto, err)
+        }
+      }
 
       const analise = analisarCustoDaOrdem(fila)
       const estado = await deps.lerEstado(projeto.id)

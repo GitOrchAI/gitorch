@@ -310,3 +310,40 @@ describe('lerEstadoBrutoDoAvisoDeCustoDaOrdem — parsing puro do JSON gravado',
     ).toBeNull()
   })
 })
+
+describe('avaliarCustoDaOrdemDosProjetos — gancho da fila lida (4.3)', () => {
+  it('entrega a fila já lida ao gancho, sem nova leitura, e segue com o aviso normal', async () => {
+    const aoLerAFila = vi.fn().mockResolvedValue(undefined)
+    const filaDoQuadro = vi.fn(async () => FILA_CARA)
+    const d = deps({ aoLerAFila, filaDoQuadro })
+    await avaliarCustoDaOrdemDosProjetos(d)
+    expect(aoLerAFila).toHaveBeenCalledTimes(1)
+    expect(aoLerAFila).toHaveBeenCalledWith(P1, FILA_CARA)
+    expect(filaDoQuadro).toHaveBeenCalledTimes(1)
+    expect(d.avisar).toHaveBeenCalledTimes(1)
+  })
+
+  it('fila ilegível (null): o gancho não é chamado', async () => {
+    const aoLerAFila = vi.fn().mockResolvedValue(undefined)
+    await avaliarCustoDaOrdemDosProjetos(deps({ aoLerAFila, filaDoQuadro: async () => null }))
+    expect(aoLerAFila).not.toHaveBeenCalled()
+  })
+
+  it('o gancho que falha não derruba nem atrasa o aviso ao dono', async () => {
+    const aoLerAFila = vi.fn().mockRejectedValue(new Error('painel fora do ar'))
+    const onErroDoGancho = vi.fn()
+    const d = deps({ aoLerAFila, onErroDoGancho })
+    const resumo = await avaliarCustoDaOrdemDosProjetos(d)
+    expect(resumo.avisados).toBe(1)
+    expect(onErroDoGancho).toHaveBeenCalledTimes(1)
+  })
+
+  it('o gancho roda para cada projeto com fila, em série', async () => {
+    const ordem: string[] = []
+    const aoLerAFila = vi.fn(async (p: ProjetoParaAvaliar) => {
+      ordem.push(p.id)
+    })
+    await avaliarCustoDaOrdemDosProjetos(deps({ projetos: async () => [P1, P2], aoLerAFila }))
+    expect(ordem).toEqual(['proj_1', 'proj_2'])
+  })
+})

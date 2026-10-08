@@ -1,4 +1,5 @@
 import { exigirPermissao, type NivelDeAutonomia } from '@gitorch/cadence'
+import { esquecerLeituraDoQuadro } from './leitura-do-quadro-em-cache.js'
 
 // O cliente ajusta a ordem dos pedidos NO PAINEL, e o quadro dele no GitHub
 // acompanha.
@@ -82,15 +83,22 @@ export async function aplicarOrdemDosPedidos(
 
   // Do começo para o fim: o primeiro vai para o topo, e cada seguinte vai
   // logo depois do anterior, que já está no lugar certo.
-  for (let i = 0; i < args.pedidos.length; i++) {
-    const atual = args.pedidos[i]!
-    const anterior = i > 0 ? args.pedidos[i - 1] : undefined
-    await deps.quadro.moverItemDoQuadro({
-      projectId: args.projectId,
-      itemId: atual.itemId,
-      // Sem `depoisDe`, vai para o topo — que é onde o primeiro deve ficar.
-      ...(anterior ? { depoisDe: anterior.itemId } : {}),
-    })
+  try {
+    for (let i = 0; i < args.pedidos.length; i++) {
+      const atual = args.pedidos[i]!
+      const anterior = i > 0 ? args.pedidos[i - 1] : undefined
+      await deps.quadro.moverItemDoQuadro({
+        projectId: args.projectId,
+        itemId: atual.itemId,
+        // Sem `depoisDe`, vai para o topo — que é onde o primeiro deve ficar.
+        ...(anterior ? { depoisDe: anterior.itemId } : {}),
+      })
+    }
+  } finally {
+    // A leitura do quadro guardada em memória (conferência das tarefas e custo
+    // da ordem) mostra a ordem de antes: a próxima precisa ir ao GitHub, mesmo
+    // que um movimento tenha falhado no meio e deixado o quadro meio mexido.
+    esquecerLeituraDoQuadro(args.projectId)
   }
 
   const ordem = args.pedidos.map((p) => p.pedido)
