@@ -2,7 +2,7 @@ import { lerCuidaPorOrigem, lerJanelaEmConstrucaoHoras } from './cuidado-por-ori
 import { horasEmConstrucao } from './em-construcao.js'
 import { decidirProximoPasso } from './motor-do-proximo-passo.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
-import { mesclarPr } from './merge-do-pr.js'
+import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 import { lerEstadoDoCiDoHead } from './estado-da-verificacao-do-github.js'
 import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
 import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
@@ -104,6 +104,29 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       onWarn
     )
     return { baseDoPr, branchPadrao }
+  }
+
+  // A cabeça VIVA do PR na porta do merge. `currentHeadSha` é o commit que o QA
+  // aprovou (veio da varredura ou da leitura do começo da decisão); o que entra
+  // na principal é o que está no PR agora. Comparar o aprovado com ele mesmo não
+  // protege de nada: o porteiro de `mesclarPr` só serve se `shaAtual` for lido
+  // aqui, fresco. Sem a leitura não há como saber o que entraria: `null`.
+  const lerCabecaVivaParaMerge = async (): Promise<string | null> => {
+    try {
+      const pr = (await ghGet(`/repos/${projeto.wingId}/pulls/${depsVigia.numero}`, token)) as {
+        head?: { sha?: unknown }
+      } | null
+      const sha = pr?.head?.sha
+      if (typeof sha === 'string' && sha !== '') return sha
+      onWarn(
+        `decidirAcaoNoPrOrfaoIntegrado: a leitura do PR #${depsVigia.numero} não trouxe o commit atual`
+      )
+    } catch (err) {
+      onWarn(
+        `decidirAcaoNoPrOrfaoIntegrado: não deu para ler o commit atual do PR #${depsVigia.numero}: ${(err as Error).message}`
+      )
+    }
+    return null
   }
 
   // O estado do CI relido fresco na porta do merge — a mesma leitura única do
@@ -474,32 +497,47 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   if (acaoMotor.acao === 'mesclar') {
     try {
       const baseDoMerge = await lerBaseParaMerge()
-      const result = await mesclarPr({
-        numeroDoPr: depsVigia.numero,
-        ciState: depsVigia.verificacao === 'verde' ? 'green' : 'red',
-        vereditoDoQa: vereditoDoQa ?? 'unknown',
-        diffTruncado: diffTruncado,
-        // A origem real da ficha do PR, não o rótulo: o rótulo da automação
-        // basta para o vigia olhar o PR, mas não prova que alguém o encomendou.
-        delegado: ehEntregaDoDevAssincrono(origem),
-        ...baseDoMerge,
-        shaRevisado: currentHeadSha ?? '',
-        shaAtual: currentHeadSha ?? '',
-        entendimentoPresente: entendimentoCompleto,
-        lerCiAgora: lerCiAgoraParaMerge,
-        merge: async () => {
-          try {
-            await ghSend('PUT', `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`, token, {
-              sha: currentHeadSha,
-              commit_title: `Merge pull request #${depsVigia.numero} from GitOrch`,
-              commit_message: `Auto-merged by GitOrch (${origem} policy)`,
+      // Imediatamente antes do merge: o commit que o QA aprovou contra o que o
+      // PR tem agora. O `sha` do PUT é o vivo, nunca o herdado do começo.
+      const cabecaViva = await lerCabecaVivaParaMerge()
+      const result: ResultadoDoMerge =
+        cabecaViva === null
+          ? {
+              mesclado: false,
+              motivo:
+                'não deu para ler o commit atual deste pull request no instante do merge — por segurança não mescla agora',
+            }
+          : await mesclarPr({
+              numeroDoPr: depsVigia.numero,
+              ciState: depsVigia.verificacao === 'verde' ? 'green' : 'red',
+              vereditoDoQa: vereditoDoQa ?? 'unknown',
+              diffTruncado: diffTruncado,
+              // A origem real da ficha do PR, não o rótulo: o rótulo da automação
+              // basta para o vigia olhar o PR, mas não prova que alguém o encomendou.
+              delegado: ehEntregaDoDevAssincrono(origem),
+              ...baseDoMerge,
+              shaRevisado: currentHeadSha ?? '',
+              shaAtual: cabecaViva,
+              entendimentoPresente: entendimentoCompleto,
+              lerCiAgora: lerCiAgoraParaMerge,
+              merge: async () => {
+                try {
+                  await ghSend(
+                    'PUT',
+                    `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`,
+                    token,
+                    {
+                      sha: cabecaViva,
+                      commit_title: `Merge pull request #${depsVigia.numero} from GitOrch`,
+                      commit_message: `Auto-merged by GitOrch (${origem} policy)`,
+                    }
+                  )
+                  return true
+                } catch (err) {
+                  return false
+                }
+              },
             })
-            return true
-          } catch (err) {
-            return false
-          }
-        },
-      })
 
       if (result.mesclado) {
         // O registro do motor só entra quando a mesclagem de fato acontece:

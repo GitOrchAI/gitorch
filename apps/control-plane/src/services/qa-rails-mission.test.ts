@@ -4891,6 +4891,126 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
 // encerrada ("não julgado"). Três PRs pendentes à frente (#4041, #4052, #4055)
 // impediam julgar QUALQUER outro; o #4046, 14/14 verde, ficou 10+ min sem
 // parecer porque o QA batia sempre nos mesmos pendentes.
+describe('Entendimento do pedido registrado no julgamento (Fase 2.4)', () => {
+  const ENTENDIMENTO_DO_APPROVE = {
+    deOndeVeio: 'Jules solicitou via PR',
+    oQueMuda: 'Adiciona endpoints de review com regras',
+    queAjusteE: 'feature importante',
+    porQueExiste: 'para o app ler as reviews reais',
+  }
+  type ArgsDoRegistro = {
+    numeroDoPr: number
+    headSha: string | undefined
+    entendimento: typeof ENTENDIMENTO_DO_APPROVE
+  }
+
+  it('registra o entendimento do PR julgado, com o commit julgado, ANTES de postar o parecer', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+    const reviewsNaHoraDoRegistro: number[] = []
+    const registrarEntendimento = vi.fn(async (_: ArgsDoRegistro) => {
+      reviewsNaHoraDoRegistro.push(posted.reviews.length)
+    })
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      registrarEntendimento,
+    })
+
+    expect(registrarEntendimento).toHaveBeenCalledTimes(1)
+    expect(registrarEntendimento).toHaveBeenCalledWith({
+      numeroDoPr: 42,
+      headSha: 'abc123',
+      entendimento: ENTENDIMENTO_DO_APPROVE,
+    })
+    expect(reviewsNaHoraDoRegistro).toEqual([0])
+    expect(posted.reviews).toHaveLength(1)
+  })
+
+  it('registra também quando o veredito é de reprovação', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const registrarEntendimento = vi.fn(async (_: ArgsDoRegistro) => undefined)
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      registrarEntendimento,
+    })
+
+    expect(registrarEntendimento).toHaveBeenCalledWith(
+      expect.objectContaining({
+        numeroDoPr: 42,
+        entendimento: expect.objectContaining({ oQueMuda: 'Validação no controller' }),
+      })
+    )
+  })
+
+  it('falha no registro NUNCA derruba o julgamento: avisa e o parecer sai igual', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+    const onWarn = vi.fn()
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      registrarEntendimento: async () => {
+        throw new Error('cortex fora do ar')
+      },
+      onWarn,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(posted.reviews).toHaveLength(1)
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('entendimento do PR #42'))
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('cortex fora do ar'))
+  })
+
+  it('só registra o que o QA de fato julgou: sem PR para julgar ou sem a trava, o gancho não é chamado', async () => {
+    const semPr = vi.fn(async (_: ArgsDoRegistro) => undefined)
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: fakeFetch([]),
+      registrarEntendimento: semPr,
+    })
+    expect(semPr).not.toHaveBeenCalled()
+
+    const semTrava = vi.fn(async (_: ArgsDoRegistro) => undefined)
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: fakeFetch([{ number: 42, user: 'jules' }]),
+      adquirirTrava: async () => false,
+      registrarEntendimento: semTrava,
+    })
+    expect(semTrava).not.toHaveBeenCalled()
+  })
+
+  it('sem o gancho, o julgamento é o de sempre', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(posted.reviews).toHaveLength(1)
+  })
+})
+
 describe('runQaMissionViaRails: a fila anda quando o primeiro PR está pendente', () => {
   const PENDENTE = [{ name: 'ci', status: 'in_progress' }]
   const VERDE = [{ name: 'ci', conclusion: 'success', status: 'completed' }]

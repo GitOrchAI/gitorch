@@ -36,10 +36,8 @@ const AS_PECAS = [
 
 /** As ainda não ligadas. Cada fase seguinte remove as suas. */
 const PENDENTES: ReadonlySet<string> = new Set<string>([
-  'acharTarefaDoItem',
   'racharTarefaParecidaPeloCodigo',
   'perguntarSobreVinculoDaTarefa',
-  'registrarEntendimentoDoPedido',
   'registrarDirecaoDoProjeto',
   'conferirTarefaSemPedido',
   'ajustarTarefaForaDoPadrao',

@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildMissionEnricher,
+  ehGavetaDeEntendimento,
+  PREFIXO_DA_GAVETA_DE_ENTENDIMENTO,
   persistMissionMemory,
+  SALA_DO_ENTENDIMENTO,
   type MissionMemory,
 } from './mission-context.js'
 
@@ -171,6 +174,83 @@ describe('buildMissionEnricher', () => {
     const enrich = buildMissionEnricher({ cortex })
 
     await expect(enrich({ projectId: 'p1', role: 'ra' })).resolves.toEqual([])
+  })
+})
+
+describe('gavetas de entendimento do pedido não viram lacuna para ninguém', () => {
+  const ra = { content: '### Journey 0: comprador\n1. abre', createdAt: '2026-10-05T10:00:00Z' }
+  const lacuna = {
+    content: 'QA gap: o repositório não tem verificação automática',
+    createdAt: '2026-10-06T10:00:00Z',
+  }
+  const entendimento = {
+    content: `${PREFIXO_DA_GAVETA_DE_ENTENDIMENTO}42 (commit abc123):\nDe onde veio: Jules\nO que muda: o cache`,
+    createdAt: '2026-10-07T10:00:00Z',
+  }
+
+  it('reconhece a gaveta pelo prefixo e só por ele', () => {
+    expect(ehGavetaDeEntendimento(entendimento.content)).toBe(true)
+    expect(ehGavetaDeEntendimento(lacuna.content)).toBe(false)
+    expect(ehGavetaDeEntendimento(`QA judged PR #42: ${PREFIXO_DA_GAVETA_DE_ENTENDIMENTO}`)).toBe(
+      false
+    )
+  })
+
+  const papeis = ['po', 'ra', 'qa', 'sm'] as const
+  for (const role of papeis) {
+    it(`${role} recebe exatamente o que recebia antes, com as gavetas de entendimento na memória`, async () => {
+      const antes = fakeCortex([ra, lacuna], { ra: [ra], qa: [lacuna] })
+      const depois = fakeCortex([ra, lacuna, entendimento], {
+        ra: [ra],
+        qa: [lacuna],
+        // Como o registro grava: na sala própria (e, por isso, na lista geral).
+        [SALA_DO_ENTENDIMENTO]: [entendimento],
+      })
+
+      const semEntendimento = await buildMissionEnricher({ cortex: antes })({
+        projectId: 'p1',
+        role,
+      })
+      const comEntendimento = await buildMissionEnricher({ cortex: depois })({
+        projectId: 'p1',
+        role,
+      })
+
+      expect(comEntendimento).toEqual(semEntendimento)
+      expect(comEntendimento.join('\n')).not.toContain(PREFIXO_DA_GAVETA_DE_ENTENDIMENTO)
+    })
+  }
+
+  it('por defesa, a gaveta de entendimento que cair na sala `qa` também não vira lacuna para o PO', async () => {
+    const baseline = fakeCortex([ra, lacuna], { ra: [ra], qa: [lacuna] })
+    const misturada = fakeCortex([ra, lacuna, entendimento], {
+      ra: [ra],
+      qa: [lacuna, entendimento],
+    })
+
+    const esperado = await buildMissionEnricher({ cortex: baseline })({
+      projectId: 'p1',
+      role: 'po',
+    })
+    const recebido = await buildMissionEnricher({ cortex: misturada })({
+      projectId: 'p1',
+      role: 'po',
+    })
+
+    expect(recebido).toEqual(esperado)
+  })
+
+  it('o PO continua recebendo a lacuna do QA e o contrato do RA', async () => {
+    const cortex = fakeCortex([ra, lacuna, entendimento], {
+      ra: [ra],
+      qa: [lacuna, entendimento],
+      [SALA_DO_ENTENDIMENTO]: [entendimento],
+    })
+
+    const linhas = await buildMissionEnricher({ cortex })({ projectId: 'p1', role: 'po' })
+
+    expect(linhas[0]).toContain('### Journey 0')
+    expect(linhas[1]).toContain('QA gap: o repositório não tem verificação automática')
   })
 })
 

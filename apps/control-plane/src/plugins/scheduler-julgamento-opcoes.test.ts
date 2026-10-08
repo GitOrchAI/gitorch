@@ -1,7 +1,7 @@
 import { describe, expect, test, vi, type Mock } from 'vitest'
-import { montarOpcoesDoJulgamento } from './scheduler.js'
+import { montarOpcoesDoJulgamento, type PrismaDoJulgamento } from './scheduler.js'
 import type { PrismaDevSession } from '../services/dev-session-store.js'
-import type { PrismaDaTravaDeParecer } from '../services/trava-de-parecer.js'
+import { SALA_DO_ENTENDIMENTO, type MissionMemory } from '../services/mission-context.js'
 
 // Achado 1 (Crítico) da revisão da Tarefa 7: `registrarPendencia`,
 // `limparPendencia` e `avisarDono` foram ADICIONADAS à interface de
@@ -37,7 +37,7 @@ import type { PrismaDaTravaDeParecer } from '../services/trava-de-parecer.js'
 // (erro de tipo "Property is missing"), antes mesmo dos testes rodarem — o
 // mesmo esquecimento que passou por 2 revisões inteiras (Tarefas 7 e 10)
 // sem o compilador reclamar nada, porque a opção era só OPCIONAL demais.
-function prismaFalso() {
+function prismaFalso(fichaDoPr: unknown = null) {
   return {
     devSession: {
       upsert: vi.fn(async (_args: unknown) => undefined),
@@ -55,8 +55,23 @@ function prismaFalso() {
     repoItem: {
       upsert: vi.fn(async (_args: unknown) => undefined),
       updateMany: vi.fn(async (_args: unknown) => ({ count: 1 })),
+      // A ficha do PR (lida para saber se o entendimento mudou).
+      findUnique: vi.fn(async (_args: unknown) => fichaDoPr),
     },
-  } as unknown as PrismaDevSession & PrismaDaTravaDeParecer
+  } as unknown as PrismaDoJulgamento
+}
+
+/** O Cortex em memória: guarda o que é gravado, por id, como o real. */
+function cortexFalso() {
+  const gavetas = new Map<string, Parameters<MissionMemory['writeDrawer']>[0]>()
+  const cortex: MissionMemory = {
+    recallLocal: () => [],
+    getDrawerById: (id) => gavetas.get(id) ?? null,
+    writeDrawer: vi.fn(async (g) => {
+      gavetas.set(g.id, g)
+    }),
+  }
+  return { cortex, gavetas }
 }
 
 /** O `event` do fake, para conferir o que foi de fato gravado/lido. */
@@ -67,7 +82,11 @@ function eventoDe(prisma: PrismaDevSession) {
 describe('montarOpcoesDoJulgamento', () => {
   test('registrarPendencia devolvido chama updateMany no Prisma real (não um stub desconectado)', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_1',
+    })
 
     const agora = new Date('2026-01-01T00:00:00.000Z')
     // As quatro funções são sempre devolvidas (só `avisarDono` é condicional)
@@ -88,7 +107,11 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('limparPendencia devolvido chama update no Prisma real', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_1',
+    })
 
     expect(opcoes.limparPendencia).toBeDefined()
     await opcoes.limparPendencia!({ sessionName: 'sessions/abc' })
@@ -101,7 +124,11 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('registrarAvisoDeDemora devolvido chama update no Prisma real', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_1',
+    })
 
     expect(opcoes.registrarAvisoDeDemora).toBeDefined()
     await opcoes.registrarAvisoDeDemora!({ sessionName: 'sessions/abc', hash: 'h1' })
@@ -120,7 +147,11 @@ describe('montarOpcoesDoJulgamento', () => {
   // pegado o furo antes do merge.
   test('registrarFracassoDeMerge devolvido chama update no Prisma real (não um stub desconectado)', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_1',
+    })
 
     const agora = new Date('2026-01-01T00:00:00.000Z')
     expect(opcoes.registrarFracassoDeMerge).toBeDefined()
@@ -141,7 +172,11 @@ describe('montarOpcoesDoJulgamento', () => {
   // na esteira" duas vezes neste arquivo.
   test('registrarJulgamento devolvido grava o evento no PROJETO recebido', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_do_cliente_a',
+    })
 
     expect(opcoes.registrarJulgamento).toBeDefined()
     await opcoes.registrarJulgamento!({ repositorio: 'acme/api', peloPortao: true })
@@ -159,7 +194,11 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('registrarJulgamento leva peloPortao=false sem inverter', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_1',
+    })
     await opcoes.registrarJulgamento!({ repositorio: 'acme/api', peloPortao: false })
 
     expect(eventoDe(prisma).create).toHaveBeenCalledWith(
@@ -171,7 +210,11 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('lerHistoricoDoProjeto devolvido lê SÓ o projeto recebido', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_do_cliente_a',
+    })
 
     expect(opcoes.lerHistoricoDoProjeto).toBeDefined()
     await opcoes.lerHistoricoDoProjeto!('acme/api')
@@ -193,7 +236,11 @@ describe('montarOpcoesDoJulgamento', () => {
   // desta iteração.
   test('adquirirTrava devolvido disputa a trava da ficha do PR no PROJETO recebido', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_do_cliente_a',
+    })
 
     expect(await opcoes.adquirirTrava({ numeroDoPr: 42, headSha: 'abc123' })).toBe(true)
 
@@ -215,14 +262,22 @@ describe('montarOpcoesDoJulgamento', () => {
   test('adquirirTrava devolve false quando o banco diz que outra missão já tomou o commit', async () => {
     const prisma = prismaFalso()
     vi.mocked(prisma.repoItem.updateMany).mockResolvedValueOnce({ count: 0 })
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_1',
+    })
 
     expect(await opcoes.adquirirTrava({ numeroDoPr: 42, headSha: 'abc123' })).toBe(false)
   })
 
   test('liberarTrava devolvido zera a validade só do commit informado, no projeto recebido', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_do_cliente_a',
+    })
 
     await opcoes.liberarTrava({ numeroDoPr: 42, headSha: 'abc123' })
 
@@ -239,7 +294,11 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('assentarTrava devolvido encurta a validade só do commit informado, no projeto recebido', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma,
+      projectId: 'proj_do_cliente_a',
+    })
     const antes = Date.now()
 
     await opcoes.assentarTrava({ numeroDoPr: 42, headSha: 'abc123' })
@@ -261,10 +320,68 @@ describe('montarOpcoesDoJulgamento', () => {
     expect(ate).toBeLessThanOrEqual(Date.now() + 3 * 60_000)
   })
 
+  // O entendimento do pedido entra pelo gancho `registrarEntendimento` (e não
+  // por `prisma`/`projectId` soltos em `runQaMissionViaRails`, que ligariam o
+  // grafo de vínculos no prompt do juiz). Sendo obrigatório no retorno desta
+  // função, esquecer de ligá-lo quebra a build; estes testes provam que ele
+  // está ligado à ficha do PR e ao Cortex do PROJETO recebido.
+  const ENTENDIMENTO = {
+    deOndeVeio: 'Jules pelo GitOrch',
+    oQueMuda: 'ajusta o cache de sessão',
+    queAjusteE: 'correção',
+    porQueExiste: 'sessão expirava cedo demais',
+  }
+
+  test('registrarEntendimento devolvido grava o entendimento na ficha do PR, SEM `estado`, e a gaveta na sala própria', async () => {
+    const prisma = prismaFalso()
+    const { cortex, gavetas } = cortexFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, cortex, projectId: 'proj_do_cliente_a' })
+
+    expect(opcoes.registrarEntendimento).toBeDefined()
+    await opcoes.registrarEntendimento!({
+      numeroDoPr: 42,
+      headSha: 'abc123',
+      entendimento: ENTENDIMENTO,
+    })
+
+    const gravacao = vi.mocked(prisma.repoItem.upsert).mock.calls[0]?.[0] as {
+      where: unknown
+      update: Record<string, unknown>
+    }
+    expect(gravacao.where).toEqual({
+      projectId_tipo_numero: { projectId: 'proj_do_cliente_a', tipo: 'pr', numero: 42 },
+    })
+    expect(gravacao.update).toEqual({ entendimento: ENTENDIMENTO })
+    expect(gravacao.update).not.toHaveProperty('estado')
+
+    expect([...gavetas.values()]).toEqual([
+      expect.objectContaining({
+        wingId: 'proj_do_cliente_a',
+        roomId: SALA_DO_ENTENDIMENTO,
+        id: 'entendimento:proj_do_cliente_a:42:abc123',
+      }),
+    ])
+  })
+
+  test('registrarEntendimento não regrava a ficha quando ela já tem o mesmo entendimento', async () => {
+    const prisma = prismaFalso({ entendimento: ENTENDIMENTO })
+    const { cortex } = cortexFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, cortex, projectId: 'proj_1' })
+
+    await opcoes.registrarEntendimento!({
+      numeroDoPr: 42,
+      headSha: 'abc123',
+      entendimento: ENTENDIMENTO,
+    })
+
+    expect(prisma.repoItem.upsert).not.toHaveBeenCalled()
+  })
+
   test('avisarDono presente no objeto devolvido quando um notificador foi construído', () => {
     const notify = vi.fn(async (_mensagem: string) => true)
     const opcoes = montarOpcoesDoJulgamento({
       prisma: prismaFalso(),
+      cortex: cortexFalso().cortex,
       projectId: 'proj_1',
       avisarDono: notify,
     })
@@ -273,7 +390,11 @@ describe('montarOpcoesDoJulgamento', () => {
   })
 
   test('avisarDono AUSENTE (não presente-com-undefined) sem notificador — mesma disciplina do resto do scheduler', () => {
-    const opcoes = montarOpcoesDoJulgamento({ prisma: prismaFalso(), projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      cortex: cortexFalso().cortex,
+      prisma: prismaFalso(),
+      projectId: 'proj_1',
+    })
 
     // `in` e não `toBeUndefined()`: a regressão que este teste pega é a
     // chave existir com valor `undefined` (o que `runQaMissionViaRails`

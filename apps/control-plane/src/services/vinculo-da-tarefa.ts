@@ -15,12 +15,18 @@ export interface VinculoDaTarefa {
   origemDoVinculo: OrigemDoVinculo
 }
 
+/** O que a busca lê de uma sessão: a linha inteira serve, mas só estes campos são usados. */
+export type SessaoParaVinculo = Pick<
+  LinhaDeSessao,
+  'sessionName' | 'issueNumber' | 'pullRequestNumber'
+>
+
 export interface AcharTarefaDeps {
   numeroDoPr: number
   autor: string | undefined
   corpo: string | undefined
   headRefName: string | undefined
-  sessoes: LinhaDeSessao[]
+  sessoes: SessaoParaVinculo[]
   /** `ProjectV2Client.closingIssuesDoPr` — injetado para o módulo continuar
    *  testável sem rede. */
   closingIssues: () => Promise<number[]>

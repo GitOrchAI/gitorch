@@ -275,6 +275,8 @@ describe.skipIf(!reachable)('um parecer por versão do pedido (integration)', ()
   function opcoesDeProducao(projectId: string) {
     return montarOpcoesDoJulgamento({
       prisma: prisma as unknown as PrismaDoScheduler,
+      // A memória do projeto não é o objeto deste teste: uma que não guarda nada.
+      cortex: { recallLocal: () => [], writeDrawer: async () => undefined },
       projectId,
       avisarDono: async () => true,
     })

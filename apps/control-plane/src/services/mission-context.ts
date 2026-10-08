@@ -74,6 +74,8 @@ export interface MissionMemory {
     roomId?: string,
     hallId?: string
   ): Array<{ content: string; createdAt?: string }>
+  /** Lê uma gaveta pelo id (o Cortex tem). Opcional: quem grava com id fixo usa para não regravar o que já está igual. */
+  getDrawerById?(id: string): { content: string } | null
   writeDrawer(drawer: {
     id: string
     wingId: string
@@ -87,6 +89,26 @@ export interface MissionMemory {
     confidence: number
     tags: string[]
   }): Promise<void>
+}
+
+/**
+ * Onde o QA guarda o entendimento do pedido que formou ao julgar um PR
+ * (entendimento-do-pedido.ts). É sala PRÓPRIA, e não a sala `qa`: o PO lê as
+ * gavetas da sala `qa` como lacunas candidatas a tarefa, e um entendimento
+ * não é lacuna nenhuma.
+ */
+export const SALA_DO_ENTENDIMENTO = 'qa-entendimento'
+
+/** Como toda gaveta de entendimento do pedido começa. */
+export const PREFIXO_DA_GAVETA_DE_ENTENDIMENTO = 'Entendimento do pull request #'
+
+/**
+ * A gaveta é de entendimento do pedido? A lista geral do projeto (sem sala)
+ * mistura todas as salas, e é por aqui que o enriquecedor tira essas gavetas
+ * do que os agentes leem como memória do projeto.
+ */
+export function ehGavetaDeEntendimento(content: string): boolean {
+  return content.startsWith(PREFIXO_DA_GAVETA_DE_ENTENDIMENTO)
 }
 
 const MAX_MEMORIES = 5
@@ -141,7 +163,9 @@ export function buildMissionEnricher(
           // Cortex, packages/cortex/src/core/layers.ts); o corte por item
           // (MAX_MEMORY_CHARS, abaixo) é o mesmo que as memórias genéricas já
           // usam — declarado, não um teto silencioso adicional.
-          qaDrawers = [...deps.cortex.recallLocal(projectId, 'qa')].sort(porMaisRecente)
+          qaDrawers = [...deps.cortex.recallLocal(projectId, 'qa')]
+            .filter((d) => !ehGavetaDeEntendimento(d.content))
+            .sort(porMaisRecente)
         }
 
         // TODOS OS AGENTES APRENDEM COM O PROJETO — ordem do dono, 25/08:
@@ -161,7 +185,10 @@ export function buildMissionEnricher(
             ? []
             : memoriaDoPapel({
                 papel: role,
-                lerSala: (sala) => [...cortex.recallLocal(projectId, sala)],
+                lerSala: (sala) =>
+                  cortex
+                    .recallLocal(projectId, sala)
+                    .filter((d) => !ehGavetaDeEntendimento(d.content)),
               })
 
         // As gavetas do QA já entram como bullets próprios (abaixo); não
@@ -177,6 +204,7 @@ export function buildMissionEnricher(
           .filter(
             (d) =>
               d.content !== raIntact &&
+              !ehGavetaDeEntendimento(d.content) &&
               !qaContents.has(d.content) &&
               !dirigidasContents.has(d.content)
           )
