@@ -291,6 +291,21 @@ export interface VigiliaDoJulgamentoOptions {
    * tempo de um julgamento depois de já julgado.
    */
   assentarTrava?: (args: { numeroDoPr: number; headSha: string }) => Promise<void>
+  /**
+   * Guarda o entendimento do pedido que o juiz formou sobre o PR que acabou de
+   * julgar (ficha do PR e memória do projeto). Chamado logo depois do
+   * veredito, antes de o parecer ser postado, e só para o que o QA de fato
+   * julgou. Falha aqui nunca derruba o julgamento: vira aviso.
+   *
+   * Vive nesta família, e não em `prisma`/`projectId` soltos, pelo mesmo
+   * motivo da trava: esses dois ligam o grafo de vínculos no prompt do juiz, e
+   * guardar o que ele entendeu não pode mudar o que ele lê.
+   */
+  registrarEntendimento?: (args: {
+    numeroDoPr: number
+    headSha: string | undefined
+    entendimento: QaVerdictForm['entendimento']
+  }) => Promise<void>
 }
 
 import type { PrismaClient } from '@prisma/client'
@@ -1808,6 +1823,21 @@ async function julgarEntregaViaRails(
   // adiante neste arquivo), para o RA fundamentar e o PO transformar em tarefa.
   const rebaixadoPeloPortao = verdict.verdict === 'approve' && (ciState !== 'green' || truncado)
   const effectiveVerdict = rebaixadoPeloPortao ? 'request_changes' : verdict.verdict
+
+  // O que o juiz entendeu do pedido fica guardado para quem decide depois (o
+  // vigia lê na ficha do PR; as missões futuras, na memória do projeto). Vale
+  // para os dois vereditos: o entendimento é anterior à opinião sobre o código.
+  if (options.registrarEntendimento) {
+    try {
+      await options.registrarEntendimento({
+        numeroDoPr: target.number,
+        headSha: pr.head?.sha,
+        entendimento: verdict.entendimento,
+      })
+    } catch (err) {
+      options.onWarn?.(`[qa] não consegui guardar o entendimento do PR #${target.number}: ${err}`)
+    }
+  }
 
   // A reprovação que veio do PORTÃO carrega marca própria.
   //

@@ -70,6 +70,26 @@ export interface VarreduraDoRetratoDeps {
     aplicar: (args: { numero: number; pr: PrCru }) => Promise<boolean>
     teto: number
   }
+  /** Liga o PR aberto à tarefa de origem (ver vinculo-no-retrato.ts). Roda
+   *  DEPOIS do laço de issues, porque a pergunta "a tarefa tem a etiqueta de
+   *  delegação?" é respondida pela lista de issues abertas que aquele laço já
+   *  baixou — nenhuma leitura por issue.
+   *
+   *  `aplicar` devolve `true` só quando procurou de verdade (gasta o teto do
+   *  ciclo). `orcamentoMs` é o tempo máximo do projeto nesta etapa: passou
+   *  dele, a varredura deixa o resto dos PRs para o próximo ciclo e avisa.
+   *  Ausente = a varredura não liga PR a tarefa (comportamento de antes). */
+  vincularTarefa?: {
+    aplicar: (args: {
+      numero: number
+      pr: PrCru
+      etiquetasDaIssue: (issueNumber: number) => readonly string[]
+    }) => Promise<boolean>
+    teto: number
+    orcamentoMs: number
+    /** Relógio em milissegundos (injetável em teste). */
+    agora?: () => number
+  }
   /** Fase 1.2/5.2: alertas do Dependabot. Ausente = a varredura não lê
    *  alertas e diz isso no retorno (`leitura-nao-configurada`), nunca zero
    *  calado. */
@@ -128,6 +148,8 @@ interface IssueCru {
   number: number
   state?: string
   pull_request?: unknown
+  /** A rota `/issues` devolve objetos; aceita-se também o texto puro. */
+  labels?: Array<string | { name?: string }> | null
 }
 
 export async function varrerRetratoDoProjeto(
@@ -181,6 +203,9 @@ export async function varrerRetratoDoProjeto(
     }
   }
 
+  // Só guarda o PR cru quando há quem o ligue a uma tarefa.
+  const prsParaVincular: PrCru[] = []
+
   for (let pagina = 1; pagina <= MAX_PAGINAS_DA_VARREDURA; pagina += 1) {
     const lote = (await deps.ghGet(
       `/repos/${deps.repo}/pulls?state=open&per_page=100&page=${pagina}`
@@ -194,6 +219,7 @@ export async function varrerRetratoDoProjeto(
       prs += 1
       await tentarBackfill('pr', pr.number)
       await tentarReclassificarOrigem(pr)
+      if (deps.vincularTarefa) prsParaVincular.push(pr)
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {
@@ -202,6 +228,9 @@ export async function varrerRetratoDoProjeto(
       )
     }
   }
+
+  // Etiquetas de cada issue aberta, para o vínculo responder sem rede.
+  const etiquetasPorIssue = new Map<number, string[]>()
 
   for (let pagina = 1; pagina <= MAX_PAGINAS_DA_VARREDURA; pagina += 1) {
     const lote = (await deps.ghGet(
@@ -212,6 +241,13 @@ export async function varrerRetratoDoProjeto(
       // é uma issue lá dentro) — `pull_request` presente é a marca de que
       // esta linha já foi contada na varredura de PRs acima.
       if (issue.pull_request) continue
+      etiquetasPorIssue.set(
+        issue.number,
+        (issue.labels ?? []).flatMap((l) => {
+          const nome = typeof l === 'string' ? l : l.name
+          return nome ? [nome] : []
+        })
+      )
       await deps.atualizarFicha({
         tipo: 'issue',
         numero: issue.number,
@@ -228,7 +264,43 @@ export async function varrerRetratoDoProjeto(
     }
   }
 
+  await vincularPrsATarefas(deps, prsParaVincular, etiquetasPorIssue)
+
   return { prs, issues, ...(await varrerAlertas(deps)) }
+}
+
+/** Liga os PRs abertos às tarefas, dentro do teto e do orçamento de tempo do ciclo. */
+async function vincularPrsATarefas(
+  deps: VarreduraDoRetratoDeps,
+  prs: PrCru[],
+  etiquetasPorIssue: ReadonlyMap<number, readonly string[]>
+): Promise<void> {
+  const vinculo = deps.vincularTarefa
+  if (!vinculo) return
+  const agora = vinculo.agora ?? Date.now
+  const inicio = agora()
+  const etiquetasDaIssue = (issue: number): readonly string[] => etiquetasPorIssue.get(issue) ?? []
+
+  let tentativas = 0
+  for (const pr of prs) {
+    if (tentativas >= vinculo.teto) return
+    if (agora() - inicio >= vinculo.orcamentoMs) {
+      deps.onWarn?.(
+        `varredura-do-retrato: vínculo da tarefa de ${deps.repo} parou no orçamento de ${vinculo.orcamentoMs} ms; os PRs que faltam ficam para o próximo ciclo`
+      )
+      return
+    }
+    try {
+      if (await vinculo.aplicar({ numero: pr.number, pr, etiquetasDaIssue })) tentativas += 1
+    } catch (err) {
+      // Como no backfill: a falha depois de decidir procurar conta como
+      // tentativa, para não virar tempestade de repetição dentro do ciclo.
+      tentativas += 1
+      deps.onWarn?.(
+        `varredura-do-retrato: vínculo da tarefa falhou para pr #${pr.number} (${deps.repo}): ${err}`
+      )
+    }
+  }
 }
 
 async function varrerAlertas(

@@ -41,7 +41,12 @@ import {
   RemoteWorkspaceProvider,
 } from '@gitorch/workspace-engine'
 import { createSshCommandRunner } from '@gitorch/agents'
-import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
+import {
+  buildMissionEnricher,
+  persistMissionMemory,
+  type MissionMemory,
+} from '../services/mission-context.js'
+import { registrarEntendimentoDoPedido } from '../services/entendimento-do-pedido.js'
 import { resolveMissionDelivery, type MissionPathKind } from '../services/mission-outcome.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
@@ -328,7 +333,11 @@ import {
   listarPrsAbertosParaOVigia,
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
-import { atualizarFichaDoItem } from '../services/ficha-do-item.js'
+import {
+  atualizarFichaDoItem,
+  lerFichaDoItem,
+  type PrismaDaFichaDoItem,
+} from '../services/ficha-do-item.js'
 import { lancarErroDoGitHub, pularSeFreioDeCotaAtivo } from '../services/freio-de-cota-do-github.js'
 import {
   varrerRetratoDoProjeto,
@@ -348,6 +357,7 @@ import {
 } from '../services/tarefa-de-vulnerabilidade.js'
 import { atualizarGrafoDeVinculos } from '../services/grafo-de-vinculos.js'
 import { origemPrecisaDeReclassificacao } from '../services/origem-do-item.js'
+import { montarVinculoDoRetrato } from '../services/vinculo-no-retrato.js'
 import {
   classificarOrigemEIssueDoPr,
   estadoDoPrAPartirDoPayload,
@@ -1157,13 +1167,18 @@ export function montarOpcoesDeDelegacao(args: {
   }
 }
 
+/** O que as opções do julgamento pedem do banco: sessões, trava do parecer e a ficha do PR. */
+export type PrismaDoJulgamento = PrismaDevSession & PrismaDaTravaDeParecer & PrismaDaFichaDoItem
+
 /**
  * Monta as opções da família `VigiliaDoJulgamentoOptions` (ver
  * qa-rails-mission.ts) que o julgamento do QA recebe:
  * `registrarPendencia`/`limparPendencia`/`registrarAvisoDeDemora`/
  * `registrarFracassoDeMerge` ligadas ao Prisma real, a trava do parecer
  * (`adquirirTrava`/`liberarTrava`/`assentarTrava`, que segura o segundo
- * julgamento do mesmo commit), e `avisarDono` quando um notificador foi montado.
+ * julgamento do mesmo commit), o registro do entendimento do pedido
+ * (`registrarEntendimento`, ficha do PR + memória do projeto), e `avisarDono`
+ * quando um notificador foi montado.
  *
  * Achado 1 da revisão da Tarefa 7: as três primeiras foram ADICIONADAS à
  * interface de `runQaMissionViaRails` mas nunca chegavam a este ponto de
@@ -1195,7 +1210,12 @@ export function montarOpcoesDeDelegacao(args: {
  * como `Pick` optativo, igual sempre foi.
  */
 export function montarOpcoesDoJulgamento(args: {
-  prisma: PrismaDevSession & PrismaDaTravaDeParecer
+  prisma: PrismaDoJulgamento
+  /**
+   * A memória do projeto, onde o entendimento do pedido deixa a gaveta. Vem
+   * pronta de quem chama (`app.cortex`) para o gancho nunca nascer sem ela.
+   */
+  cortex: MissionMemory
   /**
    * O projeto DESTA iteração. Vem pronto porque só quem itera sabe de quem é o
    * repositório: `wingId` não é único global (dois clientes podem cadastrar o
@@ -1272,6 +1292,30 @@ export function montarOpcoesDoJulgamento(args: {
         numeroDoPr: a.numeroDoPr,
         headSha: a.headSha,
         agora: new Date(),
+      }),
+    // O entendimento do pedido que o juiz formou: ficha do PR + gaveta própria
+    // no Cortex. Também é gancho, e não `prisma`/`projectId` soltos, para não
+    // ligar o grafo de vínculos no prompt do juiz.
+    registrarEntendimento: (a) =>
+      registrarEntendimentoDoPedido({
+        projectId: args.projectId,
+        numeroDoPr: a.numeroDoPr,
+        headSha: a.headSha,
+        entendimento: a.entendimento,
+        deps: {
+          lerFicha: (numero) =>
+            lerFichaDoItem({
+              prisma: args.prisma,
+              projectId: args.projectId,
+              tipo: 'pr',
+              numero,
+            }),
+          atualizarFicha: async (item) => {
+            await atualizarFichaDoItem({ prisma: args.prisma, ...item })
+          },
+          cortex: args.cortex,
+          now: () => new Date().toISOString(),
+        },
       }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
@@ -4901,7 +4945,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       // nunca é gravado, o teto de 90min nunca amadurece, o
                       // dono nunca é avisado.
                       ...montarOpcoesDoJulgamento({
-                        prisma: app.prisma as unknown as PrismaDevSession & PrismaDaTravaDeParecer,
+                        prisma: app.prisma as unknown as PrismaDoJulgamento,
+                        cortex: app.cortex,
                         projectId: project.id,
                         avisarDono,
                       }),
@@ -7468,6 +7513,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Rodando antes, um pull request recém-órfão esperaria mais um ciclo.
   const ultimaVarreduraDePrOrfao = new Map<string, number>()
   const ultimaVarreduraDoRetrato = new Map<string, number>()
+  // Projeto + PR → quando a consulta de tarefa não achou nada. O gate de 30 min
+  // acima zera a cada reinício, então este mapa também vive no processo: o pior
+  // efeito de perdê-lo é repetir uma consulta que já seria feita.
+  const semVinculoDaTarefa = new Map<string, number>()
 
   const varrerPrsOrfaos = async (): Promise<void> => {
     const agora = new Date()
@@ -7964,6 +8013,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               return true
             },
           },
+          // Liga o PR aberto à tarefa de origem (vinculo-no-retrato.ts): a
+          // linha de sessão guardada responde sem rede, a consulta formal do
+          // GitHub é a exceção, e o freio de cota a pula.
+          vincularTarefa: montarVinculoDoRetrato({
+            prisma: app.prisma,
+            projectId: projeto.id,
+            repo: projeto.wingId,
+            githubToken: token,
+            cacheNegativo: semVinculoDaTarefa,
+            fetchImpl: fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS),
+            info: (m) => app.log.info(`[Scheduler] ${m}`),
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          }),
         })
         app.log.info(
           { projectId: projeto.id, ...resumo },

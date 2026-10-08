@@ -911,4 +911,108 @@ describe('decidirAcaoNoPrOrfaoIntegrado: a origem e o entendimento vêm da ficha
       motivo: 'origem "outro_bot" configurada para não cuidar',
     })
   })
+
+  describe('a cabeça do PR é relida viva na porta do merge', () => {
+    const URL_DO_PR = '/repos/org/repo/pulls/42'
+
+    /**
+     * O QA aprovou 'sha1' (parecer e `headSha` da varredura). `leituraDoPr`
+     * decide o que o GitHub devolve a cada leitura do PR, na ordem em que o
+     * motor pede (a 1ª é a base, a última antes do merge é a cabeça viva).
+     */
+    async function decidirComLeituras(leituraDoPr: (chamada: number) => unknown) {
+      const { prisma } = prismaComFichas({
+        pr: { origem: 'jules_gitorch', estado: estadoPadrao, entendimento },
+      })
+      let chamadas = 0
+      const ghGet = vi.fn(async (url: string) => {
+        if (url === URL_DO_PR) {
+          chamadas += 1
+          return leituraDoPr(chamadas)
+        }
+        return ghGetDeAprovado(url)
+      })
+      const ghSend = vi.fn(async () => ({}))
+      const registrarNoPainel = vi.fn(async () => undefined)
+      const onWarn = vi.fn()
+      const resultado = await decidirAcaoNoPrOrfaoIntegrado({
+        runtimeConfig: { cuidaPorOrigem: { jules: 'sim' } },
+        agora,
+        projeto,
+        token,
+        depsVigia: buildDepsVigia({ headSha: 'sha1' }),
+        prisma,
+        ghGet,
+        ghSend,
+        registrarNoPainel,
+        onWarn,
+      })
+      return { resultado, ghSend, registrarNoPainel, onWarn }
+    }
+
+    const mesclou = (ghSend: { mock: { calls: unknown[][] } }): boolean =>
+      ghSend.mock.calls.some((c) => c[0] === 'PUT' && String(c[1]).endsWith('/merge'))
+
+    it('cabeça viva igual à aprovada: mescla, e o sha do PUT é o da cabeça viva', async () => {
+      const { resultado, ghSend } = await decidirComLeituras(() => ({
+        head: { sha: 'sha1' },
+        base: { ref: 'main' },
+      }))
+      expect(resultado).toEqual({ acao: 'ignorar', motivo: 'Mesclado com sucesso' })
+      expect(ghSend).toHaveBeenCalledWith(
+        'PUT',
+        '/repos/org/repo/pulls/42/merge',
+        token,
+        expect.objectContaining({ sha: 'sha1' })
+      )
+    })
+
+    it('cabeça viva DIFERENTE da que o QA aprovou: não chama o merge e o painel traz a recusa com motivo', async () => {
+      const { resultado, ghSend, registrarNoPainel } = await decidirComLeituras(() => ({
+        head: { sha: 'sha2' },
+        base: { ref: 'main' },
+      }))
+      expect(mesclou(ghSend)).toBe(false)
+      expect(resultado.acao).toBe('ignorar')
+      expect(resultado.motivo).toContain('o código mudou depois da aprovação do QA')
+      expect(resultado.motivo).toContain('sha1')
+      expect(resultado.motivo).toContain('sha2')
+      const textos = textosDoPainel(registrarNoPainel)
+      expect(textos.some((t) => t.includes('mesclando'))).toBe(false)
+      expect(textos.some((t) => t.includes('o código mudou depois da aprovação do QA'))).toBe(true)
+    })
+
+    it('a cabeça muda entre a leitura da base e a porta do merge: não mescla', async () => {
+      // A cabeça muda DEPOIS da leitura da base e antes da porta do merge.
+      const { ghSend } = await decidirComLeituras((chamada) => ({
+        head: { sha: chamada === 1 ? 'sha1' : 'sha2' },
+        base: { ref: 'main' },
+      }))
+      expect(mesclou(ghSend)).toBe(false)
+    })
+
+    it('leitura viva do PR falha: não mescla, avisa e o painel traz o motivo', async () => {
+      const { resultado, ghSend, registrarNoPainel, onWarn } = await decidirComLeituras(
+        (chamada) => {
+          if (chamada >= 2) throw new Error('github fora do ar')
+          return { head: { sha: 'sha1' }, base: { ref: 'main' } }
+        }
+      )
+      expect(mesclou(ghSend)).toBe(false)
+      expect(resultado.acao).toBe('ignorar')
+      expect(resultado.motivo).toContain('commit atual')
+      expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('github fora do ar'))
+      const textos = textosDoPainel(registrarNoPainel)
+      expect(textos.some((t) => t.includes('mesclando'))).toBe(false)
+      expect(textos.some((t) => t.includes('commit atual'))).toBe(true)
+    })
+
+    it('leitura viva sem sha: não mescla', async () => {
+      const { resultado, ghSend } = await decidirComLeituras((chamada) =>
+        chamada >= 2 ? { base: { ref: 'main' } } : { head: { sha: 'sha1' }, base: { ref: 'main' } }
+      )
+      expect(mesclou(ghSend)).toBe(false)
+      expect(resultado.motivo).toContain('commit atual')
+    })
+  })
 })

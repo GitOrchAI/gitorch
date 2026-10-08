@@ -13,6 +13,9 @@
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { associacaoDeParticipante, type AssociacaoDeParticipante } from './participante-do-repo.js'
 
+/** O que a decisão lê de uma sessão: quem chama pode entregar a linha inteira ou só estes campos. */
+export type SessaoParaDelegacao = Pick<LinhaDeSessao, 'issueNumber' | 'pullRequestNumber'>
+
 export interface ResultadoPrDelegado {
   delegado: boolean
   /** A tarefa de origem, quando dá para saber. */
@@ -32,7 +35,7 @@ export function ehPrDelegado(args: {
   autor: string | undefined
   corpo: string | undefined
   /** Linhas de sessão deste projeto (vivas e fechadas). */
-  sessoes: LinhaDeSessao[]
+  sessoes: SessaoParaDelegacao[]
   /** Consulta se a issue carrega a etiqueta de delegação. */
   issueComEtiquetaDeDelegacao: (issueNumber: number) => boolean
   /** `author_association` que o GITHUB informou para o autor do PR (nunca texto do corpo). */

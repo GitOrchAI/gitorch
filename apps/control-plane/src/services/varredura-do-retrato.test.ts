@@ -506,3 +506,141 @@ describe('varrerRetratoDoProjeto — alertas de segurança (Fase 1.2/5.2)', () =
     expect(resumo.tarefasDeSeguranca?.criadas).toHaveLength(1)
   })
 })
+
+describe('varrerRetratoDoProjeto: vínculo da tarefa', () => {
+  const prsAbertos = (numeros: number[]) =>
+    numeros.map((number) => ({ number, state: 'open', draft: false, mergeable: true }))
+
+  it('chama o vínculo para cada PR DEPOIS de baixar as issues, com as etiquetas da lista de issues abertas', async () => {
+    const ordem: string[] = []
+    const ghGet = vi.fn(async (caminho: string) => {
+      ordem.push(caminho.includes('/pulls?') ? 'pulls' : 'issues')
+      if (caminho.includes('/pulls?')) return prsAbertos([10, 11])
+      return [
+        { number: 74, state: 'open', labels: [{ name: 'jules' }, { name: 'gitorch:task' }] },
+        { number: 75, state: 'open', labels: ['bug'] },
+        { number: 76, state: 'open' },
+      ]
+    })
+    const vistos: Array<{
+      numero: number
+      etiquetas74: readonly string[]
+      etiquetas75: readonly string[]
+      etiquetas76: readonly string[]
+      etiquetas999: readonly string[]
+    }> = []
+    const aplicar = vi.fn(
+      async (args: { numero: number; etiquetasDaIssue: (n: number) => readonly string[] }) => {
+        ordem.push(`vincular-${args.numero}`)
+        vistos.push({
+          numero: args.numero,
+          etiquetas74: args.etiquetasDaIssue(74),
+          etiquetas75: args.etiquetasDaIssue(75),
+          etiquetas76: args.etiquetasDaIssue(76),
+          etiquetas999: args.etiquetasDaIssue(999),
+        })
+        return true
+      }
+    )
+
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet,
+      atualizarFicha: async () => {},
+      vincularTarefa: { aplicar, teto: 5, orcamentoMs: 8000 },
+    })
+
+    expect(ordem).toEqual(['pulls', 'issues', 'vincular-10', 'vincular-11'])
+    expect(aplicar).toHaveBeenCalledWith(
+      expect.objectContaining({ numero: 10, pr: expect.objectContaining({ number: 10 }) })
+    )
+    expect(vistos[0]).toEqual({
+      numero: 10,
+      etiquetas74: ['jules', 'gitorch:task'],
+      etiquetas75: ['bug'],
+      etiquetas76: [],
+      etiquetas999: [],
+    })
+  })
+
+  it('sem o gancho, nada muda (comportamento de antes)', async () => {
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: ghGetFake({
+        '/repos/dono/repo/pulls?': prsAbertos([10]),
+        '/repos/dono/repo/issues?': [],
+      }),
+      atualizarFicha: async () => {},
+    })
+    expect(resumo.prs).toBe(1)
+  })
+
+  it('só gasta o teto quem o gancho diz que procurou (true); respeita o teto por ciclo', async () => {
+    const chamados: number[] = []
+    const aplicar = vi.fn(async ({ numero }: { numero: number }) => {
+      chamados.push(numero)
+      return numero > 3 // 1 a 3 não tinham nada a procurar
+    })
+
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: ghGetFake({
+        '/repos/dono/repo/pulls?': prsAbertos([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        '/repos/dono/repo/issues?': [],
+      }),
+      atualizarFicha: async () => {},
+      vincularTarefa: { aplicar, teto: 2, orcamentoMs: 8000 },
+    })
+
+    expect(chamados).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('para quando o orçamento de tempo do projeto acaba e avisa uma vez', async () => {
+    const onWarn = vi.fn()
+    let agoraMs = 0
+    const aplicar = vi.fn(async () => {
+      agoraMs += 3000
+      return true
+    })
+
+    await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: ghGetFake({
+        '/repos/dono/repo/pulls?': prsAbertos([1, 2, 3, 4, 5]),
+        '/repos/dono/repo/issues?': [],
+      }),
+      atualizarFicha: async () => {},
+      onWarn,
+      vincularTarefa: { aplicar, teto: 5, orcamentoMs: 8000, agora: () => agoraMs },
+    })
+
+    // 0 s, 3 s, 6 s dentro do orçamento; aos 9 s a varredura para.
+    expect(aplicar).toHaveBeenCalledTimes(3)
+    const avisos = onWarn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('orçamento'))
+    expect(avisos).toHaveLength(1)
+  })
+
+  it('erro do gancho vira aviso, conta no teto e não derruba a varredura', async () => {
+    const onWarn = vi.fn()
+    const aplicar = vi.fn(async () => {
+      throw new Error('graphql fora do ar')
+    })
+
+    const resumo = await varrerRetratoDoProjeto({
+      repo: 'dono/repo',
+      ghGet: ghGetFake({
+        '/repos/dono/repo/pulls?': prsAbertos([1, 2, 3]),
+        '/repos/dono/repo/issues?': [],
+      }),
+      atualizarFicha: async () => {},
+      onWarn,
+      vincularTarefa: { aplicar, teto: 2, orcamentoMs: 8000 },
+    })
+
+    expect(resumo.prs).toBe(3)
+    expect(aplicar).toHaveBeenCalledTimes(2)
+    expect(onWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/vínculo da tarefa.*#1.*graphql fora do ar/)
+    )
+  })
+})
