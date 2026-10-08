@@ -29,6 +29,7 @@ import type { Prisma } from '@prisma/client'
 import { pedidoDeRebase } from './conflito-de-merge.js'
 import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
 import { baseDoDev } from './base-do-dev.js'
+import { ehPrDeSeguranca } from './pr-de-seguranca.js'
 import { lerEstadoDoCiDoHead, type EstadoDoCi } from './estado-da-verificacao-do-github.js'
 
 /**
@@ -710,6 +711,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   let vagas = deps.vagasLivres
   let acoesFeitas = 0
   let deGente = 0
+  let deSeguranca = 0
   let doDependabot = 0
   let comSessaoViva = 0
   let quietos = 0
@@ -722,6 +724,13 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
 
   for (const pr of prs) {
     try {
+      // O pull request do aplicador de segurança é do dono: o vigia não o
+      // retoma, não o fecha, não o escala e não o manda à decisão que poderia
+      // mesclá-lo, por mais que algum sinal o faça parecer entrega do dev.
+      if (ehPrDeSeguranca({ ramo: pr.branchDoPr, corpo: pr.corpo })) {
+        deSeguranca += 1
+        continue
+      }
       if (!ehPRDaAutomacao(pr)) {
         deGente += 1
         continue
@@ -916,6 +925,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
     partes.push(`${adiadosPeloTeto} além do teto desta passada (${teto})`)
   }
   if (deGente > 0) partes.push(`${deGente} de gente`)
+  if (deSeguranca > 0) partes.push(`${deSeguranca} de segurança (do dono)`)
   if (doDependabot > 0) partes.push(`${doDependabot} do dependabot`)
   if (comSessaoViva > 0) partes.push(`${comSessaoViva} com sessão viva`)
   if (quietos > 0) partes.push(pluralizar(quietos, 'sem novidade', 'sem novidade'))
@@ -1088,6 +1098,7 @@ export async function listarPrsAbertosParaOVigia(args: {
       paradoHaMs: 0,
     }
     if (
+      ehPrDeSeguranca({ ramo: base.branchDoPr, corpo: sinais.corpo }) ||
       !ehPRDaAutomacao(sinais) ||
       ehAutomacaoQueOVigiaNaoConserta(sinais) ||
       args.prsComSessaoViva.has(cru.number)

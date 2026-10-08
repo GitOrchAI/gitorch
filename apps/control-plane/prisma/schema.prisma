@@ -952,7 +952,8 @@ model RepoItem {
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   /// 'pr' | 'issue' | 'alerta'; 'seguranca' e 'conformidade' guardam a medida do
-  /// repositório (numero 0), escrita só pela varredura de segurança.
+  /// repositório, 'sondagem' o que o GitHub oferece a ele e 'melhorias' o que já
+  /// foi aplicado (numero 0), escritos só pela etapa de segurança.
   tipo String
   /// Número do PR/issue no GitHub, ou o `number` do alerta de segurança.
   numero Int

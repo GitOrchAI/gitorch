@@ -22,6 +22,7 @@ import {
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
+import { ehPrDeSeguranca } from './pr-de-seguranca.js'
 import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 import { hashDaMensagem } from './session-watch.js'
@@ -723,7 +724,7 @@ async function julgarEntregaViaRails(
     author_association?: string
     draft?: boolean
     body?: string
-    head?: { sha?: string }
+    head?: { sha?: string; ref?: string }
   }
   const [maisNovos, maisAntigos] = await Promise.all([
     gh(
@@ -874,6 +875,11 @@ async function julgarEntregaViaRails(
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
 
+    // O pull request do aplicador de segurança é do dono: ele o revisa e o
+    // mescla. O QA não o julga, não comenta nele e nem o considera para mescla,
+    // seja qual for a conta que o abriu (a do dono inclusive).
+    if (ehPrDeSeguranca({ ramo: p.head?.ref, corpo: p.body })) continue
+
     // A consulta à issue só acontece quando há palavra de ligação no corpo —
     // o caminho autoritativo (linha guardada) não gasta chamada nenhuma, e
     // uma PR de humano sem menção nenhuma também não gasta.
@@ -899,6 +905,7 @@ async function julgarEntregaViaRails(
       // do texto do PR.
       authorAssociation: p.author_association,
       tipoDoAutor: p.user?.type,
+      ramoDoPr: p.head?.ref,
     })
     // PR julgável por ser de um PARTICIPANTE, e não por ser entrega do dev: não
     // existe sessão, tarefa de origem nem dev para retrabalhar. Tudo o que é
@@ -2048,7 +2055,7 @@ async function julgarEntregaViaRails(
       const entregaAgora = (await gh(
         'GET',
         `/repos/${options.repository}/pulls/${target.number}`
-      )) as { head?: { sha?: string } }
+      )) as { head?: { sha?: string; ref?: string }; body?: string }
       // A branch padrão REAL do repositório — o PR só é mesclado sozinho se
       // mirar nela (merge-do-pr.ts, sexto porteiro).
       const branchPadrao = await branchPadraoDoRepositorio(
@@ -2083,6 +2090,8 @@ async function julgarEntregaViaRails(
         delegado: podeMesclarEste,
         baseDoPr: baseDoPrDe(entregaAgora),
         branchPadrao,
+        ramoDoPr: entregaAgora.head?.ref ?? null,
+        corpoDoPr: entregaAgora.body ?? null,
         shaRevisado: pr.head?.sha ?? '',
         shaAtual: entregaAgora.head?.sha ?? '',
         entendimentoPresente: Boolean(

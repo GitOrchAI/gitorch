@@ -28,9 +28,16 @@
 // nunca chegar na principal (padrao-executores #154/#155, Jardim #4044/#4045).
 // Mesclar num ramo que não é a principal é declarar entregue o que não foi.
 //
+// O sétimo, que roda antes de todos os outros: pull request do APLICADOR DE
+// SEGURANÇA nunca é mesclado pelo produto. Ele muda configuração e workflows do
+// repositório do cliente; quem revisa e mescla é o dono. As outras camadas (o QA e o vigia nem olham esses
+// pull requests) podem falhar; esta não pode.
+//
 // Os outros três (já existiam): a verificação diz se o código roda, o QA diz
 // se resolve o que a tarefa pediu, e o diff completo garante que o julgamento
 // foi sobre a mudança inteira.
+
+import { ehPrDeSeguranca } from './pr-de-seguranca.js'
 
 export interface ResultadoDoMerge {
   mesclado: boolean
@@ -49,6 +56,10 @@ export async function mesclarPr(deps: {
   baseDoPr: string | null
   /** A branch padrão do projeto — a única para onde o produto mescla sozinho. */
   branchPadrao: string
+  /** `head.ref` do PR agora (lido fresco). `null` = não deu para ler. */
+  ramoDoPr: string | null
+  /** Corpo do PR (a marca do aplicador de segurança também vale). `null` = não lido. */
+  corpoDoPr: string | null
   /** Commit que o juiz de fato leu ao montar a diferença julgada. */
   shaRevisado: string
   /** Commit da entrega agora, no instante do merge — lido fresco, nunca herdado. */
@@ -66,6 +77,24 @@ export async function mesclarPr(deps: {
   /** Faz o merge de verdade. Deve lançar em falha do GitHub. */
   merge: () => Promise<boolean>
 }): Promise<ResultadoDoMerge> {
+  // O PR do aplicador de segurança é do dono: nem a "entrega encomendada", nem
+  // QA aprovado, nem CI verde mudam isso.
+  if (deps.ramoDoPr === null) {
+    return {
+      mesclado: false,
+      motivo:
+        'não deu para confirmar o ramo deste pull request — por segurança não mescla sozinho; ' +
+        'precisa de julgamento humano',
+    }
+  }
+  if (ehPrDeSeguranca({ ramo: deps.ramoDoPr, corpo: deps.corpoDoPr })) {
+    return {
+      mesclado: false,
+      motivo:
+        'este pull request é uma melhoria de segurança aberta pelo GitOrch: o produto nunca o mescla — ' +
+        'quem revisa e mescla é o dono',
+    }
+  }
   // Porteiro mais barato (um booleano já pronto, nenhuma comparação) e o mais
   // perigoso de pular: mesclar código de humano sem autorização nenhuma dele.
   if (!deps.delegado) {

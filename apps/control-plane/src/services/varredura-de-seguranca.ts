@@ -36,9 +36,11 @@ import {
   pularSeFreioDeCotaAtivo,
   registrarFreioDeCota,
 } from './freio-de-cota-do-github.js'
-import { TIPOS_DE_FICHA_MEDIDA } from './ficha-do-item.js'
 import { registrarNoPainelSeForNovo } from './registro-no-painel.js'
 import { limparSurrogatesEmJson, mascararCredenciais, mensagemDoErro } from './texto-seguro.js'
+
+/** As fichas que esta etapa mede e lê (as outras de segurança têm dono próprio). */
+const TIPOS_DA_MEDICAO = ['seguranca', 'conformidade'] as const
 
 export const CADENCIA_DA_SEGURANCA_MS = 24 * 60 * 60_000
 export const CADENCIA_DA_CONFORMIDADE_MS = 7 * 24 * 60 * 60_000
@@ -293,7 +295,7 @@ export async function varrerSegurancaDosProjetos(deps: {
     await deps.prisma.repoItem.findMany({
       where: {
         projectId: { in: deps.projetos.map((p) => p.id) },
-        tipo: { in: [...TIPOS_DE_FICHA_MEDIDA] },
+        tipo: { in: [...TIPOS_DA_MEDICAO] },
         numero: 0,
       },
       select: { projectId: true, tipo: true, estado: true, atualizadoEm: true },

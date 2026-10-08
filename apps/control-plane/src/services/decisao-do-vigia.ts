@@ -13,8 +13,6 @@ import {
   ehReprovacaoCondicional,
   type ReviewDoGithub,
 } from './parecer-do-qa.js'
-import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
-import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
 import { montarDossieDoConflito } from './dossie-do-conflito.js'
 import type { PrismaClient } from '@prisma/client'
 import { contarAcoesDoVigia, descreverTempoParado, type VigiaDoPrDeps } from './vigia-do-pr.js'
@@ -35,7 +33,7 @@ type AcaoDoVigia = ReturnType<
 export interface DecisaoDoVigiaDeps {
   runtimeConfig: unknown
   agora: Date
-  projeto: { id: string; wingId: string; devPlan?: string | null }
+  projeto: { id: string; wingId: string }
   token: string
   depsVigia: Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]
   prisma: PrismaClient
@@ -55,6 +53,12 @@ export interface DecisaoDoVigiaDeps {
   ) => Promise<unknown>
   /** Fase 5.3/#802: registra na timeline do painel que o merge expresso aconteceu. */
   registrarNoPainel: (projectId: string, chave: string, texto: string) => Promise<void>
+  /**
+   * Fase 5.5: `true` quando o repositório não tem a proteção de senhas do GitHub
+   * nem a alternativa gratuita rodando e o merge automático precisa de revisão.
+   * Resolvido uma vez por projeto por dia (`criarGuardaDeSegurancaDoVigia`).
+   */
+  guardaDeSeguranca: () => Promise<boolean>
   /** Log de aviso não-fatal (falha ao buscar visibilidade do repo, falha na trava de parecer etc). */
   onWarn: (mensagem: string) => void
 }
@@ -69,6 +73,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   ghGet,
   ghSend,
   registrarNoPainel,
+  guardaDeSeguranca,
   onWarn,
   userId,
   agentQuestion,
@@ -86,14 +91,28 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   let currentHeadSha: string | undefined
   let diffTruncado = false
 
-  // Base do PR (agora) e branch padrão do repositório — o motor só mescla sozinho
-  // PR que mira a branch padrão (merge-do-pr.ts). Lido fresco na porta do merge.
-  const lerBaseParaMerge = async (): Promise<{ baseDoPr: string | null; branchPadrao: string }> => {
+  // Base, ramo e corpo do PR (agora) e branch padrão do repositório — o motor só
+  // mescla sozinho PR que mira a branch padrão (merge-do-pr.ts) e nunca o do
+  // aplicador de segurança, que o ramo e o corpo identificam. Lido fresco na
+  // porta do merge.
+  const lerBaseParaMerge = async (): Promise<{
+    baseDoPr: string | null
+    ramoDoPr: string | null
+    corpoDoPr: string | null
+    branchPadrao: string
+  }> => {
     let baseDoPr: string | null = null
+    let ramoDoPr: string | null = null
+    let corpoDoPr: string | null = null
     try {
-      baseDoPr = baseDoPrDe(
-        await ghGet(`/repos/${projeto.wingId}/pulls/${depsVigia.numero}`, token)
-      )
+      const pr = (await ghGet(`/repos/${projeto.wingId}/pulls/${depsVigia.numero}`, token)) as {
+        head?: { ref?: unknown }
+        body?: unknown
+      } | null
+      baseDoPr = baseDoPrDe(pr)
+      const ref = pr?.head?.ref
+      ramoDoPr = typeof ref === 'string' && ref !== '' ? ref : null
+      corpoDoPr = typeof pr?.body === 'string' ? pr.body : null
     } catch (err) {
       onWarn(
         `decidirAcaoNoPrOrfaoIntegrado: não deu para ler a base do PR #${depsVigia.numero}: ${(err as Error).message}`
@@ -103,7 +122,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       async () => ghGet(`/repos/${projeto.wingId}`, token),
       onWarn
     )
-    return { baseDoPr, branchPadrao }
+    return { baseDoPr, ramoDoPr, corpoDoPr, branchPadrao }
   }
 
   // A cabeça VIVA do PR na porta do merge. `currentHeadSha` é o commit que o QA
@@ -239,31 +258,9 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     }
   }
 
-  let repoPrivado = true
-  try {
-    const repoInfo = (await ghGet(`/repos/${projeto.wingId}`, token)) as {
-      private?: boolean
-    }
-    if (repoInfo && typeof repoInfo.private === 'boolean') {
-      repoPrivado = repoInfo.private
-    }
-  } catch (err) {
-    onWarn(
-      `[decisao-do-vigia] falha ao buscar visibilidade de ${projeto.wingId}: ${(err as Error).message}`
-    )
-  }
-
-  const planoPermite = planoPermiteMelhoria(
-    'secret-scanning',
-    (projeto.devPlan || 'free') as PlanoDoGithub,
-    repoPrivado
-  )
-  const exigeRevisaoDeSeguranca = await calcularExigeRevisaoDeSeguranca({
-    planoPermite,
-    wingId: projeto.wingId,
-    ghGet: (path) => ghGet(path, token),
-    onWarn,
-  })
+  // A guarda de segurança sai da sondagem do repositório, lida UMA vez por
+  // projeto por dia e reaproveitada por todos os PRs (ver `exigir-revisao-de-seguranca.ts`).
+  const exigeRevisaoDeSeguranca = await guardaDeSeguranca()
 
   let ultimoParecerQa: { body: string; timestamp: Date } | null = null
   let temDuvidaPendente = false

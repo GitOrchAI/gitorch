@@ -150,7 +150,7 @@ function githubEmMemoria(inicial: {
           user: { login: 'jules[bot]' },
           draft: false,
           body: `Closes #${NUMERO_DA_ISSUE}`,
-          head: { sha: estado.head },
+          head: { sha: estado.head, ref: 'feat/entrega' },
         },
       ])
     }
@@ -158,7 +158,7 @@ function githubEmMemoria(inicial: {
       return json({
         number: NUMERO_DO_PR,
         body: `Closes #${NUMERO_DA_ISSUE}`,
-        head: { sha: estado.head },
+        head: { sha: estado.head, ref: 'feat/entrega' },
         base: { ref: 'main' },
         changed_files: inicial.semConteudo ? 0 : 1,
         additions: inicial.semConteudo ? 0 : 3,

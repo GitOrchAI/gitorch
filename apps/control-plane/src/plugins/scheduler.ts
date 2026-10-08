@@ -350,6 +350,12 @@ import {
 } from '../services/varredura-de-seguranca.js'
 import { resumirErro } from '../services/texto-seguro.js'
 import {
+  aplicarMelhoriasDeSegurancaDosProjetos,
+  type AgentQuestionAskerDeSeguranca,
+} from '../services/aplicador-de-seguranca-dos-projetos.js'
+import { criarRitmoDeEscrita } from '../services/escritor-de-seguranca.js'
+import { criarGuardaDeSegurancaDoVigia } from '../services/exigir-revisao-de-seguranca.js'
+import {
   varrerRetratoDoProjeto,
   CADENCIA_DO_RETRATO_MS,
   type LeituraDosAlertas,
@@ -7713,6 +7719,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // de fichas por projeto, não uma por PR.
         const { prsComSessaoViva, issuePorPr } = await carregarIssuePorPr(app.prisma, projeto.id)
 
+        // A guarda de segurança do merge sai da sondagem do repositório, lida do
+        // GitHub uma vez por projeto por dia (cache na ficha) e reaproveitada
+        // por todos os PRs desta passada.
+        const guardaDeSeguranca = criarGuardaDeSegurancaDoVigia({
+          prisma: app.prisma,
+          projectId: projeto.id,
+          repositorio: projeto.wingId,
+          credenciais: [{ origem: 'App do produto', token }],
+          fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+          agora: () => new Date(),
+          onWarn: (m) => app.log.warn(m),
+        })
+
         const resumo = await vigiarPrsOrfaos({
           listarPrsAbertos: () =>
             listarPrsAbertosParaOVigia({
@@ -7779,6 +7798,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               ghGet,
               ghSend,
               registrarNoPainel: registrarStatusNoPainel,
+              guardaDeSeguranca,
               onWarn: (msg) => app.log.warn(msg),
               userId: projeto.userId,
               agentQuestion: (
@@ -8249,6 +8269,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // repetir uma tentativa.
   const falhasDaSeguranca = new Map<string, number>()
 
+  // O ritmo de escrita da segurança é UM para o processo: duas escritas, de
+  // projetos diferentes ou não, ficam pelo menos 1 s afastadas.
+  const ritmoDeEscritaDaSeguranca = criarRitmoDeEscrita({
+    esperar: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    agora: () => Date.now(),
+  })
+
   const rodarSegurancaDosProjetos = async (): Promise<void> => {
     const projetos = await app.prisma.project.findMany({
       where: { isActive: true, accessSuspendedAt: null },
@@ -8258,51 +8285,116 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         userId: true,
         runtimeConfig: true,
         encryptedClientToken: true,
+        autonomia: true,
+        autonomiaDeSeguranca: true,
       },
     })
     const porId = new Map(projetos.map((p) => [p.id, p]))
 
-    await varrerSegurancaDosProjetos({
-      prisma: app.prisma,
-      projetos: projetos.map((p) => ({
-        id: p.id,
-        wingId: p.wingId,
-        runtimeConfig: p.runtimeConfig,
-      })),
-      agora: new Date(),
-      // Proteção de branch e permissões das Actions pedem administração, que o
-      // App pode não ter: a credencial do cliente/dono vai primeiro e a do App
-      // completa o que faltar (mesma ordem da leitura dos alertas).
-      credenciais: async (projeto) => {
-        const candidatas: CredencialDaSeguranca[] = []
-        const linha = porId.get(projeto.id)
-        const doClienteOuDono = await lerCredencialQueAlcancaOProjeto({
-          prisma: app.prisma,
-          projectId: projeto.id,
-          userId: linha?.userId ?? null,
-          engineConnections: app.engineConnections,
-          encryptedClientTokenJaLido: linha?.encryptedClientToken ?? null,
-        })
-        if (doClienteOuDono) candidatas.push({ origem: 'cliente ou dono', token: doClienteOuDono })
-        const doApp =
-          process.env['GITORCH_GITHUB_TOKEN'] ??
-          (await mintInstallationToken({
-            repository: projeto.wingId,
-            onError: (m) => app.log.error(m),
-            onWarn: (m) => app.log.warn(m),
-          })) ??
-          undefined
-        if (doApp) candidatas.push({ origem: 'App do produto', token: doApp })
-        return candidatas
-      },
-      // Só leitura: o `fetch` sem permissão de escrita recusa qualquer escrita.
-      fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
-      falhasRecentes: falhasDaSeguranca,
-      cadenciaMs: CADENCIA_DA_SEGURANCA,
-      cadenciaDaConformidadeMs: CADENCIA_DA_CONFORMIDADE,
-      onInfo: (m) => app.log.info(m),
-      onWarn: (m) => app.log.warn(m),
-    })
+    const credencialDoClienteOuDono = async (projeto: {
+      id: string
+    }): Promise<CredencialDaSeguranca[]> => {
+      const linha = porId.get(projeto.id)
+      const token = await lerCredencialQueAlcancaOProjeto({
+        prisma: app.prisma,
+        projectId: projeto.id,
+        userId: linha?.userId ?? null,
+        engineConnections: app.engineConnections,
+        encryptedClientTokenJaLido: linha?.encryptedClientToken ?? null,
+      })
+      return token ? [{ origem: 'cliente ou dono', token }] : []
+    }
+    const instalacaoDoApp = async (projeto: { wingId: string }): Promise<string | null> =>
+      (await mintInstallationToken({
+        repository: projeto.wingId,
+        onError: (m) => app.log.error(m),
+        onWarn: (m) => app.log.warn(m),
+      })) ?? null
+
+    // Proteção de branch e permissões das Actions pedem administração, que o
+    // App pode não ter: a credencial do cliente/dono vai primeiro e a do App
+    // completa o que faltar (mesma ordem da leitura dos alertas). Só LEITURA:
+    // aqui o token global do produto ainda entra.
+    const credenciaisDaSeguranca = async (projeto: {
+      id: string
+      wingId: string
+    }): Promise<CredencialDaSeguranca[]> => {
+      const candidatas = await credencialDoClienteOuDono(projeto)
+      const doApp = process.env['GITORCH_GITHUB_TOKEN'] ?? (await instalacaoDoApp(projeto))
+      if (doApp) candidatas.push({ origem: 'App do produto', token: doApp })
+      return candidatas
+    }
+
+    // O que a APLICAÇÃO escreve usa credenciais mais estreitas: o token global do
+    // produto (`GITORCH_GITHUB_TOKEN`) nunca assina escrita, e o pull request é
+    // sempre do App (instalação). Se o pull request saísse com a conta do dono
+    // ou do cliente, ele nasceria "de participante" e o QA poderia julgá-lo e
+    // mesclá-lo; quem revisa e mescla é o dono.
+    const credenciaisDeEscritaDaSeguranca = async (projeto: {
+      id: string
+      wingId: string
+    }): Promise<CredencialDaSeguranca[]> => {
+      const candidatas = await credencialDoClienteOuDono(projeto)
+      const doApp = await instalacaoDoApp(projeto)
+      if (doApp) candidatas.push({ origem: 'App do produto', token: doApp })
+      return candidatas
+    }
+
+    let erroDaMedicao: { erro: unknown } | null = null
+    try {
+      await varrerSegurancaDosProjetos({
+        prisma: app.prisma,
+        projetos: projetos.map((p) => ({
+          id: p.id,
+          wingId: p.wingId,
+          runtimeConfig: p.runtimeConfig,
+        })),
+        agora: new Date(),
+        credenciais: credenciaisDaSeguranca,
+        // Só leitura: o `fetch` sem permissão de escrita recusa qualquer escrita.
+        fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+        falhasRecentes: falhasDaSeguranca,
+        cadenciaMs: CADENCIA_DA_SEGURANCA,
+        cadenciaDaConformidadeMs: CADENCIA_DA_CONFORMIDADE,
+        onInfo: (m) => app.log.info(m),
+        onWarn: (m) => app.log.warn(m),
+      })
+    } catch (erro) {
+      erroDaMedicao = { erro }
+    }
+
+    // Depois de medir, aplica as melhorias que o GitHub oferece (uma por projeto
+    // por passada, atrás das travas empilhadas). Uma falha daqui nunca atrapalha
+    // a medição nem o tique.
+    try {
+      await aplicarMelhoriasDeSegurancaDosProjetos({
+        prisma: app.prisma,
+        projetos: projetos.map((p) => ({
+          id: p.id,
+          wingId: p.wingId,
+          userId: p.userId,
+          autonomia: p.autonomia,
+          autonomiaDeSeguranca: p.autonomiaDeSeguranca,
+        })),
+        agora: () => new Date(),
+        credenciais: credenciaisDeEscritaDaSeguranca,
+        tokenDoApp: instalacaoDoApp,
+        fetchDeLeitura: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+        // Toda escrita passa pela guarda de autonomia do projeto.
+        fetchDeEscrita: (projeto) => fetchDoRepositorio({ nivel: () => projeto.autonomia }),
+        ritmo: ritmoDeEscritaDaSeguranca,
+        agentQuestion:
+          (app as unknown as { agentQuestionService?: AgentQuestionAskerDeSeguranca })
+            .agentQuestionService ?? null,
+        env: process.env,
+        onInfo: (m) => app.log.info(m),
+        onWarn: (m) => app.log.warn(m),
+      })
+    } catch (erro) {
+      app.log.warn({ erro: resumirErro(erro, 500) }, '[Scheduler] aplicar segurança falhou')
+    }
+
+    if (erroDaMedicao) throw erroDaMedicao.erro
   }
 
   // C10 (fix-up L4-T5, CSO) — CASO LEGADO aceito como referência: "#3907

@@ -148,6 +148,10 @@ function fakeFetch(
     authorAssociation?: string
     /** `user.type` do autor ('User' | 'Bot'), como o GITHUB informa. */
     userType?: string
+    /** `head.ref` do PR (o ramo). Default: um ramo comum de entrega. */
+    headRef?: string
+    /** `head.ref` que só a leitura isolada do PR devolve (a lista diz `headRef`). */
+    headRefNaPrIsolada?: string
   }>,
   issueLabels: string[] = ['jules', 'gitorch:task'],
   /**
@@ -266,7 +270,7 @@ function fakeFetch(
           ...(p.authorAssociation !== undefined ? { author_association: p.authorAssociation } : {}),
           draft: false,
           body: p.body ?? 'Closes #50',
-          head: { sha: p.headSha ?? opts.headSha ?? 'abc123' },
+          head: { sha: p.headSha ?? opts.headSha ?? 'abc123', ref: p.headRef ?? 'feat/entrega' },
         }))
       )
     }
@@ -284,7 +288,12 @@ function fakeFetch(
       return json({
         number: numeroDoPr,
         body: p?.body ?? 'Closes #50',
-        head: opts.semShaNaPrIsolada ? {} : { sha: p?.headSha ?? opts.headSha ?? 'abc123' },
+        head: opts.semShaNaPrIsolada
+          ? {}
+          : {
+              sha: p?.headSha ?? opts.headSha ?? 'abc123',
+              ref: p?.headRefNaPrIsolada ?? p?.headRef ?? 'feat/entrega',
+            },
         base: { ref: p?.baseRef ?? 'main' },
         ...(p?.changedFiles !== undefined ? { changed_files: p.changedFiles } : {}),
         ...(p?.additions !== undefined ? { additions: p.additions } : {}),
@@ -6067,6 +6076,85 @@ describe('PR de participante do repositório', () => {
     expect(aoMesclar).toHaveBeenCalledWith(
       expect.objectContaining({ numeroDoPr: 120, issueNumber: 50 })
     )
+  })
+
+  // O pull request do aplicador de segurança é revisado e mesclado pelo dono.
+  // O caso que o QA independente provou: o aplicador abriu o PR com a conta do
+  // dono (associação OWNER), o juiz o tratou como participante e, com QA
+  // aprovado e CI verde, o produto o mesclou sozinho.
+  describe('pull request do aplicador de segurança', () => {
+    const doAplicador = {
+      number: 120,
+      user: 'conta-do-dono',
+      authorAssociation: 'OWNER',
+      userType: 'User',
+      headRef: 'gitorch/seguranca/permissoes-ci-yml',
+      body: '<!-- gitorch:seguranca -->\n\n## O que muda',
+    }
+
+    it('autor OWNER, QA aprova, CI verde: não é julgado, não recebe parecer e NÃO é mesclado', async () => {
+      const aoMesclar = vi.fn()
+      const { r, posted } = await julgar([doAplicador], { sessoes: [], aoMesclar })
+      expect(r.noOp).toBe(true)
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.comments).toHaveLength(0)
+      expect(posted.merges).toHaveLength(0)
+      expect(aoMesclar).not.toHaveBeenCalled()
+      expect(r.podeMesclar).not.toBe(true)
+    })
+
+    it('nem ligando o julgamento de entrega de terceiro o QA opina nele ou o mescla', async () => {
+      const { r, posted } = await julgar([doAplicador], {
+        sessoes: [],
+        julgarEntregaDeTerceiro: true,
+      })
+      expect(r.noOp).toBe(true)
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.comments).toHaveLength(0)
+      expect(posted.merges).toHaveLength(0)
+    })
+
+    it('só o ramo, sem a marca no corpo, já basta para ficar de fora', async () => {
+      const { r, posted } = await julgar([{ ...doAplicador, body: 'sem marca nenhuma' }], {
+        sessoes: [],
+      })
+      expect(r.noOp).toBe(true)
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.merges).toHaveLength(0)
+    })
+
+    it('com uma linha de sessão apontando para ele, continua de fora', async () => {
+      const { posted } = await julgar([doAplicador], {
+        sessoes: [linha({ issueNumber: 50, pullRequestNumber: 120, sessionName: 'sessions/x' })],
+      })
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.merges).toHaveLength(0)
+    })
+
+    // Última camada: a lista diz que o ramo é comum, mas a leitura fresca na
+    // porta do merge mostra o ramo do aplicador. A porta do merge recusa.
+    it('se as camadas de cima falharem, a porta do merge recusa pelo ramo lido agora', async () => {
+      const { posted } = await julgar(
+        [
+          {
+            ...doAplicador,
+            headRef: 'feat/aparentemente-comum',
+            headRefNaPrIsolada: 'gitorch/seguranca/permissoes-ci-yml',
+            body: 'sem marca nenhuma',
+          },
+        ],
+        { sessoes: [] }
+      )
+      expect(posted.merges).toHaveLength(0)
+    })
+
+    it('o mesmo autor com um ramo comum continua sendo julgado e mesclado como antes', async () => {
+      const { posted } = await julgar([{ ...doAplicador, headRef: 'feature/x', body: 'ajuste' }], {
+        sessoes: [],
+      })
+      expect(posted.reviews).toHaveLength(1)
+      expect(posted.merges).toHaveLength(1)
+    })
   })
 })
 

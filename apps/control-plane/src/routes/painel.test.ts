@@ -2997,7 +2997,10 @@ describe('Rotas do painel do owner', () => {
       // A nota de segurança e a conformidade moram em `repo_items`, mas não são
       // pedidos, tarefas nem alertas: a tela do repositório não as lista.
       expect(p.repoItem.findMany).toHaveBeenCalledWith({
-        where: { projectId: 'proj_1', tipo: { notIn: ['seguranca', 'conformidade'] } },
+        where: {
+          projectId: 'proj_1',
+          tipo: { notIn: ['seguranca', 'conformidade', 'sondagem', 'melhorias'] },
+        },
         orderBy: { atualizadoEm: 'desc' },
         take: 200,
       })
@@ -3055,7 +3058,7 @@ describe('Rotas do painel do owner', () => {
       expect(p.repoItem.findMany).toHaveBeenCalledWith({
         where: {
           projectId: { in: ['proj_1', 'proj_2'] },
-          tipo: { notIn: ['seguranca', 'conformidade'] },
+          tipo: { notIn: ['seguranca', 'conformidade', 'sondagem', 'melhorias'] },
         },
         orderBy: { atualizadoEm: 'desc' },
         take: 200,

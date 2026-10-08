@@ -601,6 +601,52 @@ describe('PR sem ninguém atrás é retomado após 3 horas, não 3 dias', () => 
     expect(decidir.mock.calls[0]?.[0].numero).toBe(356)
   })
 
+  // O pull request do aplicador de segurança é do dono. Mesmo que um sinal de
+  // automação (etiqueta, rodapé) o faça parecer entrega do dev, o vigia não
+  // retoma, não fecha, não escala e não manda para a decisão integrada (que
+  // poderia mesclar).
+  it.each([
+    ['pelo ramo', { branchDoPr: 'gitorch/seguranca/permissoes-ci-yml' }],
+    [
+      'pela marca no corpo',
+      { corpo: `${CORPO_PR_356_DEV}\n<!-- gitorch:seguranca -->`, branchDoPr: 'qualquer-ramo' },
+    ],
+  ])(
+    'PR de segurança (%s) parado e com verificação vermelha: o vigia não age de jeito nenhum',
+    async (_como, sinal) => {
+      const decidir = vi.fn<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>(async () => ({
+        acao: 'pedir-julgamento',
+        motivo: 'verde',
+      }))
+      const abrirSessaoDeConserto = vi.fn(async () => true)
+      const fecharPr = vi.fn(async () => true)
+      const avisarDono = vi.fn(async () => true)
+      const registrarDecisao = vi.fn(async () => undefined)
+      await rodar({
+        prs: [
+          prAberto({
+            numero: 90,
+            labels: ['jules'],
+            paradoHaMs: 7 * DIA,
+            verificacao: 'vermelha',
+            ...sinal,
+          }),
+        ],
+        issueDoPr: () => 329,
+        decidirAcaoNoPrOrfao: decidir,
+        abrirSessaoDeConserto,
+        fecharPr,
+        avisarDono,
+        registrarDecisao,
+      })
+      expect(decidir).not.toHaveBeenCalled()
+      expect(abrirSessaoDeConserto).not.toHaveBeenCalled()
+      expect(fecharPr).not.toHaveBeenCalled()
+      expect(avisarDono).not.toHaveBeenCalled()
+      expect(registrarDecisao).not.toHaveBeenCalled()
+    }
+  )
+
   it('o tempo parado é dito em horas abaixo de 2 dias e em dias a partir daí', () => {
     expect(descreverTempoParado(3 * HORA)).toBe('3 horas')
     expect(descreverTempoParado(HORA)).toBe('1 hora')
@@ -741,6 +787,43 @@ describe('a leitura do GitHub só gasta rede com quem o vigia pode cuidar', () =
     expect(orfao?.mergeable).toBe(false)
     expect(orfao?.verificacao).toBe('vermelha')
     expect(orfao?.paradoHaMs).toBe(10 * DIA)
+  })
+
+  it('o pull request de segurança não gasta leitura nenhuma e sai com o ramo, para o vigia reconhecê-lo', async () => {
+    const caminhos: string[] = []
+    const prs = await listarPrsAbertosParaOVigia({
+      repo: 'dono/repo',
+      ghGet: async (caminho) => {
+        caminhos.push(caminho)
+        if (caminho.includes('/pulls?state=open')) {
+          return [
+            {
+              number: 90,
+              user: { login: AUTOR_PR_356 },
+              labels: LABELS_PR_356,
+              body: CORPO_PR_356_DEV,
+              head: {
+                sha: 'sha-seg',
+                ref: 'gitorch/seguranca/permissoes-ci-yml',
+                repo: { full_name: 'dono/repo' },
+              },
+            },
+          ]
+        }
+        throw new Error(`caminho inesperado: ${caminho}`)
+      },
+      prsComSessaoViva: new Set<number>(),
+      agora: AGORA,
+      onWarn: () => undefined,
+    })
+    expect(caminhos).toHaveLength(1)
+    expect(prs[0]).toMatchObject({
+      numero: 90,
+      branchDoPr: 'gitorch/seguranca/permissoes-ci-yml',
+      mergeable: null,
+      verificacao: 'pendente',
+      paradoHaMs: 0,
+    })
   })
 
   it('a falha ao ler UM pull request não derruba a listagem — ele sai conservador', async () => {

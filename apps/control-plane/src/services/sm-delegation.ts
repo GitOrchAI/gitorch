@@ -95,7 +95,7 @@ export async function listarPrsSemParecer(args: {
   )) as Array<{
     number: number
     draft?: boolean
-    head?: { sha?: string }
+    head?: { sha?: string; ref?: string }
     user?: { login?: string }
     body?: string
   }>
@@ -115,6 +115,7 @@ export async function listarPrsSemParecer(args: {
         corpo: p.body,
         sessoes: args.sessoes,
         issueComEtiquetaDeDelegacao: () => false,
+        ramoDoPr: p.head?.ref,
       })
       if (!delegado) continue
     }
