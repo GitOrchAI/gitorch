@@ -1498,8 +1498,17 @@ async function julgarEntregaViaRails(
   const headDoParecer = pr?.head?.sha ?? target.head?.sha ?? 'unknown'
 
   // A resposta de quem NÃO é o dono do julgamento deste commit: nada de motor,
-  // de review, de aviso ao dev nem de mescla — a missão que tomou a trava faz
-  // tudo isso, e repetir é exatamente o defeito que a trava existe para barrar.
+  // de review, de aviso ao dev depois do julgamento nem de mescla — a missão
+  // que tomou a trava faz tudo isso, e repetir é exatamente o defeito que a
+  // trava existe para barrar.
+  //
+  // A trava só cobre o que vem DEPOIS dela. O que roda antes continua sem
+  // proteção contra duas missões ao mesmo tempo: o aviso de demora ao dono
+  // (`avisar-demora`, em `agirSobreVerificacaoPendente`, que só se desduplica
+  // lendo e depois gravando a marca do aviso, sem atomicidade) e o resgate da
+  // entrega travada no teto de mescla (aviso à sessão do dev). Sob corrida
+  // esses dois podem sair em dobro. Fica como pendência conhecida: tomar a
+  // trava antes deles muda o comportamento e pede o seu próprio teste.
   const resultadoDeQuemPerdeuATrava = (): QaRailsMissionResult => {
     options.onWarn?.(
       `[qa] ${options.repository} #${target.number}: outra missão já julga o commit ${headDoParecer} — esta não repete`

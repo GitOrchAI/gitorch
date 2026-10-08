@@ -126,3 +126,14 @@ export function issueConfiavelDaFicha(ficha: {
   if (!ORIGENS_CONHECIDAS.some((o) => o === ficha.origem)) return null
   return ficha.issueNumber
 }
+
+/**
+ * A origem gravada diz que o pull request é entrega do dev assíncrono? É a
+ * régua do merge sozinho: só o que o produto encomendou (ou que o dev
+ * assíncrono entregou) pode ser mesclado sem um humano. Origem nula,
+ * desconhecida ou de outro autor — mesmo com o rótulo da automação — não vale:
+ * o rótulo diz que o PR parece da automação, não que alguém o encomendou.
+ */
+export function ehEntregaDoDevAssincrono(origem: string | null | undefined): boolean {
+  return origem === 'jules_gitorch' || origem === 'jules_fora'
+}

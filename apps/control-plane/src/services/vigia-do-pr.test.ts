@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { guardaDeAutonomia } from './guarda-de-autonomia.js'
@@ -573,6 +573,34 @@ describe('PR sem ninguém atrás é retomado após 3 horas, não 3 dias', () => 
     expect(abertas).toEqual([356])
   })
 
+  it('só o PR do dev chega à decisão integrada: o do Dependabot e o de gente são descartados antes', async () => {
+    const decidir = vi.fn<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>(async () => ({
+      acao: 'ignorar',
+      motivo: 'sem ação',
+    }))
+    await rodar({
+      prs: [
+        prAberto({
+          numero: 403,
+          autor: 'dependabot[bot]',
+          labels: ['dependencies'],
+          corpo: 'Bumps x.',
+        }),
+        prAberto({
+          numero: 347,
+          autor: AUTOR_PR_347,
+          labels: LABELS_PR_347,
+          corpo: CORPO_PR_347_DONO,
+        }),
+        prAberto({ numero: 356, paradoHaMs: 4 * HORA }),
+      ],
+      issueDoPr: () => 329,
+      decidirAcaoNoPrOrfao: decidir,
+    })
+    expect(decidir).toHaveBeenCalledTimes(1)
+    expect(decidir.mock.calls[0]?.[0].numero).toBe(356)
+  })
+
   it('o tempo parado é dito em horas abaixo de 2 dias e em dias a partir daí', () => {
     expect(descreverTempoParado(3 * HORA)).toBe('3 horas')
     expect(descreverTempoParado(HORA)).toBe('1 hora')
@@ -624,6 +652,7 @@ async function rodar(over: {
   teto?: number
   foiAdiadoAntes?: VigiaDoPrDeps['foiAdiadoAntes']
   registrarAdiadoPeloTeto?: VigiaDoPrDeps['registrarAdiadoPeloTeto']
+  decidirAcaoNoPrOrfao?: VigiaDoPrDeps['decidirAcaoNoPrOrfao']
 }): Promise<string> {
   return vigiarPrsOrfaos({
     teto: over.teto,
@@ -639,6 +668,9 @@ async function rodar(over: {
     fecharPr: over.fecharPr ?? (async () => true),
     avisarDono: over.avisarDono ?? (async () => true),
     registrarDecisao: over.registrarDecisao ?? (async () => undefined),
+    ...(over.decidirAcaoNoPrOrfao !== undefined
+      ? { decidirAcaoNoPrOrfao: over.decidirAcaoNoPrOrfao }
+      : {}),
     ...(over.foiAdiadoAntes !== undefined ? { foiAdiadoAntes: over.foiAdiadoAntes } : {}),
     ...(over.registrarAdiadoPeloTeto !== undefined
       ? { registrarAdiadoPeloTeto: over.registrarAdiadoPeloTeto }

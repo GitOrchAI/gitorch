@@ -41,6 +41,10 @@ export interface EntendimentoDoItem {
   porQueExiste: string
 }
 
+/** Resultado da conferência de uma tarefa sem pedido (guardado em coluna
+ *  própria, nunca dentro de `estado`). */
+export type ConferenciaDoItem = Record<string, unknown>
+
 export interface RepoItemRecord {
   id: string
   projectId: string
@@ -50,6 +54,10 @@ export interface RepoItemRecord {
   origem: string | null
   issueNumber: number | null
   entendimento: EntendimentoDoItem | null
+  /** Como o vínculo com o pedido foi achado. Nulo até alguém conferir. */
+  vinculoOrigem?: string | null
+  /** Resultado da conferência da tarefa. Nulo até alguém conferir. */
+  conferencia?: ConferenciaDoItem | null
 }
 
 /** Só o que `ficha-do-item.ts` precisa do Prisma. */
@@ -70,30 +78,47 @@ export interface PrismaDaFichaDoItem {
  * Grava/atualiza a ficha de um item. Chamado pelos handlers de webhook
  * (Fase 0.3) e pela varredura de 30 min (Fase 1.3) — as DUAS fontes que
  * alimentam o estado atual.
+ *
+ * Duas regras separam o que é retrato do que é vínculo:
+ *  - `estado` é o retrato de agora e é TROCADO por inteiro quando vem.
+ *    Nada derivado mora nele (por isso o vínculo tem coluna própria).
+ *  - `origem`, `issueNumber`, `entendimento`, `vinculoOrigem` e `conferencia`
+ *    só PREENCHEM: valor ausente, `undefined` ou `null` nunca apaga o que já
+ *    está gravado (o webhook e a varredura chegam sem a issue de origem
+ *    muitas vezes, e isso não pode desfazer um vínculo já achado). Um valor
+ *    preenchido novo continua valendo, porque a origem pode ser reclassificada.
  */
 export async function atualizarFichaDoItem(deps: {
   prisma: PrismaDaFichaDoItem
   projectId: string
   tipo: TipoDoItem
   numero: number
-  estado: EstadoDoItem
+  /** Omitido = não mexe no retrato já gravado. Numa ficha nova, nasce com
+   *  `{ status: 'desconhecido' }` até a próxima varredura ou webhook. */
+  estado?: EstadoDoItem
   origem?: string | null
   /** Issue #877 item 3: a issue de origem (ex. PR 583 → issue 580, achada
-   *  por `classificarOrigem`). Omitido = não mexe no que já estava gravado —
-   *  mesmo upsert PARCIAL que `origem` já usa acima. */
+   *  por `classificarOrigem`). Omitido ou `null` = não mexe no que já estava
+   *  gravado. */
   issueNumber?: number | null
-  /** Fase 2.4: o formulário de entendimento, quando já existe. Omitido =
-   *  não mexe no que já estava gravado (mesmo upsert PARCIAL de `origem`
-   *  acima) — nunca apaga um entendimento anterior por engano. */
+  /** Fase 2.4: o formulário de entendimento, quando já existe. Omitido ou
+   *  `null` = nunca apaga um entendimento anterior por engano. */
   entendimento?: EntendimentoDoItem | null
+  /** Como o vínculo com o pedido foi achado (só preenche). */
+  vinculoOrigem?: string | null
+  /** Resultado da conferência da tarefa (só preenche). */
+  conferencia?: ConferenciaDoItem | null
 }): Promise<RepoItemRecord> {
   const where = {
     projectId_tipo_numero: { projectId: deps.projectId, tipo: deps.tipo, numero: deps.numero },
   }
-  const update: Record<string, unknown> = { estado: deps.estado }
-  if (deps.origem !== undefined) update['origem'] = deps.origem
-  if (deps.issueNumber !== undefined) update['issueNumber'] = deps.issueNumber
-  if (deps.entendimento !== undefined) update['entendimento'] = deps.entendimento
+  const update: Record<string, unknown> = {}
+  if (deps.estado !== undefined) update['estado'] = deps.estado
+  if (deps.origem != null) update['origem'] = deps.origem
+  if (deps.issueNumber != null) update['issueNumber'] = deps.issueNumber
+  if (deps.entendimento != null) update['entendimento'] = deps.entendimento
+  if (deps.vinculoOrigem != null) update['vinculoOrigem'] = deps.vinculoOrigem
+  if (deps.conferencia != null) update['conferencia'] = deps.conferencia
 
   const linha = await deps.prisma.repoItem.upsert({
     where,
@@ -101,10 +126,12 @@ export async function atualizarFichaDoItem(deps: {
       projectId: deps.projectId,
       tipo: deps.tipo,
       numero: deps.numero,
-      estado: deps.estado,
+      estado: deps.estado ?? { status: 'desconhecido' },
       origem: deps.origem ?? null,
       issueNumber: deps.issueNumber ?? null,
       entendimento: deps.entendimento ?? null,
+      vinculoOrigem: deps.vinculoOrigem ?? null,
+      conferencia: deps.conferencia ?? null,
     },
     update,
   })

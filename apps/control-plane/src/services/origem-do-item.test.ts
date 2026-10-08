@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   classificarOrigem,
+  ehEntregaDoDevAssincrono,
   issueConfiavelDaFicha,
   origemPrecisaDeReclassificacao,
 } from './origem-do-item.js'
@@ -134,5 +135,28 @@ describe('issueConfiavelDaFicha', () => {
 
   it('issue nula → null, qualquer que seja a origem', () => {
     expect(issueConfiavelDaFicha({ origem: 'jules_gitorch', issueNumber: null })).toBeNull()
+  })
+})
+
+describe('ehEntregaDoDevAssincrono', () => {
+  it('só as origens do dev assíncrono valem como entrega dele', () => {
+    expect(ehEntregaDoDevAssincrono('jules_gitorch')).toBe(true)
+    expect(ehEntregaDoDevAssincrono('jules_fora')).toBe(true)
+  })
+
+  it('origem nula, desconhecida ou de outro autor nunca vale', () => {
+    for (const origem of [
+      null,
+      undefined,
+      '',
+      'desconhecido',
+      'pessoa',
+      'assistente',
+      'outro_bot',
+      'dependabot',
+      'inventada',
+    ]) {
+      expect(ehEntregaDoDevAssincrono(origem)).toBe(false)
+    }
   })
 })
