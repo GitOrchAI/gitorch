@@ -85,7 +85,17 @@ describe('model-catalog', () => {
         path.join(home, '.codex', 'models_cache.json'),
         JSON.stringify({ models: [{ slug: 'gpt-5.5' }] })
       )
-      await fs.writeFile(path.join(home, '.codex', 'gitorch-quota.json'), '{}')
+      // O carimbo é fixado uma hora no passado em vez de herdar o instante da
+      // escrita. Herdado, ele fica a poucos microssegundos do `new Date()` que o
+      // discoverer toma logo depois, e o carimbo do arquivo (arredondado para o
+      // milissegundo, no relógio do sistema de arquivos) às vezes sai 1ms À
+      // FRENTE do relógio do processo — idade negativa, que a regra trata como
+      // "não sei quando foi" e manda aquecer. Uma hora de idade é "recente" para
+      // o intervalo de seis horas sem depender dessa corrida.
+      const quota = path.join(home, '.codex', 'gitorch-quota.json')
+      await fs.writeFile(quota, '{}')
+      const umaHoraAtras = new Date(Date.now() - 60 * 60_000)
+      await fs.utimes(quota, umaHoraAtras, umaHoraAtras)
       let aqueceu = 0
       const discover = makeCodexDiscoverer('codex-fake-bin', async () => {
         aqueceu++
