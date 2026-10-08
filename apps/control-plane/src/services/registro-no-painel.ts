@@ -28,6 +28,8 @@
 // ao dono nos outros fluxos, agora reaproveitada para nomear o evento de
 // auditoria.
 
+import { limparSurrogates } from './texto-seguro.js'
+
 /** Só o que `registrarNoPainelUmaVez` precisa do Prisma. */
 export interface PrismaDoRegistroNoPainel {
   event: {
@@ -68,11 +70,14 @@ export async function registrarNoPainelUmaVez(args: RegistrarNoPainelUmaVezArgs)
 export async function registrarNoPainelSeForNovo(
   args: RegistrarNoPainelUmaVezArgs
 ): Promise<boolean> {
+  // A mesma chave limpa na consulta e na gravação: o jsonb recusa substituto
+  // solto, e o que se grava tem de ser exatamente o que se procura depois.
+  const chave = limparSurrogates(args.chave)
   const jaExiste = await args.prisma.event.findFirst({
     where: {
       projectId: args.projectId,
       type: 'audit',
-      payload: { path: ['chave'], equals: args.chave },
+      payload: { path: ['chave'], equals: chave },
     },
   })
   if (jaExiste) return false
@@ -81,7 +86,7 @@ export async function registrarNoPainelSeForNovo(
     data: {
       projectId: args.projectId,
       type: 'audit',
-      payload: { texto: args.texto, chave: args.chave },
+      payload: { texto: limparSurrogates(args.texto), chave },
     },
   })
   return true

@@ -39,6 +39,7 @@ import { ErroDoGitHub } from './erro-do-github.js'
 import { donoDoRepositorio, freioDeCotaAtivo } from './freio-de-cota-do-github.js'
 import { registrarNoPainelUmaVez } from './registro-no-painel.js'
 import type { StepExecutor } from './role-rails.js'
+import { cortarPorPontoDeCodigo } from './texto-seguro.js'
 
 export const TETO_DE_AJUSTES_POR_MISSAO = 3
 /** Leituras depois das quais o laço não abre outra candidata (o pior caso real é 10: ver o cabeçalho). */
@@ -221,8 +222,8 @@ export async function rodarAjusteDeTarefasForaDoPadrao(
         ajuste: {
           estado: 'invalido',
           hashDoCorpoOriginal: hash,
-          motivo: `o motor não devolveu um formulário válido: ${form.erroDeValidacao}`.slice(
-            0,
+          motivo: cortarPorPontoDeCodigo(
+            `o motor não devolveu um formulário válido: ${form.erroDeValidacao}`,
             300
           ),
           tentadoEm: (deps.agora ?? (() => new Date()))().toISOString(),

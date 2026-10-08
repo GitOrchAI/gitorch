@@ -128,3 +128,28 @@ describe('registrarNoPainelSeForNovo — devolve se gravou', () => {
     expect(eventos).toHaveLength(1)
   })
 })
+
+describe('chave com surrogate solto', () => {
+  it('a consulta e a gravação usam a MESMA chave limpa: a segunda chamada reconhece a primeira', async () => {
+    const eventos: Array<{ payload: unknown }> = []
+    const prisma = prismaFake(eventos)
+    prisma.event.create.mockImplementation(async ({ data }: { data: { payload: unknown } }) => {
+      eventos.push({ payload: data.payload })
+      return {}
+    })
+    const args = {
+      prisma: prisma as never,
+      projectId: 'p',
+      chave: 'ajuste:dono/repo:7:\uD83D',
+      texto: 't',
+    }
+
+    expect(await registrarNoPainelSeForNovo(args)).toBe(true)
+    expect(await registrarNoPainelSeForNovo(args)).toBe(false)
+
+    expect(eventos).toHaveLength(1)
+    expect(prisma.event.findFirst.mock.calls[0]?.[0]).toMatchObject({
+      where: { payload: { equals: 'ajuste:dono/repo:7:�' } },
+    })
+  })
+})

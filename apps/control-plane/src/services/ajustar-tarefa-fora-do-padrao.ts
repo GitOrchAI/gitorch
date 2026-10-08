@@ -10,6 +10,7 @@ import {
 } from '@gitorch/cadence'
 import { RailsStepError, runFormStep } from './rails-runner.js'
 import type { StepExecutor } from './role-rails.js'
+import { mascararCredenciais, resumirErro } from './texto-seguro.js'
 
 import type { ConferenciaDaTarefa } from './conferir-tarefa-sem-pedido.js'
 
@@ -42,7 +43,7 @@ export async function ajustarTarefaForaDoPadrao(
     )
   } catch (err) {
     return {
-      erroDeValidacao: `o texto da tarefa parece conter instrução ao agente: ${String(err).slice(0, 160)}`,
+      erroDeValidacao: `o texto da tarefa parece conter instrução ao agente: ${resumirErro(err, 160)}`,
     }
   }
 
@@ -63,7 +64,7 @@ export async function ajustarTarefaForaDoPadrao(
       execute: args.execute,
     })) as InfraIssueForm
   } catch (err) {
-    if (err instanceof RailsStepError) return { erroDeValidacao: err.message }
+    if (err instanceof RailsStepError) return { erroDeValidacao: mascararCredenciais(err.message) }
     throw err
   }
 }

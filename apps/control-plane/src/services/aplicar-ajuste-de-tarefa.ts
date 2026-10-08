@@ -30,6 +30,7 @@ import { DOD_FIELD_MAP, type DoDFields, type InfraIssueForm, validateDoD } from 
 import { renderIssueBody, pesoDoCorpoDaIssue } from './backlog-executor.js'
 import { conferirTarefaSemPedido, hashDoCorpoDaTarefa } from './conferir-tarefa-sem-pedido.js'
 import { lerSecaoDaIssue } from './secao-da-issue.js'
+import { cortarPorPontoDeCodigo, limparSurrogates, resumirErro } from './texto-seguro.js'
 
 /** Nome da variável que liga e desliga a peça. */
 export const INTERRUPTOR_DO_AJUSTE_DE_TAREFA = 'GITORCH_AJUSTE_DE_TAREFA'
@@ -214,6 +215,18 @@ export function validarAjusteDeTarefa(args: {
   const recusa = (motivo: string): ResultadoDaValidacao => ({ ok: false, motivo })
   const campos: DoDFields = args.form.fields
 
+  // A ficha e o bloco recolhido guardam o original já limpo: um substituto solto
+  // viraria U+FFFD e o desfazer devolveria um texto diferente do que a pessoa
+  // escreveu. Em vez de alterar o original, não se reescreve.
+  if (
+    limparSurrogates(args.tituloOriginal) !== args.tituloOriginal ||
+    limparSurrogates(args.corpoOriginal) !== args.corpoOriginal
+  ) {
+    return recusa(
+      'o texto original tem um caractere partido (surrogate solto) que não se guarda sem alterar; não reescrevo para o desfazer devolver o texto exato'
+    )
+  }
+
   const naoCabe = motivoDeOriginalQueNaoCabeNoBloco(args.tituloOriginal, args.corpoOriginal)
   if (naoCabe) return recusa(naoCabe)
 
@@ -221,7 +234,7 @@ export function validarAjusteDeTarefa(args: {
   if (!dod.ok)
     return recusa(`o formulário não tem os 8 campos preenchidos: ${dod.errors.join('; ')}`)
 
-  const titulo = campos.titulo.trim()
+  const titulo = limparSurrogates(campos.titulo.trim())
   if (titulo.length > TITULO_MAXIMO) {
     return recusa(`o título novo passa de ${TITULO_MAXIMO} caracteres`)
   }
@@ -265,7 +278,9 @@ export function validarAjusteDeTarefa(args: {
     return recusa('o texto novo deixaria um bloco ou uma cerca de código aberta antes do original')
   }
 
-  const corpo = `${corpoDosCampos}\n\n${blocoDoOriginal(args.tituloOriginal, args.corpoOriginal)}`
+  const corpo = limparSurrogates(
+    `${corpoDosCampos}\n\n${blocoDoOriginal(args.tituloOriginal, args.corpoOriginal)}`
+  )
   if (!detalhesBalanceadosEmOrdem(corpo) || cercaDeCodigoAberta(corpo)) {
     return recusa('o corpo montado não fecha o bloco recolhido do original')
   }
@@ -584,15 +599,17 @@ export async function reescreverTarefa(
   try {
     await deps.escreverIssue(pedido.numero, { titulo: validacao.titulo, corpo: validacao.corpo })
   } catch (err) {
-    const motivo = String(err).slice(0, 200)
+    const motivo = resumirErro(err, 200)
     const releitura = await reler(deps, pedido.numero, {
       novo: hashDoCorpoNovo,
       original: hashOriginal,
     })
 
     if (releitura.tipo === 'ilegivel') {
-      const motivoIncerto =
-        `${motivo} (e não consegui reler a tarefa para saber se o texto novo entrou)`.slice(0, 300)
+      const motivoIncerto = cortarPorPontoDeCodigo(
+        `${motivo} (e não consegui reler a tarefa para saber se o texto novo entrou)`,
+        300
+      )
       await deps.gravarConferencia(pedido.numero, {
         ajuste: {
           estado: 'incerto',
@@ -616,8 +633,8 @@ export async function reescreverTarefa(
     if (releitura.tipo !== 'texto-novo') {
       const motivoDaFalha =
         releitura.tipo === 'outro-texto'
-          ? `${motivo} (a tarefa está com outro texto, de quem a editou; não toquei nela)`.slice(
-              0,
+          ? cortarPorPontoDeCodigo(
+              `${motivo} (a tarefa está com outro texto, de quem a editou; não toquei nela)`,
               300
             )
           : motivo

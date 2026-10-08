@@ -434,9 +434,11 @@ describe('tarefas sem pedido, pelo caminho real do scheduler (real seam)', () =>
     })
     // o bug solto não foi conferido
     expect(prisma._conferencias.every((c) => c.where['numero'] === 7)).toBe(true)
-    expect(prisma._eventos.map((e) => e.chave)).toEqual([
-      expect.stringMatching(/^conferencia:acme\/api:7:/),
-    ])
+    // (a etapa da nota de segurança também roda neste tique e avisa o painel
+    // por conta própria; aqui só importa o que a conferência registrou)
+    expect(prisma._eventos.map((e) => e.chave).filter((c) => c.startsWith('conferencia:'))).toEqual(
+      [expect.stringMatching(/^conferencia:acme\/api:7:/)]
+    )
     // a conferência não escreve nada no GitHub
     expect(rede.escritas).toEqual([])
   })

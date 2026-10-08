@@ -7,6 +7,7 @@
 import type { ContextoExecutivoDaPergunta } from './contexto-executivo-da-pergunta.js'
 import { buildFreeTextOption } from './telegram-bot.js'
 import type { AgentQuestionOption } from './agent-question.js'
+import { cortarPorPontoDeCodigo } from './texto-seguro.js'
 
 export const DEDUP_PREFIXO_VINCULO_DA_TAREFA = 'vinculo-da-tarefa:'
 
@@ -42,7 +43,7 @@ const MAX_TITULO_NO_BOTAO = 60
 
 function tituloCurto(titulo: string): string {
   const limpo = titulo.replace(/\s+/g, ' ').trim()
-  return limpo.length <= MAX_TITULO_NO_BOTAO ? limpo : `${limpo.slice(0, MAX_TITULO_NO_BOTAO - 1)}…`
+  return cortarPorPontoDeCodigo(limpo, MAX_TITULO_NO_BOTAO, { sufixo: '…' })
 }
 
 export function montarPerguntaSobreVinculoDaTarefa(args: {

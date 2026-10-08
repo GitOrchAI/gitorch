@@ -3,7 +3,11 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { atualizarFichaDoItem, lerFichaDoItem } from '../src/services/ficha-do-item.js'
+import {
+  atualizarFichaDoItem,
+  lerFichaDoItem,
+  mesclarConferenciaDoItem,
+} from '../src/services/ficha-do-item.js'
 
 // O setup global do vitest (src/test/setup.ts) mocka o @prisma/client; aqui o
 // banco é de verdade.
@@ -153,6 +157,54 @@ describe.skipIf(!reachable)('ficha do item (integração com o banco)', () => {
       // sem estado numa ficha nova: nasce com o estado mínimo
       const nova = await atualizarFichaDoItem({ ...base, numero: 8, origem: 'pessoa' })
       expect(nova.estado).toEqual({ status: 'desconhecido' })
+    } finally {
+      await prisma.$disconnect()
+      dropDb(nome)
+    }
+  }, 60000)
+
+  it('substituto solto no texto de fora é limpo antes de ir ao jsonb (estado, entendimento e conferência)', async () => {
+    const { nome, url } = criarBancoMigrado('ligacao_ficha_surrogate')
+    const { PrismaClient } = await import('@prisma/client')
+    const prisma = new PrismaClient({ datasources: { db: { url } } })
+    try {
+      const projectId = randomUUID()
+      psql(
+        url,
+        `INSERT INTO projects (id, wing_id, name, updated_at) VALUES ('${projectId}', 'o/r', 'r', now())`
+      )
+      const base = { prisma: prisma as never, projectId, tipo: 'issue' as const, numero: 9 }
+      const solto = 'titulo\uD83D cortado'
+
+      await atualizarFichaDoItem({
+        ...base,
+        estado: { status: 'open', verificacao: solto },
+        entendimento: {
+          deOndeVeio: 'ok',
+          oQueMuda: 'ok',
+          queAjusteE: 'ok',
+          porQueExiste: solto,
+        },
+        conferencia: { original: { titulo: solto } },
+      })
+      const ok = await mesclarConferenciaDoItem({
+        prisma: prisma as never,
+        projectId,
+        tipo: 'issue',
+        numero: 9,
+        parcial: { ajuste: { motivo: `fim${solto}\uDE00` } },
+      })
+      expect(ok).toBe(true)
+
+      const ficha = await lerFichaDoItem({ ...base })
+      expect(ficha?.estado).toEqual({ status: 'open', verificacao: 'titulo\uFFFD cortado' })
+      expect((ficha?.entendimento as { porQueExiste: string }).porQueExiste).toBe(
+        'titulo\uFFFD cortado'
+      )
+      expect(ficha?.conferencia).toEqual({
+        original: { titulo: 'titulo\uFFFD cortado' },
+        ajuste: { motivo: 'fimtitulo\uFFFD cortado\uFFFD' },
+      })
     } finally {
       await prisma.$disconnect()
       dropDb(nome)

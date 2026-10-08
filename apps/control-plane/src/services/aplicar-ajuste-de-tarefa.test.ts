@@ -449,6 +449,51 @@ describe('reescreverTarefa (o aplicador)', () => {
     expect(m.eventos[0]?.texto).toContain('#123')
   })
 
+  describe('original com surrogate solto: a limpeza o trocaria por U+FFFD e o desfazer devolveria outro texto', () => {
+    const SOLTO = '\uD83D'
+
+    it.each([
+      ['no título', { titulo: `${ORIGINAL_TITULO} ${SOLTO}`, corpo: ORIGINAL_CORPO }],
+      ['no corpo', { titulo: ORIGINAL_TITULO, corpo: `${ORIGINAL_CORPO}\n\nfim ${SOLTO}` }],
+    ])(
+      '%s: recusa, não escreve, não guarda original e registra o motivo no painel',
+      async (_onde, texto) => {
+        const m = montar(issueDoGitHub(texto))
+        const r = await reescreverTarefa(m.deps, {
+          ...pedido(),
+          hashDoCorpoConferido: hashDoCorpoDaTarefa(texto.titulo, texto.corpo),
+        })
+
+        expect(r.tipo).toBe('invalido')
+        if (r.tipo === 'invalido') expect(r.motivo).toMatch(/surrogate|substituto/i)
+        expect(m.escritas).toEqual([])
+        expect(m.chamadas).toEqual(['GET', 'GRAVA'])
+        expect(m.conferencias[0]).not.toHaveProperty('original')
+        expect(m.conferencias[0]).toMatchObject({ ajuste: { estado: 'invalido' } })
+        expect(m.eventos).toHaveLength(1)
+        expect(m.eventos[0]?.texto).toMatch(/Nada foi alterado no GitHub/)
+      }
+    )
+
+    it('a validação sozinha também recusa', () => {
+      const r = validarAjusteDeTarefa({
+        tituloOriginal: ORIGINAL_TITULO,
+        corpoOriginal: `${ORIGINAL_CORPO} ${SOLTO}`,
+        form: formulario(),
+      })
+      expect(r.ok).toBe(false)
+    })
+
+    it('um emoji inteiro (par completo) no original não é surrogate solto: a reescrita segue', () => {
+      const r = validarAjusteDeTarefa({
+        tituloOriginal: `${ORIGINAL_TITULO} \u{1F600}`,
+        corpoOriginal: `${ORIGINAL_CORPO}\n\n\u{1F600}`,
+        form: formulario(),
+      })
+      expect(r.ok).toBe(true)
+    })
+  })
+
   it('a trava vence o formulário: bloqueado não escreve nada nem grava nada', async () => {
     const m = montar(issueDoGitHub({ atualizadaEm: HORAS(1) }))
     const r = await reescreverTarefa(m.deps, pedido())
@@ -468,6 +513,95 @@ describe('reescreverTarefa (o aplicador)', () => {
     const ultimo = m.conferencias.at(-1)
     expect(ultimo).toMatchObject({ ajuste: { estado: 'falhou', falhas: 1 } })
     expect(m.eventos).toEqual([])
+  })
+
+  describe('a credencial que o erro de escrita citar não chega à ficha, ao painel nem ao resultado', () => {
+    const TOKEN = 'sentinela-gh-9f2c41d7a8'
+    const erroComToken = () =>
+      new Error(`GitHub PATCH /repos/acme/api/issues/7 failed (401) Authorization: Bearer ${TOKEN}`)
+
+    function tudoQueSaiu(
+      m: ReturnType<typeof montar>,
+      resultado: Awaited<ReturnType<typeof reescreverTarefa>>
+    ): string {
+      return JSON.stringify({ conferencias: m.conferencias, eventos: m.eventos, resultado })
+    }
+
+    it('escrita recusada e a tarefa segue com o original: a ficha e o resultado sem o token', async () => {
+      const m = montar(issueDoGitHub(), {
+        escreverIssue: vi.fn(async () => {
+          throw erroComToken()
+        }),
+      })
+      const r = await reescreverTarefa(m.deps, pedido())
+
+      expect(r.tipo).toBe('falhou')
+      // controle positivo: o motivo gravado traz o resto da mensagem
+      expect(m.conferencias.at(-1)).toMatchObject({
+        ajuste: { estado: 'falhou', motivo: expect.stringContaining('failed (401)') },
+      })
+      expect(tudoQueSaiu(m, r)).not.toContain(TOKEN)
+    })
+
+    it('nem a releitura funciona (incerto): a ficha, o painel e o resultado sem o token', async () => {
+      let leituras = 0
+      const m = montar(issueDoGitHub(), {
+        lerIssue: vi.fn(async () => {
+          leituras += 1
+          if (leituras > 1) throw new Error(`rede caiu (Bearer ${TOKEN})`)
+          return issueDoGitHub()
+        }),
+        escreverIssue: vi.fn(async () => {
+          throw erroComToken()
+        }),
+      })
+      const r = await reescreverTarefa(m.deps, pedido())
+
+      expect(r.tipo).toBe('incerto')
+      expect(m.conferencias.at(-1)).toMatchObject({
+        ajuste: { estado: 'incerto', motivo: expect.stringContaining('failed (401)') },
+      })
+      expect(m.eventos).toHaveLength(1)
+      expect(tudoQueSaiu(m, r)).not.toContain(TOKEN)
+    })
+
+    it('a tarefa está com outro texto (gente editou): a ficha e o resultado sem o token', async () => {
+      let leituras = 0
+      const m = montar(issueDoGitHub(), {
+        lerIssue: vi.fn(async () => {
+          leituras += 1
+          return leituras > 1
+            ? issueDoGitHub({ corpo: `${ORIGINAL_CORPO}\n\nedição` })
+            : issueDoGitHub()
+        }),
+        escreverIssue: vi.fn(async () => {
+          throw erroComToken()
+        }),
+      })
+      const r = await reescreverTarefa(m.deps, pedido())
+
+      expect(r.tipo).toBe('falhou')
+      expect(tudoQueSaiu(m, r)).not.toContain(TOKEN)
+    })
+
+    it.each([
+      ['undefined', undefined],
+      ['null', null],
+      ['texto', `falhou com ${TOKEN}-fim ghp_abcdefghijklmnopqrstuvwxyz0123456789`],
+    ])(
+      'escrita que lança %s (não-Error): vira falha contada, sem lançar e sem token',
+      async (_n, lancado) => {
+        const m = montar(issueDoGitHub(), {
+          escreverIssue: vi.fn(async () => {
+            throw lancado
+          }),
+        })
+        const r = await reescreverTarefa(m.deps, pedido())
+
+        expect(r.tipo).toBe('falhou')
+        expect(tudoQueSaiu(m, r)).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+      }
+    )
   })
 
   it('a contagem de falhas continua a de antes', async () => {
