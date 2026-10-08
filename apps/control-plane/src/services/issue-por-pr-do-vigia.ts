@@ -22,8 +22,15 @@ export interface BancoDoIssuePorPr {
   repoItem: {
     findMany: (args: {
       where: Prisma.RepoItemWhereInput
-      select: { numero: true; origem: true; issueNumber: true }
-    }) => Promise<Array<{ numero: number; origem: string | null; issueNumber: number | null }>>
+      select: { numero: true; origem: true; issueNumber: true; vinculoOrigem: true }
+    }) => Promise<
+      Array<{
+        numero: number
+        origem: string | null
+        issueNumber: number | null
+        vinculoOrigem?: string | null
+      }>
+    >
   }
 }
 
@@ -55,7 +62,7 @@ export async function carregarIssuePorPr(
   // UMA leitura por projeto (não uma por PR): as fichas de PR com issue gravada.
   const fichas = await db.repoItem.findMany({
     where: { projectId, tipo: 'pr', issueNumber: { not: null } },
-    select: { numero: true, origem: true, issueNumber: true },
+    select: { numero: true, origem: true, issueNumber: true, vinculoOrigem: true },
   })
   for (const ficha of fichas) {
     if (issuePorPr.has(ficha.numero)) continue

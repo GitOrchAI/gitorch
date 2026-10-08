@@ -1,7 +1,8 @@
 // PO pergunta ao dono a qual tarefa um pull request pertence, quando nem o
 // vínculo formal (2.1) nem o RA pelo código (2.2) acharam nada. MESMO padrão
 // executivo de D71/D72/D73 que viabilidade-da-logica-alternativa.ts já usa —
-// 3 opções objetivas + "Vou escrever", nunca um formato novo.
+// 3 opções objetivas (até 2 tarefas candidatas + "Nenhuma destas") e a
+// resposta livre, nunca um formato novo.
 
 import type { ContextoExecutivoDaPergunta } from './contexto-executivo-da-pergunta.js'
 import { buildFreeTextOption } from './telegram-bot.js'
@@ -31,13 +32,24 @@ export interface IssueCandidata {
   titulo: string
 }
 
-/** No máximo 3 candidatas objetivas — mesmo teto de "3 opções, nunca lista
- *  completa" que toda pergunta ao dono segue (feedback-toda-pergunta-telegram-4-opcoes). */
-const MAX_CANDIDATAS = 3
+/** No máximo 2 candidatas: com "Nenhuma destas" são as 3 opções objetivas que
+ *  toda pergunta ao dono segue (o envio ao Telegram recusa mais de 3 fixas),
+ *  mais o botão de escrever. */
+const MAX_CANDIDATAS = 2
+
+/** O botão do celular não é lugar de parágrafo. */
+const MAX_TITULO_NO_BOTAO = 60
+
+function tituloCurto(titulo: string): string {
+  const limpo = titulo.replace(/\s+/g, ' ').trim()
+  return limpo.length <= MAX_TITULO_NO_BOTAO ? limpo : `${limpo.slice(0, MAX_TITULO_NO_BOTAO - 1)}…`
+}
 
 export function montarPerguntaSobreVinculoDaTarefa(args: {
   numeroDoPr: number
   repository: string
+  /** O título do pull request, para o dono saber de qual se trata. */
+  tituloDoPr?: string | undefined
   contexto: ContextoExecutivoDaPergunta
   candidatas: IssueCandidata[]
 }): { text: string; options: AgentQuestionOption[]; dedupKey: string } {
@@ -48,13 +60,16 @@ export function montarPerguntaSobreVinculoDaTarefa(args: {
   if (args.contexto.decisoes.length > 0) {
     partes.push(`A equipe já resolveu sozinha: ${args.contexto.decisoes.join('; ')}.`)
   }
+  const nomeDoPr = args.tituloDoPr?.trim()
+    ? `#${args.numeroDoPr} ("${tituloCurto(args.tituloDoPr)}")`
+    : `#${args.numeroDoPr}`
   partes.push(
-    `O pull request #${args.numeroDoPr} de ${args.repository} chegou sem nenhuma pista de a qual ` +
+    `O pull request ${nomeDoPr} de ${args.repository} chegou sem nenhuma pista de a qual ` +
       'tarefa pertence, e o analista não achou nada parecido pelo código. A qual tarefa ele pertence?'
   )
 
   const opcoesDeIssue: AgentQuestionOption[] = candidatas.map((c) => ({
-    label: `#${c.numero} — ${c.titulo}`,
+    label: `#${c.numero} — ${tituloCurto(c.titulo)}`,
     value: `vinculo-issue-${c.numero}`,
   }))
 
@@ -88,6 +103,7 @@ export async function perguntarSobreVinculoDaTarefa(
     projectId: string
     numeroDoPr: number
     repository: string
+    tituloDoPr?: string | undefined
     contexto: ContextoExecutivoDaPergunta
     candidatas: IssueCandidata[]
   },

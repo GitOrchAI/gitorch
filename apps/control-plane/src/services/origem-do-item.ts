@@ -116,12 +116,20 @@ const ORIGENS_CONHECIDAS: readonly OrigemDoItem[] = [
  * mesma régua de `origemPrecisaDeReclassificacao`: `jules_fora` e origem
  * nula/desconhecida são o estado de baixa confiança e não valem como vínculo.
  * Lida pelo vigia do PR quando a sessão do dev não conhece o PR (#583/#690).
+ *
+ * O vínculo que o analista achou lendo o código (`vinculoOrigem === 'codigo'`)
+ * é palpite: o vigia age no GitHub com esta issue na mão (fecha o pull request
+ * quando a tarefa já foi fechada, reabre sessão do dev), e agir em cima de um
+ * palpite não é opção. Ele só passa a valer quando o dono confirma, que é
+ * quando a origem do vínculo vira `dono`.
  */
 export function issueConfiavelDaFicha(ficha: {
   origem: string | null
   issueNumber: number | null
+  vinculoOrigem?: string | null | undefined
 }): number | null {
   if (ficha.issueNumber === null) return null
+  if (ficha.vinculoOrigem === 'codigo') return null
   if (ficha.origem === null || ficha.origem === 'jules_fora') return null
   if (!ORIGENS_CONHECIDAS.some((o) => o === ficha.origem)) return null
   return ficha.issueNumber

@@ -51,6 +51,7 @@ import { resolveMissionDelivery, type MissionPathKind } from '../services/missio
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails, runDuvidaTecnicaViaRa } from '../services/ra-rails-mission.js'
+import { buscarTarefaParecidaDosPrs, resumoDaBusca } from '../services/busca-de-tarefa-parecida.js'
 import {
   resolvePoliticaDePerguntasAoDono,
   devoAvisarDonoDeBloqueioResolvido,
@@ -4808,7 +4809,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                           return ''
                         })
                       : ''
-                  const extra = [analiseOut, achadosOut].filter(Boolean).join('\n')
+                  // Fases 2.2/2.3: a tarefa do pull request sem pista, pelo código;
+                  // sem resposta válida, a pergunta ao dono. Roda também no
+                  // disparo de análise pendente (os tetos e a tentativa única por
+                  // cabeça de PR seguram a conta).
+                  const buscaOut = await rodarBuscaDeTarefaParecida(
+                    project,
+                    railsToken,
+                    execute,
+                    contextBlocks
+                  ).catch((err) => {
+                    app.log.warn(
+                      err,
+                      `[Scheduler] busca da tarefa pelo código falhou em ${project.wingId}`
+                    )
+                    return ''
+                  })
+                  const extra = [analiseOut, achadosOut, buscaOut].filter(Boolean).join('\n')
                   return extra ? { ...raResult, output: `${raResult.output}\n${extra}` } : raResult
                 })()
               : poRails
@@ -6329,6 +6346,42 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       gatilho: achado.gatilho ?? 'ver evidência da issue',
       desde: (achado.falhaDesde ?? new Date().toISOString()).slice(0, 10),
     }
+  }
+
+  /**
+   * Fases 2.2/2.3 da ligação das peças: o pull request que chega sem pista de
+   * tarefa (de gente, ou de um assistente de código que não a citou) é lido
+   * pelo analista, que diz se alguma tarefa ABERTA o descreve; sem resposta
+   * válida, o dono é perguntado (Telegram e painel). O palpite do analista é
+   * só uma sugestão (`vinculo_origem = 'codigo'`): nada que age no GitHub o usa
+   * até o dono confirmar. O `execute` real só existe aqui, dentro de uma
+   * missão, então isto roda como extra do RA — com os tetos, a tentativa única
+   * por cabeça de PR e o freio de cota de `buscarTarefaParecidaDosPrs`.
+   * Best-effort: nunca lança para fora — o RA tem outro trabalho.
+   */
+  const rodarBuscaDeTarefaParecida = async (
+    project: { id: string; wingId: string; userId: string | null; runtimeConfig?: unknown },
+    railsToken: string | undefined,
+    execute: StepExecutor,
+    contextBlocks: string[]
+  ): Promise<string> => {
+    if (!railsToken) return ''
+    const resultado = await buscarTarefaParecidaDosPrs({
+      prisma: app.prisma,
+      projectId: project.id,
+      repo: project.wingId,
+      userId: project.userId,
+      runtimeConfig: project.runtimeConfig ?? null,
+      contextBlocks,
+      execute,
+      ghGet: (caminho) => ghGet(caminho, railsToken),
+      agentQuestion:
+        (app as unknown as { agentQuestionService?: AgentQuestionService }).agentQuestionService ??
+        null,
+      info: (m) => app.log.info(`[Scheduler] ${m}`),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+    return resumoDaBusca(resultado)
   }
 
   /**

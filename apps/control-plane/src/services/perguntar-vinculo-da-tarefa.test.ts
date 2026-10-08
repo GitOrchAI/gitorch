@@ -19,7 +19,7 @@ describe('dedupKeyDeVinculoDaTarefa / parseDedupKeyDeVinculoDaTarefa', () => {
 })
 
 describe('montarPerguntaSobreVinculoDaTarefa', () => {
-  it('monta até 3 issues candidatas como opções objetivas + escrever', () => {
+  it('monta até 2 issues candidatas como opções objetivas + "nenhuma destas" + escrever', () => {
     const pergunta = montarPerguntaSobreVinculoDaTarefa({
       numeroDoPr: 42,
       repository: 'dono/repo',
@@ -36,5 +36,64 @@ describe('montarPerguntaSobreVinculoDaTarefa', () => {
       '__gitorch_free_text__',
     ])
     expect(pergunta.dedupKey).toBe('vinculo-da-tarefa:dono/repo:42')
+  })
+
+  it('formato do dono: 3 objetivas + 1 aberta. Três candidatas viram duas (o Telegram recusa mais de 3 fixas)', () => {
+    const pergunta = montarPerguntaSobreVinculoDaTarefa({
+      numeroDoPr: 42,
+      repository: 'dono/repo',
+      contexto: { ciclo: null, entrega: null, decisoes: [], lacunas: [] },
+      candidatas: [
+        { numero: 10, titulo: 'A' },
+        { numero: 11, titulo: 'B' },
+        { numero: 12, titulo: 'C' },
+        { numero: 13, titulo: 'D' },
+      ],
+    })
+    const fixas = pergunta.options.filter((o) => o.value !== '__gitorch_free_text__')
+    expect(fixas).toHaveLength(3)
+    expect(pergunta.options).toHaveLength(4)
+    expect(pergunta.options.map((o) => o.value)).toEqual([
+      'vinculo-issue-10',
+      'vinculo-issue-11',
+      'nenhuma-destas',
+      '__gitorch_free_text__',
+    ])
+  })
+
+  it('sem nenhuma candidata: ainda há "nenhuma destas" e a resposta livre', () => {
+    const pergunta = montarPerguntaSobreVinculoDaTarefa({
+      numeroDoPr: 42,
+      repository: 'dono/repo',
+      contexto: { ciclo: null, entrega: null, decisoes: [], lacunas: [] },
+      candidatas: [],
+    })
+    expect(pergunta.options.map((o) => o.value)).toEqual([
+      'nenhuma-destas',
+      '__gitorch_free_text__',
+    ])
+  })
+
+  it('o título do pull request entra no texto, para o dono saber de qual se trata', () => {
+    const pergunta = montarPerguntaSobreVinculoDaTarefa({
+      numeroDoPr: 590,
+      repository: 'dono/repo',
+      tituloDoPr: 'wishlist: add vira desejo',
+      contexto: { ciclo: null, entrega: null, decisoes: [], lacunas: [] },
+      candidatas: [],
+    })
+    expect(pergunta.text).toContain('#590')
+    expect(pergunta.text).toContain('wishlist: add vira desejo')
+  })
+
+  it('título comprido de issue é cortado no botão (o botão do celular não é lugar de parágrafo)', () => {
+    const pergunta = montarPerguntaSobreVinculoDaTarefa({
+      numeroDoPr: 42,
+      repository: 'dono/repo',
+      contexto: { ciclo: null, entrega: null, decisoes: [], lacunas: [] },
+      candidatas: [{ numero: 10, titulo: 'x'.repeat(300) }],
+    })
+    expect(pergunta.options[0]!.label.length).toBeLessThanOrEqual(80)
+    expect(pergunta.options[0]!.label.startsWith('#10 — ')).toBe(true)
   })
 })

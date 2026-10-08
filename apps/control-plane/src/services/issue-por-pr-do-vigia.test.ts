@@ -10,6 +10,7 @@ interface FichaFake {
   numero: number
   origem: string | null
   issueNumber: number | null
+  vinculoOrigem?: string | null
 }
 
 function banco(linhas: LinhaDeSessaoFake[], fichas: FichaFake[]) {
@@ -62,6 +63,31 @@ describe('carregarIssuePorPr', () => {
     expect(r.issuePorPr.has(690)).toBe(false)
     expect(r.issuePorPr.has(64)).toBe(false)
     expect(r.issuePorPr.has(132)).toBe(false)
+  })
+
+  it('vínculo "codigo" (palpite do analista) não vira tarefa do vigia; confirmado pelo dono, vira', async () => {
+    const { db } = banco(
+      [],
+      [
+        { numero: 590, origem: 'pessoa', issueNumber: 713, vinculoOrigem: 'codigo' },
+        { numero: 591, origem: 'pessoa', issueNumber: 714, vinculoOrigem: 'dono' },
+        { numero: 592, origem: 'pessoa', issueNumber: 715, vinculoOrigem: 'formal' },
+      ]
+    )
+    const r = await carregarIssuePorPr(db, 'p1')
+    expect(r.issuePorPr.has(590)).toBe(false)
+    expect(r.issuePorPr.get(591)).toBe(714)
+    expect(r.issuePorPr.get(592)).toBe(715)
+  })
+
+  it('pede a origem do vínculo na leitura da ficha (sem ela o palpite passaria por tarefa)', async () => {
+    const { db, lerFichas } = banco([], [])
+    await carregarIssuePorPr(db, 'p1')
+    expect(lerFichas).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ vinculoOrigem: true }),
+      })
+    )
   })
 
   it('lê as fichas UMA vez por projeto, filtrando tipo pr e issue preenchida', async () => {
