@@ -7,6 +7,7 @@ import { RAILS_SCHEMAS, buildStepPrompt, type RaTarefaParecidaForm } from '@gito
 import { runFormStep } from './rails-runner.js'
 import type { StepExecutor } from './role-rails.js'
 import type { IssueCandidata } from './perguntar-vinculo-da-tarefa.js'
+import { cortarPorPontoDeCodigo } from './texto-seguro.js'
 
 export interface RacharTarefaParecidaArgs {
   numeroDoPr: number
@@ -22,7 +23,7 @@ export interface RacharTarefaParecidaArgs {
 function listaDeIssuesAbertas(issues: IssueCandidata[]): string {
   if (issues.length === 0) return 'Issues abertas do repositório: nenhuma.'
   const linhas = issues.map(
-    (i) => `#${i.numero} — ${i.titulo.replace(/\s+/g, ' ').trim().slice(0, 140)}`
+    (i) => `#${i.numero} — ${cortarPorPontoDeCodigo(i.titulo.replace(/\s+/g, ' ').trim(), 140)}`
   )
   return `Issues abertas do repositório (número — título):\n${linhas.join('\n')}`
 }

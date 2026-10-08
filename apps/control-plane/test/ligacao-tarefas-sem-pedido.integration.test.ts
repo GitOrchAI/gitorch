@@ -399,12 +399,14 @@ describe.skipIf(!reachable)(
       nivelDoGuarda?: () => string
       env?: Record<string, string | undefined>
       esperas?: number[]
+      ghSend?: ReturnType<typeof ghSendDe>
     }) {
       return rodarAjusteDoPoComPrisma({
         prisma,
         project: { id: args.projectId, wingId: REPO, autonomia: args.autonomia },
         ghGet: ghGetDe(args.fetchLocal),
-        ghSend: ghSendDe(args.fetchLocal, args.nivelDoGuarda ?? (() => args.autonomia)),
+        ghSend:
+          args.ghSend ?? ghSendDe(args.fetchLocal, args.nivelDoGuarda ?? (() => args.autonomia)),
         execute: args.execute,
         contextBlocks: [],
         env: args.env ?? {},
@@ -909,6 +911,43 @@ describe.skipIf(!reachable)(
       expect(eventos(projectId).some((c) => c.includes(':invalido'))).toBe(true)
       expect(await conferencia(projectId, 430)).toMatchObject({ ajuste: { estado: 'invalido' } })
       expect(await conferencia(projectId, 430)).not.toHaveProperty('original')
+    })
+
+    it('4.2: erro de escrita com emoji na fronteira do corte do motivo grava a ficha e volta do jsonb', async () => {
+      const projectId = novoProjeto('cuidar')
+      const { github, fetchLocal } = await iniciar({
+        issues: [issue(440)],
+        quadro: [{ pedido: 440, iteracaoId: null, peso: null }],
+      })
+      await varrer({ projectId, fetchLocal })
+      const emoji = '\u{1F600}'
+      // `String(err)` começa com "Error: " (7 unidades): o emoji cai nas unidades 199-200, a fronteira do corte em 200.
+      const ghSend = async (): Promise<unknown> => {
+        throw new Error(`${'y'.repeat(192)}${emoji}${'z'.repeat(100)}`)
+      }
+
+      const r = await missao({
+        projectId,
+        autonomia: 'cuidar',
+        fetchLocal,
+        execute: motorFalso(),
+        ghSend,
+      })
+
+      expect(r.aplicadas).toEqual([])
+      expect(github.escritas).toEqual([])
+      const ajuste = (await conferencia(projectId, 440))?.['ajuste'] as {
+        estado: string
+        motivo: string
+      }
+      expect(ajuste.estado).toBe('falhou')
+      expect(ajuste.motivo).toContain(emoji)
+      expect(Array.from(ajuste.motivo)).toHaveLength(200)
+      const cru = psql(
+        dbUrl,
+        `SELECT conferencia::text FROM repo_items WHERE project_id = '${projectId}' AND numero = 440`
+      )
+      expect(cru).not.toMatch(/\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])/i)
     })
 
     // ---------------------------------------------------------------- 4.3

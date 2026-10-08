@@ -61,6 +61,27 @@ describe('montarPerguntaSobreVinculoDaTarefa', () => {
     ])
   })
 
+  it('título com emoji na fronteira do corte do botão não deixa substituto solto, nem o do pull request', () => {
+    const emoji = '\u{1F600}'
+    const titulo = `${'t'.repeat(58)}${emoji}${'u'.repeat(20)}`
+    const solto = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    const pergunta = montarPerguntaSobreVinculoDaTarefa({
+      numeroDoPr: 42,
+      repository: 'dono/repo',
+      tituloDoPr: titulo,
+      contexto: { ciclo: null, entrega: null, decisoes: [], lacunas: [] },
+      candidatas: [
+        { numero: 10, titulo },
+        { numero: 11, titulo: 'solto\uD83D' },
+      ],
+    })
+    expect(pergunta.options[0]?.label).toBe(`#10 — ${'t'.repeat(58)}${emoji}…`)
+    for (const texto of [pergunta.text, ...pergunta.options.map((o) => o.label)]) {
+      expect(solto.test(texto)).toBe(false)
+    }
+    expect(pergunta.options[1]?.label).toBe('#11 — solto\uFFFD')
+  })
+
   it('sem nenhuma candidata: ainda há "nenhuma destas" e a resposta livre', () => {
     const pergunta = montarPerguntaSobreVinculoDaTarefa({
       numeroDoPr: 42,

@@ -4,8 +4,14 @@
 // guarda uma lista de acontecimentos, só o retrato de agora.
 
 import type { Prisma, PrismaClient } from '@prisma/client'
+import { limparSurrogatesEmJson } from './texto-seguro.js'
 
-export type TipoDoItem = 'pr' | 'issue' | 'alerta'
+export type TipoDoItem = 'pr' | 'issue' | 'alerta' | 'seguranca' | 'conformidade'
+
+/** Fichas que guardam uma MEDIDA do repositório (nota de segurança, conformidade),
+ *  não um pedido, uma tarefa ou um alerta: uma por repositório, com `numero = 0`,
+ *  escritas só pela varredura de segurança e fora da lista de itens do painel. */
+export const TIPOS_DE_FICHA_MEDIDA = ['seguranca', 'conformidade'] as const
 
 export interface EstadoDoItem {
   status: string
@@ -117,10 +123,12 @@ export async function atualizarFichaDoItem(deps: {
     projectId_tipo_numero: { projectId: deps.projectId, tipo: deps.tipo, numero: deps.numero },
   }
   const update: Record<string, unknown> = {}
-  if (deps.estado !== undefined) update['estado'] = deps.estado
+  if (deps.estado !== undefined) update['estado'] = limparSurrogatesEmJson(deps.estado)
   if (deps.origem != null) update['origem'] = deps.origem
   if (deps.issueNumber != null) update['issueNumber'] = deps.issueNumber
-  if (deps.entendimento != null) update['entendimento'] = deps.entendimento
+  if (deps.entendimento != null) {
+    update['entendimento'] = limparSurrogatesEmJson(deps.entendimento)
+  }
   if (deps.vinculoOrigem != null) update['vinculoOrigem'] = deps.vinculoOrigem
   if (deps.conferencia != null) {
     // Trocar o JSON inteiro apagaria `original`, `historico` e `ajuste`, que são
@@ -133,7 +141,7 @@ export async function atualizarFichaDoItem(deps: {
       existente !== null && typeof existente === 'object' && !Array.isArray(existente)
         ? existente
         : {}
-    update['conferencia'] = { ...preservada, ...deps.conferencia }
+    update['conferencia'] = { ...preservada, ...limparSurrogatesEmJson(deps.conferencia) }
   }
 
   const linha = await deps.prisma.repoItem.upsert({
@@ -142,12 +150,12 @@ export async function atualizarFichaDoItem(deps: {
       projectId: deps.projectId,
       tipo: deps.tipo,
       numero: deps.numero,
-      estado: deps.estado ?? { status: 'desconhecido' },
+      estado: limparSurrogatesEmJson(deps.estado ?? { status: 'desconhecido' }),
       origem: deps.origem ?? null,
       issueNumber: deps.issueNumber ?? null,
-      entendimento: deps.entendimento ?? null,
+      entendimento: limparSurrogatesEmJson(deps.entendimento ?? null),
       vinculoOrigem: deps.vinculoOrigem ?? null,
-      conferencia: deps.conferencia ?? null,
+      conferencia: limparSurrogatesEmJson(deps.conferencia ?? null),
     },
     update,
   })
@@ -205,7 +213,10 @@ export async function mesclarConferenciaDoItem(deps: {
       !Array.isArray(linha.conferencia)
         ? (linha.conferencia as Record<string, unknown>)
         : {}
-    const mesclada = { ...atual, ...deps.parcial } as Prisma.InputJsonObject
+    const mesclada = {
+      ...atual,
+      ...limparSurrogatesEmJson(deps.parcial),
+    } as Prisma.InputJsonObject
     const { count } = await deps.prisma.repoItem.updateMany({
       where: {
         projectId: deps.projectId,

@@ -19,6 +19,7 @@ import { estaCompleto } from './entendimento-do-pedido.js'
 import type { EntendimentoDoItem } from './ficha-do-item.js'
 import { lerCuidaPorOrigem } from './cuidado-por-origem.js'
 import { baldeDeCuidado } from './motor-do-proximo-passo.js'
+import { cortarPorPontoDeCodigo } from './texto-seguro.js'
 import {
   PREFIXO_DA_GAVETA_DE_DIRECAO,
   SALA_DA_DIRECAO,
@@ -41,9 +42,7 @@ function numaLinha(texto: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/[.\s]+$/, '')
-  return limpo.length > MAX_CHARS_POR_CAMPO
-    ? `${limpo.slice(0, MAX_CHARS_POR_CAMPO - 1).trimEnd()}…`
-    : limpo
+  return cortarPorPontoDeCodigo(limpo, MAX_CHARS_POR_CAMPO, { sufixo: '…', aparar: true })
 }
 
 export async function registrarDirecaoDoProjeto(args: {

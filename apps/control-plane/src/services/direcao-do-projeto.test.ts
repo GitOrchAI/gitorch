@@ -85,6 +85,26 @@ describe('registrarDirecaoDoProjeto', () => {
     expect(salas).not.toContain('qa')
   })
 
+  it('texto de PR com emoji na fronteira dos 400 caracteres vai ao Cortex sem substituto solto', async () => {
+    const emoji = '\u{1F600}'
+    const { cortex, gavetas } = cortexEmMemoria()
+
+    await registrar(cortex, {
+      entendimento: {
+        ...ENTENDIMENTO,
+        porQueExiste: `${'p'.repeat(398)}${emoji}${'q'.repeat(50)}`,
+        oQueMuda: 'muda\uD83D',
+      },
+    })
+
+    const content = gavetas.get('direcao:proj-1:590')!.content
+    expect(content).toContain(`${'p'.repeat(398)}${emoji}…`)
+    expect(content).toContain('muda\uFFFD')
+    expect(content).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    )
+  })
+
   it('regravar o mesmo julgamento não duplica nem regrava', async () => {
     const { cortex, gavetas, writeDrawer } = cortexEmMemoria()
 

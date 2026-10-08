@@ -341,6 +341,14 @@ import {
   type PrismaDaFichaDoItem,
 } from '../services/ficha-do-item.js'
 import { lancarErroDoGitHub, pularSeFreioDeCotaAtivo } from '../services/freio-de-cota-do-github.js'
+import { criarDisparoEmSegundoPlano } from '../services/disparo-em-segundo-plano.js'
+import {
+  CADENCIA_DA_CONFORMIDADE_MS,
+  CADENCIA_DA_SEGURANCA_MS,
+  varrerSegurancaDosProjetos,
+  type CredencialDaSeguranca,
+} from '../services/varredura-de-seguranca.js'
+import { resumirErro } from '../services/texto-seguro.js'
 import {
   varrerRetratoDoProjeto,
   CADENCIA_DO_RETRATO_MS,
@@ -8082,16 +8090,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           backfillGrafo: {
             teto: 5,
             aplicar: async (args) => {
-              // `TipoDoItem` inclui 'alerta', mas o grafo de vínculos só
-              // existe para issue/PR (varrerRetratoDoProjeto nunca chama
-              // este backfill com 'alerta' — alertas de segurança têm
-              // laço próprio, `varrerAlertas` em varredura-do-retrato.ts).
+              // `TipoDoItem` inclui 'alerta' e as fichas medidas, mas o grafo
+              // de vínculos só existe para issue/PR (varrerRetratoDoProjeto
+              // nunca chama este backfill com 'alerta' — alertas de
+              // segurança têm laço próprio, `varrerAlertas` em
+              // varredura-do-retrato.ts).
               // O corte é o que estreita o tipo
               // para o que `atualizarGrafoDeVinculos` aceita, sem cast.
               // Retorna `false` (não coletou) em todo caminho de saída
               // antecipada — é esse retorno que diz à varredura pra NÃO
               // gastar o teto do ciclo neste item (issue #877).
-              if (args.tipo === 'alerta') return false
+              if (args.tipo !== 'pr' && args.tipo !== 'issue') return false
               const linha = await app.prisma.repoItem.findFirst({
                 where: { projectId: projeto.id, tipo: args.tipo, numero: args.numero },
                 select: { id: true, vinculos: { select: { id: true } } },
@@ -8216,6 +8225,84 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.error({ err, projectId: projeto.id }, '[Scheduler] varredura-do-retrato falhou')
       }
     }
+  }
+
+  // Nota de segurança (diária) e conformidade (semanal) de cada repositório.
+  // Etapa enxuta de propósito, porque o tique já passa do minuto: no máximo UM
+  // projeto por passada, o gate é a própria ficha em `repo_items` (sobrevive a
+  // deploy), a passada é abandonada depois de 20 s e o freio de cota a pula.
+  // O tique a dispara em segundo plano, sem esperar (ver
+  // `dispararSegurancaEmSegundoPlano`). Só LÊ o GitHub do cliente; ver
+  // `varredura-de-seguranca.ts`.
+  const CADENCIA_DA_SEGURANCA = lerCadenciaMs(
+    'GITORCH_SEGURANCA_CADENCIA_MS',
+    CADENCIA_DA_SEGURANCA_MS,
+    (m) => app.log.warn(m)
+  )
+  const CADENCIA_DA_CONFORMIDADE = lerCadenciaMs(
+    'GITORCH_CONFORMIDADE_CADENCIA_MS',
+    CADENCIA_DA_CONFORMIDADE_MS,
+    (m) => app.log.warn(m)
+  )
+  // Projeto → quando a última passada falhou (credencial ausente, tempo
+  // esgotado, nada medido). Vive só no processo: o pior efeito de perdê-la é
+  // repetir uma tentativa.
+  const falhasDaSeguranca = new Map<string, number>()
+
+  const rodarSegurancaDosProjetos = async (): Promise<void> => {
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true, accessSuspendedAt: null },
+      select: {
+        id: true,
+        wingId: true,
+        userId: true,
+        runtimeConfig: true,
+        encryptedClientToken: true,
+      },
+    })
+    const porId = new Map(projetos.map((p) => [p.id, p]))
+
+    await varrerSegurancaDosProjetos({
+      prisma: app.prisma,
+      projetos: projetos.map((p) => ({
+        id: p.id,
+        wingId: p.wingId,
+        runtimeConfig: p.runtimeConfig,
+      })),
+      agora: new Date(),
+      // Proteção de branch e permissões das Actions pedem administração, que o
+      // App pode não ter: a credencial do cliente/dono vai primeiro e a do App
+      // completa o que faltar (mesma ordem da leitura dos alertas).
+      credenciais: async (projeto) => {
+        const candidatas: CredencialDaSeguranca[] = []
+        const linha = porId.get(projeto.id)
+        const doClienteOuDono = await lerCredencialQueAlcancaOProjeto({
+          prisma: app.prisma,
+          projectId: projeto.id,
+          userId: linha?.userId ?? null,
+          engineConnections: app.engineConnections,
+          encryptedClientTokenJaLido: linha?.encryptedClientToken ?? null,
+        })
+        if (doClienteOuDono) candidatas.push({ origem: 'cliente ou dono', token: doClienteOuDono })
+        const doApp =
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: projeto.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
+        if (doApp) candidatas.push({ origem: 'App do produto', token: doApp })
+        return candidatas
+      },
+      // Só leitura: o `fetch` sem permissão de escrita recusa qualquer escrita.
+      fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+      falhasRecentes: falhasDaSeguranca,
+      cadenciaMs: CADENCIA_DA_SEGURANCA,
+      cadenciaDaConformidadeMs: CADENCIA_DA_CONFORMIDADE,
+      onInfo: (m) => app.log.info(m),
+      onWarn: (m) => app.log.warn(m),
+    })
   }
 
   // C10 (fix-up L4-T5, CSO) — CASO LEGADO aceito como referência: "#3907
@@ -12680,6 +12767,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  const dispararSegurancaEmSegundoPlano = criarDisparoEmSegundoPlano({
+    nome: 'varredura de segurança',
+    executar: () => medirEtapa('varrerSegurancaDosProjetos', () => rodarSegurancaDosProjetos()),
+    // O erro cru pode citar uma credencial (cabeçalho, token na URL): só o resumo mascarado vai ao log.
+    onWarn: (err, mensagem) => app.log.warn({ erro: resumirErro(err, 500) }, mensagem),
+    onDebug: (mensagem) => app.log.debug(mensagem),
+  })
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -12763,6 +12858,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.warn(err, '[Scheduler] varredura de retratos falhou; tenta no próximo ciclo')
       )
     )
+    // Fora do caminho crítico: com um projeto vencido a leitura do GitHub soma
+    // até 20 s, e o tique já passa do minuto. A etapa é disparada sem espera,
+    // com guarda contra sobreposição própria; a duração continua medida (o
+    // log sai quando ela termina, não dentro do tique).
+    dispararSegurancaEmSegundoPlano()
     // C10 (fix-up L4-T5, CSO): rede de segurança para PR duplicado LEGADO —
     // cadência própria de 6h (a função em si decide se roda ou não neste
     // tique). Nunca derruba o tique: cada projeto se isola sozinho.

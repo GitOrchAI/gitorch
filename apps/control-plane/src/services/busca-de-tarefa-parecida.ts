@@ -41,6 +41,7 @@ import {
   type IssueCandidata,
 } from './perguntar-vinculo-da-tarefa.js'
 import { contextoExecutivoVazio } from './contexto-executivo-da-pergunta.js'
+import { cortarPorPontoDeCodigo, limparSurrogates } from './texto-seguro.js'
 
 export const TETO_DE_PRS_POR_MISSAO = 3
 export const TETO_DE_PERGUNTAS_POR_MISSAO = 2
@@ -124,15 +125,15 @@ function resumirArquivos(arquivos: ArquivoDoPr[]): string {
     const menos = typeof a.deletions === 'number' ? a.deletions : 0
     linhas.push(`${a.filename} (${status}, +${mais} -${menos})`)
     if (typeof a.patch === 'string' && a.patch.trim() !== '') {
-      linhas.push(a.patch.slice(0, MAX_PATCH_POR_ARQUIVO))
+      linhas.push(cortarPorPontoDeCodigo(a.patch, MAX_PATCH_POR_ARQUIVO))
     }
   }
   const resto = arquivos.length - MAX_ARQUIVOS_NO_RESUMO
   if (resto > 0) linhas.push(`… e mais ${resto} arquivo(s)`)
   const texto = linhas.join('\n')
   return texto.length > MAX_RESUMO_DOS_ARQUIVOS
-    ? `${texto.slice(0, MAX_RESUMO_DOS_ARQUIVOS)}\n…`
-    : texto
+    ? `${cortarPorPontoDeCodigo(texto, MAX_RESUMO_DOS_ARQUIVOS)}\n…`
+    : limparSurrogates(texto)
 }
 
 /** As tarefas que o analista citou na justificativa vêm primeiro; o resto, as mais recentes. */

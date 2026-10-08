@@ -64,6 +64,7 @@ import {
   POLITICAS_DE_CUIDADO,
 } from '../services/cuidado-por-origem.js'
 import { tudoSobreOItem } from '../services/tudo-sobre-o-item.js'
+import { TIPOS_DE_FICHA_MEDIDA } from '../services/ficha-do-item.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -1846,7 +1847,7 @@ export const painelRoutes = async (
         if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
 
         const fichas = await app.prisma.repoItem.findMany({
-          where: { projectId: row.id },
+          where: { projectId: row.id, tipo: { notIn: [...TIPOS_DE_FICHA_MEDIDA] } },
           orderBy: { atualizadoEm: 'desc' },
           take: 200,
         })
@@ -1895,7 +1896,10 @@ export const painelRoutes = async (
       const nomePorProjetoId = new Map(listaProjetos.map((p) => [p.id, p.name]))
 
       const fichas = await app.prisma.repoItem.findMany({
-        where: { projectId: { in: projectIds } },
+        where: {
+          projectId: { in: projectIds },
+          tipo: { notIn: [...TIPOS_DE_FICHA_MEDIDA] },
+        },
         orderBy: { atualizadoEm: 'desc' },
         take: 200,
       })

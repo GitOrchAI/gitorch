@@ -22,6 +22,26 @@ describe('racharTarefaParecidaPeloCodigo', () => {
     expect(execute).toHaveBeenCalledTimes(1)
   })
 
+  it('título de issue com emoji na fronteira dos 140 caracteres não deixa substituto solto no prompt', async () => {
+    const emoji = '\u{1F600}'
+    const execute = vi.fn(async (_prompt: string) =>
+      JSON.stringify({ issueNumberEncontrado: null, justificativa: 'nada parecido' })
+    )
+    await racharTarefaParecidaPeloCodigo({
+      numeroDoPr: 7,
+      repository: 'dono/repo',
+      diffResumo: 'x',
+      contextBlocks: [],
+      issuesAbertas: [{ numero: 5, titulo: `${'a'.repeat(139)}${emoji}${'b'.repeat(30)}` }],
+      execute,
+    })
+    const prompt = String(execute.mock.calls[0]?.[0])
+    expect(prompt).toContain(`#5 — ${'a'.repeat(139)}${emoji}`)
+    expect(prompt).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    )
+  })
+
   it('sem tarefa parecida: issueNumberEncontrado null, com justificativa honesta', async () => {
     const execute = vi.fn(async () =>
       JSON.stringify({
