@@ -15,6 +15,7 @@ describe('racharTarefaParecidaPeloCodigo', () => {
       repository: 'dono/repo',
       diffResumo: 'services/pagamento.ts: +12 -3',
       contextBlocks: ['contexto do codegraph'],
+      issuesAbertas: [{ numero: 88, titulo: 'Ajustar o pagamento' }],
       execute,
     })
     expect(resultado.issueNumberEncontrado).toBe(88)
@@ -33,8 +34,45 @@ describe('racharTarefaParecidaPeloCodigo', () => {
       repository: 'dono/repo',
       diffResumo: 'x',
       contextBlocks: [],
+      issuesAbertas: [],
       execute,
     })
     expect(resultado.issueNumberEncontrado).toBeNull()
+  })
+
+  it('entrega ao RA a lista de issues abertas (número e título): sem ela não há de onde tirar o número', async () => {
+    const execute = vi.fn(async (_prompt: string) =>
+      JSON.stringify({ issueNumberEncontrado: null, justificativa: 'nada parecido' })
+    )
+    await racharTarefaParecidaPeloCodigo({
+      numeroDoPr: 590,
+      repository: 'dono/repo',
+      diffResumo: 'services/wishlist.ts (modified, +4 -1)',
+      contextBlocks: [],
+      issuesAbertas: [
+        { numero: 713, titulo: '/wishlist add responde confirmação mas não registra o pedido' },
+        { numero: 30, titulo: 'Outra tarefa' },
+      ],
+      execute,
+    })
+    const prompt = execute.mock.calls[0]![0]
+    expect(prompt).toContain('#713')
+    expect(prompt).toContain('/wishlist add responde confirmação mas não registra o pedido')
+    expect(prompt).toContain('#30')
+  })
+
+  it('lista de issues vazia: o prompt diz que não há issue aberta, em vez de omitir o bloco', async () => {
+    const execute = vi.fn(async (_prompt: string) =>
+      JSON.stringify({ issueNumberEncontrado: null, justificativa: 'nenhuma aberta' })
+    )
+    await racharTarefaParecidaPeloCodigo({
+      numeroDoPr: 5,
+      repository: 'dono/repo',
+      diffResumo: 'x',
+      contextBlocks: [],
+      issuesAbertas: [],
+      execute,
+    })
+    expect(execute.mock.calls[0]![0]).toContain('Issues abertas do repositório: nenhuma')
   })
 })

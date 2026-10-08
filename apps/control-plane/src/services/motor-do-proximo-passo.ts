@@ -75,7 +75,7 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
 /** 'jules_gitorch'/'jules_fora' caem no balde `jules` de cuidaPorOrigem;
  *  'assistente' e 'pessoa' são os próprios nomes; 'dependabot' idem;
  *  'outro_bot' NUNCA é julgado — sempre só acompanha (Tarefa 3.9). */
-function baldeDeCuidado(origem: string): keyof CuidaPorOrigem | null {
+export function baldeDeCuidado(origem: string): keyof CuidaPorOrigem | null {
   if (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules') return 'jules'
   if (origem === 'assistente' || origem === 'pessoa' || origem === 'dependabot') return origem
   if (origem === 'desconhecido') return 'jules'

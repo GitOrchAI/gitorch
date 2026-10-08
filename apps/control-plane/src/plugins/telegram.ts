@@ -55,7 +55,11 @@ import {
 import { chaveDoDevDoProjeto as resolverChaveDoDevDoProjeto } from '../services/chave-do-dev-assincrono.js'
 import { criarSessaoJules } from '../services/jules-client.js'
 import { abrirSessao, registrarPr, type PrismaDevSession } from '../services/dev-session-store.js'
-import { ghJson } from '../services/github-json.js'
+import { ghJson, headersGithub } from '../services/github-json.js'
+import { atualizarFichaDoItem, type PrismaDaFichaDoItem } from '../services/ficha-do-item.js'
+import { registrarNoPainelUmaVez } from '../services/registro-no-painel.js'
+import { parseDedupKeyDeVinculoDaTarefa } from '../services/perguntar-vinculo-da-tarefa.js'
+import { processarRespostaDoVinculoDaTarefa } from '../services/processar-resposta-vinculo-da-tarefa.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { resolveQuadroDoProjeto } from '../routes/painel.js'
 import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
@@ -668,6 +672,87 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     })
   }
 
+  // A resposta do dono à pergunta "a qual tarefa este pull request pertence?"
+  // (dedupKey `vinculo-da-tarefa:<repo>:<pr>`, `perguntarSobreVinculoDaTarefa`,
+  // plugins/scheduler.ts via a busca da tarefa pelo código). Sem esta entrada a
+  // resposta ficava guardada e o pull request seguia sem tarefa.
+  // `processarRespostaDoVinculoDaTarefa` decide o QUÊ (puro); aqui é só a
+  // injeção: a gravação na ficha do pull request e, para a resposta em texto
+  // livre, a conferência no GitHub de que a tarefa citada está aberta.
+  const aoResponderVinculoDaTarefa = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+    opcoes: Array<{ label: string; value: string }>
+  }): Promise<void> => {
+    const chave = parseDedupKeyDeVinculoDaTarefa(args.dedupKey)
+    if (!chave) return
+    const projeto = await app.prisma.project.findUnique({
+      where: { id: args.projectId },
+      select: { wingId: true, userId: true, encryptedClientToken: true, autonomia: true },
+    })
+    if (!projeto) {
+      app.log.error(
+        `[Telegram] vinculo-da-tarefa: projeto ${args.projectId} não encontrado (dedupKey ${args.dedupKey})`
+      )
+      throw new Error(`aoResponderVinculoDaTarefa: projeto ${args.projectId} não encontrado`)
+    }
+    // A chave nasceu do repositório do projeto; se divergir, algo está corrompido
+    // e a ficha de outro repositório não pode ser tocada por engano.
+    if (projeto.wingId !== chave.repository) {
+      throw new Error(
+        `aoResponderVinculoDaTarefa: a chave ${args.dedupKey} não é do repositório do projeto ${args.projectId}`
+      )
+    }
+
+    await processarRespostaDoVinculoDaTarefa(
+      { dedupKey: args.dedupKey, resposta: args.resposta, opcoes: args.opcoes },
+      {
+        gravarVinculo: async ({ numeroDoPr, issueNumber }) => {
+          await atualizarFichaDoItem({
+            prisma: app.prisma as unknown as PrismaDaFichaDoItem,
+            projectId: args.projectId,
+            tipo: 'pr',
+            numero: numeroDoPr,
+            issueNumber,
+            vinculoOrigem: 'dono',
+          })
+        },
+        issueAberta: async (numero) => {
+          const token = await lerCredencialQueAlcancaOProjeto({
+            prisma: app.prisma,
+            projectId: args.projectId,
+            userId: projeto.userId,
+            engineConnections: app.engineConnections,
+            encryptedClientTokenJaLido: projeto.encryptedClientToken,
+          })
+          if (!token) return null
+          try {
+            const resp = await fetchDoRepositorio({ nivel: () => projeto.autonomia })(
+              `https://api.github.com/repos/${projeto.wingId}/issues/${numero}`,
+              { headers: headersGithub(token) }
+            )
+            if (resp.status === 404) return false
+            if (!resp.ok) return null
+            const issue = (await resp.json()) as { state?: unknown; pull_request?: unknown }
+            // A rota de issues também devolve pull requests.
+            return issue.state === 'open' && !issue.pull_request
+          } catch {
+            return null
+          }
+        },
+        registrarNoPainel: ({ chave: chaveDoRegistro, texto }) =>
+          registrarNoPainelUmaVez({
+            prisma: app.prisma,
+            projectId: args.projectId,
+            chave: chaveDoRegistro,
+            texto,
+          }),
+        onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+      }
+    )
+  }
+
   // L4-T18 (item 2) — a resposta à pergunta de custo da ordem
   // (dedupKey `custo-da-ordem:<repo>:<pedido>`, `perguntarSobreCustoDaOrdem`
   // em plugins/scheduler.ts) vira ação de verdade.
@@ -922,6 +1007,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       // a uma pergunta de lógica alternativa nunca retomava a sessão do Jules.
       { prefixo: 'logica-alternativa:', executar: aoResponderLogicaAlternativaHandler },
       { prefixo: 'cuida-deste-pedido:', executar: aoResponderPrParado },
+      { prefixo: 'vinculo-da-tarefa:', executar: aoResponderVinculoDaTarefa },
     ],
     // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
     // resposta — nunca `console.warn`, que some do monitoramento.

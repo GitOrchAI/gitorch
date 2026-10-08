@@ -136,6 +136,26 @@ describe('issueConfiavelDaFicha', () => {
   it('issue nula → null, qualquer que seja a origem', () => {
     expect(issueConfiavelDaFicha({ origem: 'jules_gitorch', issueNumber: null })).toBeNull()
   })
+
+  it('vínculo achado pelo analista pelo código é palpite: não vale como tarefa, qualquer que seja a origem', () => {
+    for (const origem of ['jules_gitorch', 'assistente', 'pessoa', 'dependabot', 'outro_bot']) {
+      expect(
+        issueConfiavelDaFicha({ origem, issueNumber: 713, vinculoOrigem: 'codigo' })
+      ).toBeNull()
+    }
+  })
+
+  it('o palpite só vira tarefa quando o dono confirma (vinculoOrigem passa a "dono")', () => {
+    expect(
+      issueConfiavelDaFicha({ origem: 'pessoa', issueNumber: 713, vinculoOrigem: 'dono' })
+    ).toBe(713)
+  })
+
+  it('os outros modos de achar o vínculo seguem valendo como antes', () => {
+    for (const vinculoOrigem of ['formal', 'texto', 'branch-do-jules', null, undefined]) {
+      expect(issueConfiavelDaFicha({ origem: 'pessoa', issueNumber: 7, vinculoOrigem })).toBe(7)
+    }
+  })
 })
 
 describe('ehEntregaDoDevAssincrono', () => {
