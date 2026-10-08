@@ -228,7 +228,10 @@ function holdLock(dbUrl: string, table: string): Promise<ChildProcessWithoutNull
         resolve(child)
       }
     }
-    child.stdout.on('data', onData)
+    // O tipo de `@fastify/busboy` redeclara `Readable.on` só para o evento 'limit';
+    // lido como EventEmitter, o fluxo volta a aceitar 'data'.
+    const saida: NodeJS.EventEmitter = child.stdout
+    saida.on('data', onData)
     child.on('error', reject)
     child.stdin.write(`BEGIN;\nLOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;\nSELECT 'locked';\n`)
   })

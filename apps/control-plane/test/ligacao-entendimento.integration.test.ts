@@ -11,8 +11,10 @@ import { runQaMissionViaRails } from '../src/services/qa-rails-mission.js'
 import { montarOpcoesDoJulgamento } from '../src/plugins/scheduler.js'
 import {
   buildMissionEnricher,
+  PREFIXO_DA_GAVETA_DE_DIRECAO,
   PREFIXO_DA_GAVETA_DE_ENTENDIMENTO,
   persistMissionMemory,
+  SALA_DA_DIRECAO,
   SALA_DO_ENTENDIMENTO,
 } from '../src/services/mission-context.js'
 import type { LinhaDeSessao } from '../src/services/dev-session-store.js'
@@ -237,6 +239,7 @@ describe.skipIf(!reachable)('entendimento do pedido registrado no julgamento (in
       prisma: prisma as unknown as PrismaDoScheduler,
       cortex,
       projectId,
+      runtimeConfig: null,
       avisarDono: async () => true,
     })
   }
@@ -359,5 +362,82 @@ describe.skipIf(!reachable)('entendimento do pedido registrado no julgamento (in
     expect((await fichaDoPr(projectId)).atualizadoEm.getTime()).toBe(
       primeira.atualizadoEm.getTime()
     )
+  })
+
+  it('PR de origem `assistente`: julgar grava UMA direção; o PO continua começando pelo contrato; o prompt do juiz não muda', async () => {
+    const projectId = novoProjeto()
+    await prisma.repoItem.create({
+      data: {
+        projectId,
+        tipo: 'pr',
+        numero: NUMERO_DO_PR,
+        estado: { status: 'open' },
+        origem: 'assistente',
+      },
+    })
+    const contrato = '### Journey 0: comprador\n1. abre a loja'
+    await persistMissionMemory(cortex, {
+      projectId,
+      role: 'ra',
+      content: contrato,
+      now: '2026-10-07T10:00:00.000Z',
+    })
+
+    const github = githubEmMemoria('eee555')
+    const execute = vi.fn(async (_prompt: string) => REPROVA)
+    await runQaMissionViaRails({
+      repository: REPOSITORIO,
+      githubToken: 't',
+      fetchImpl: github.fetchImpl,
+      sessoes: [linhaDaEntrega(projectId)],
+      avisarSessao: async () => true,
+      ...opcoesDeProducao(projectId),
+      execute,
+    })
+
+    const gavetas = cortex.recallLocal(projectId, SALA_DA_DIRECAO)
+    expect(gavetas).toHaveLength(1)
+    expect(gavetas[0]!.content.startsWith(PREFIXO_DA_GAVETA_DE_DIRECAO)).toBe(true)
+    expect(gavetas[0]!.content).toContain('origem: assistente')
+    expect(execute.mock.calls[0]![0]).not.toContain(PREFIXO_DA_GAVETA_DE_DIRECAO)
+
+    const po = await buildMissionEnricher({ cortex })({ projectId, role: 'po' })
+    expect(po[0]).toBe(contrato)
+    expect(po.join('\n')).toContain(PREFIXO_DA_GAVETA_DE_DIRECAO)
+    const ra = await buildMissionEnricher({ cortex })({ projectId, role: 'ra' })
+    expect(ra.join('\n')).toContain(PREFIXO_DA_GAVETA_DE_DIRECAO)
+
+    // Rejulgar (outro commit) atualiza a mesma gaveta.
+    await opcoesDeProducao(projectId).registrarDirecao({
+      numeroDoPr: NUMERO_DO_PR,
+      headSha: 'fff666',
+      entendimento: ENTENDIMENTO,
+    })
+    expect(cortex.recallLocal(projectId, SALA_DA_DIRECAO)).toHaveLength(1)
+  })
+
+  it('PR do Jules pelo GitOrch: julgar não grava direção nenhuma', async () => {
+    const projectId = novoProjeto()
+    await prisma.repoItem.create({
+      data: {
+        projectId,
+        tipo: 'pr',
+        numero: NUMERO_DO_PR,
+        estado: { status: 'open' },
+        origem: 'jules_gitorch',
+      },
+    })
+
+    await runQaMissionViaRails({
+      repository: REPOSITORIO,
+      githubToken: 't',
+      fetchImpl: githubEmMemoria('ggg777').fetchImpl,
+      sessoes: [linhaDaEntrega(projectId)],
+      avisarSessao: async () => true,
+      ...opcoesDeProducao(projectId),
+      execute: async () => REPROVA,
+    })
+
+    expect(cortex.recallLocal(projectId, SALA_DA_DIRECAO)).toEqual([])
   })
 })

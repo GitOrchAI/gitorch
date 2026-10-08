@@ -4884,6 +4884,164 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
   })
 })
 
+describe('Direção do projeto registrada no julgamento (Fase 2.5)', () => {
+  const ENTENDIMENTO_DO_APPROVE = {
+    deOndeVeio: 'Jules solicitou via PR',
+    oQueMuda: 'Adiciona endpoints de review com regras',
+    queAjusteE: 'feature importante',
+    porQueExiste: 'para o app ler as reviews reais',
+  }
+  type ArgsDoRegistro = {
+    numeroDoPr: number
+    headSha: string | undefined
+    entendimento: typeof ENTENDIMENTO_DO_APPROVE
+  }
+
+  it('chama o gancho com o PR, o commit e o entendimento do veredito, ANTES de postar o parecer', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+    const reviewsNaHora: number[] = []
+    const registrarDirecao = vi.fn(async (_: ArgsDoRegistro) => {
+      reviewsNaHora.push(posted.reviews.length)
+    })
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      registrarDirecao,
+    })
+
+    expect(registrarDirecao).toHaveBeenCalledTimes(1)
+    expect(registrarDirecao).toHaveBeenCalledWith({
+      numeroDoPr: 42,
+      headSha: 'abc123',
+      entendimento: ENTENDIMENTO_DO_APPROVE,
+    })
+    expect(reviewsNaHora).toEqual([0])
+  })
+
+  it('roda DEPOIS do registro do entendimento (a ficha já tem o que o gancho lê)', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const ordem: string[] = []
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      registrarEntendimento: async () => {
+        ordem.push('entendimento')
+      },
+      registrarDirecao: async () => {
+        ordem.push('direcao')
+      },
+    })
+
+    expect(ordem).toEqual(['entendimento', 'direcao'])
+  })
+
+  it('chama também quando o veredito é de reprovação', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const registrarDirecao = vi.fn(async (_: ArgsDoRegistro) => undefined)
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      registrarDirecao,
+    })
+
+    expect(registrarDirecao).toHaveBeenCalledWith(
+      expect.objectContaining({
+        numeroDoPr: 42,
+        entendimento: expect.objectContaining({ oQueMuda: 'Validação no controller' }),
+      })
+    )
+  })
+
+  it('falha no gancho NUNCA derruba o julgamento: avisa e o parecer sai igual', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+    const onWarn = vi.fn()
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      registrarDirecao: async () => {
+        throw new Error('cortex fora do ar')
+      },
+      onWarn,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(posted.reviews).toHaveLength(1)
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('direção do projeto do PR #42'))
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('cortex fora do ar'))
+  })
+
+  it('a falha de um registro não impede o outro', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const registrarDirecao = vi.fn(async (_: ArgsDoRegistro) => undefined)
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      registrarEntendimento: async () => {
+        throw new Error('ficha fora do ar')
+      },
+      registrarDirecao,
+      onWarn: () => undefined,
+    })
+
+    expect(registrarDirecao).toHaveBeenCalledTimes(1)
+  })
+
+  it('só registra o que o QA de fato julgou: sem PR ou sem a trava, o gancho não é chamado', async () => {
+    const semPr = vi.fn(async (_: ArgsDoRegistro) => undefined)
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: fakeFetch([]),
+      registrarDirecao: semPr,
+    })
+    expect(semPr).not.toHaveBeenCalled()
+
+    const semTrava = vi.fn(async (_: ArgsDoRegistro) => undefined)
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: fakeFetch([{ number: 42, user: 'jules' }]),
+      adquirirTrava: async () => false,
+      registrarDirecao: semTrava,
+    })
+    expect(semTrava).not.toHaveBeenCalled()
+  })
+
+  it('sem o gancho, o julgamento é o de sempre', async () => {
+    const f = fakeFetch([{ number: 42, user: 'jules' }])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(posted.reviews).toHaveLength(1)
+  })
+})
+
 // PR com verificação pendente NÃO pode travar a fila inteira do QA.
 //
 // Medido em produção (30/09/2026, Jardim): o laço escolhia o PRIMEIRO PR que

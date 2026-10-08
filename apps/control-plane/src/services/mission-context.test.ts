@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildMissionEnricher,
+  ehGavetaDeDirecao,
   ehGavetaDeEntendimento,
+  PREFIXO_DA_GAVETA_DE_DIRECAO,
   PREFIXO_DA_GAVETA_DE_ENTENDIMENTO,
   persistMissionMemory,
+  SALA_DA_DIRECAO,
   SALA_DO_ENTENDIMENTO,
   type MissionMemory,
 } from './mission-context.js'
@@ -251,6 +254,96 @@ describe('gavetas de entendimento do pedido não viram lacuna para ninguém', ()
 
     expect(linhas[0]).toContain('### Journey 0')
     expect(linhas[1]).toContain('QA gap: o repositório não tem verificação automática')
+  })
+})
+
+describe('direção de fora do GitOrch não toma o lugar do contrato nem vira lacuna', () => {
+  const ra = { content: '### Journey 0: comprador\n1. abre', createdAt: '2026-10-05T10:00:00Z' }
+  const lacuna = {
+    content: 'QA gap: o repositório não tem verificação automática',
+    createdAt: '2026-10-06T10:00:00Z',
+  }
+  const direcao = {
+    content: `${PREFIXO_DA_GAVETA_DE_DIRECAO} (origem: pessoa), pull request #590: o cliente pediu CSV. Mudança: exportação.`,
+    createdAt: '2026-10-09T10:00:00Z',
+  }
+
+  it('reconhece a gaveta pelo prefixo e só por ele', () => {
+    expect(ehGavetaDeDirecao(direcao.content)).toBe(true)
+    expect(ehGavetaDeDirecao(lacuna.content)).toBe(false)
+    expect(ehGavetaDeDirecao(`QA judged: ${PREFIXO_DA_GAVETA_DE_DIRECAO}`)).toBe(false)
+  })
+
+  for (const role of ['po', 'ra'] as const) {
+    it(`${role} recebe o que recebia antes MAIS o bloco de direção, no fim`, async () => {
+      const antes = fakeCortex([ra, lacuna], { ra: [ra], qa: [lacuna] })
+      const depois = fakeCortex([ra, lacuna, direcao], {
+        ra: [ra],
+        qa: [lacuna],
+        [SALA_DA_DIRECAO]: [direcao],
+      })
+
+      const semDirecao = await buildMissionEnricher({ cortex: antes })({ projectId: 'p1', role })
+      const comDirecao = await buildMissionEnricher({ cortex: depois })({ projectId: 'p1', role })
+
+      expect(comDirecao).toHaveLength(semDirecao.length + 1)
+      expect(comDirecao.slice(0, semDirecao.length)).toEqual(semDirecao)
+      expect(comDirecao.at(-1)).toContain(direcao.content)
+    })
+  }
+
+  for (const role of ['qa', 'sm'] as const) {
+    it(`${role} recebe exatamente o que recebia antes`, async () => {
+      const antes = fakeCortex([ra, lacuna], { ra: [ra], qa: [lacuna] })
+      const depois = fakeCortex([ra, lacuna, direcao], {
+        ra: [ra],
+        qa: [lacuna],
+        [SALA_DA_DIRECAO]: [direcao],
+      })
+
+      const semDirecao = await buildMissionEnricher({ cortex: antes })({ projectId: 'p1', role })
+      const comDirecao = await buildMissionEnricher({ cortex: depois })({ projectId: 'p1', role })
+
+      expect(comDirecao).toEqual(semDirecao)
+      expect(comDirecao.join('\n')).not.toContain(PREFIXO_DA_GAVETA_DE_DIRECAO)
+    })
+  }
+
+  it('a direção mais nova da sala `ra` não vira o contrato do PO', async () => {
+    const cortex = fakeCortex([ra, lacuna, direcao], { ra: [ra, direcao], qa: [lacuna] })
+
+    const linhas = await buildMissionEnricher({ cortex })({ projectId: 'p1', role: 'po' })
+
+    expect(linhas[0]).toBe(ra.content)
+  })
+
+  it('a direção que cair na sala `qa` também não vira lacuna para o PO', async () => {
+    const cortex = fakeCortex([ra, lacuna, direcao], {
+      ra: [ra],
+      qa: [lacuna, direcao],
+      [SALA_DA_DIRECAO]: [direcao],
+    })
+
+    const linhas = await buildMissionEnricher({ cortex })({ projectId: 'p1', role: 'po' })
+    const memoria = linhas.find((l) => l.startsWith('Project memory'))!
+
+    expect(memoria).not.toContain(PREFIXO_DA_GAVETA_DE_DIRECAO)
+  })
+
+  it('várias direções entram mais novas primeiro, com teto', async () => {
+    const muitas = Array.from({ length: 12 }, (_, i) => ({
+      content: `${PREFIXO_DA_GAVETA_DE_DIRECAO} (origem: pessoa), pull request #${i}: motivo ${i}.`,
+      createdAt: `2026-10-${String(10 + i).padStart(2, '0')}T10:00:00Z`,
+    }))
+    const cortex = fakeCortex([ra, ...muitas], { ra: [ra], [SALA_DA_DIRECAO]: muitas })
+
+    const linhas = await buildMissionEnricher({ cortex })({ projectId: 'p1', role: 'po' })
+    const bloco = linhas.at(-1)!
+    const bullets = bloco.split('\n').filter((l) => l.startsWith('- '))
+
+    // Doze gravadas, o teto é exatamente cinco: as cinco mais novas, da mais nova à mais velha.
+    expect(bullets).toHaveLength(5)
+    expect(bullets.map((b) => /motivo (\d+)\./.exec(b)?.[1])).toEqual(['11', '10', '9', '8', '7'])
   })
 })
 

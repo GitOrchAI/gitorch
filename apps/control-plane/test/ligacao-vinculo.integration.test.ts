@@ -107,8 +107,11 @@ function githubLocal(config: { prs: PrDoServidor[]; fechaA: Record<number, numbe
   const graphqlDosPrs: number[] = []
   const servidor: Server = createServer((req, res) => {
     const chunks: Buffer[] = []
-    req.on('data', (c: Buffer) => chunks.push(c))
-    req.on('end', () => {
+    // O tipo de `@fastify/busboy` redeclara `Readable.on` só para o evento 'limit';
+    // lido como EventEmitter, o fluxo volta a aceitar 'data' e 'end'.
+    const corpoDaRequisicao: NodeJS.EventEmitter = req
+    corpoDaRequisicao.on('data', (c: Buffer) => chunks.push(c))
+    corpoDaRequisicao.on('end', () => {
       const caminho = req.url ?? ''
       requisicoes.push(`${req.method} ${caminho}`)
       const json = (corpo: unknown) => {

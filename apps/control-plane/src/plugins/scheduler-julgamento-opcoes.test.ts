@@ -1,7 +1,11 @@
 import { describe, expect, test, vi, type Mock } from 'vitest'
 import { montarOpcoesDoJulgamento, type PrismaDoJulgamento } from './scheduler.js'
 import type { PrismaDevSession } from '../services/dev-session-store.js'
-import { SALA_DO_ENTENDIMENTO, type MissionMemory } from '../services/mission-context.js'
+import {
+  SALA_DA_DIRECAO,
+  SALA_DO_ENTENDIMENTO,
+  type MissionMemory,
+} from '../services/mission-context.js'
 
 // Achado 1 (Crítico) da revisão da Tarefa 7: `registrarPendencia`,
 // `limparPendencia` e `avisarDono` foram ADICIONADAS à interface de
@@ -83,6 +87,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('registrarPendencia devolvido chama updateMany no Prisma real (não um stub desconectado)', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_1',
@@ -108,6 +113,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('limparPendencia devolvido chama update no Prisma real', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_1',
@@ -125,6 +131,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('registrarAvisoDeDemora devolvido chama update no Prisma real', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_1',
@@ -148,6 +155,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('registrarFracassoDeMerge devolvido chama update no Prisma real (não um stub desconectado)', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_1',
@@ -173,6 +181,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('registrarJulgamento devolvido grava o evento no PROJETO recebido', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_do_cliente_a',
@@ -195,6 +204,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('registrarJulgamento leva peloPortao=false sem inverter', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_1',
@@ -211,6 +221,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('lerHistoricoDoProjeto devolvido lê SÓ o projeto recebido', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_do_cliente_a',
@@ -237,6 +248,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('adquirirTrava devolvido disputa a trava da ficha do PR no PROJETO recebido', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_do_cliente_a',
@@ -263,6 +275,7 @@ describe('montarOpcoesDoJulgamento', () => {
     const prisma = prismaFalso()
     vi.mocked(prisma.repoItem.updateMany).mockResolvedValueOnce({ count: 0 })
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_1',
@@ -274,6 +287,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('liberarTrava devolvido zera a validade só do commit informado, no projeto recebido', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_do_cliente_a',
@@ -295,6 +309,7 @@ describe('montarOpcoesDoJulgamento', () => {
   test('assentarTrava devolvido encurta a validade só do commit informado, no projeto recebido', async () => {
     const prisma = prismaFalso()
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma,
       projectId: 'proj_do_cliente_a',
@@ -335,7 +350,12 @@ describe('montarOpcoesDoJulgamento', () => {
   test('registrarEntendimento devolvido grava o entendimento na ficha do PR, SEM `estado`, e a gaveta na sala própria', async () => {
     const prisma = prismaFalso()
     const { cortex, gavetas } = cortexFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, cortex, projectId: 'proj_do_cliente_a' })
+    const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
+      prisma,
+      cortex,
+      projectId: 'proj_do_cliente_a',
+    })
 
     expect(opcoes.registrarEntendimento).toBeDefined()
     await opcoes.registrarEntendimento!({
@@ -366,7 +386,12 @@ describe('montarOpcoesDoJulgamento', () => {
   test('registrarEntendimento não regrava a ficha quando ela já tem o mesmo entendimento', async () => {
     const prisma = prismaFalso({ entendimento: ENTENDIMENTO })
     const { cortex } = cortexFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma, cortex, projectId: 'proj_1' })
+    const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
+      prisma,
+      cortex,
+      projectId: 'proj_1',
+    })
 
     await opcoes.registrarEntendimento!({
       numeroDoPr: 42,
@@ -377,9 +402,106 @@ describe('montarOpcoesDoJulgamento', () => {
     expect(prisma.repoItem.upsert).not.toHaveBeenCalled()
   })
 
+  // A direção de fora do GitOrch também entra por gancho (mesma razão do
+  // entendimento: não ligar o grafo de vínculos no prompt do juiz). A origem é
+  // lida da FICHA do PR, e a política vem do projeto desta iteração.
+  describe('registrarDirecao', () => {
+    const FICHA_DE = (origem: string | null) => ({ origem, entendimento: ENTENDIMENTO })
+    const PEDIDO = { numeroDoPr: 42, headSha: 'abc123', entendimento: ENTENDIMENTO }
+
+    test('devolvido grava UMA gaveta de direção, com id determinístico, em sala própria', async () => {
+      const prisma = prismaFalso(FICHA_DE('assistente'))
+      const { cortex, gavetas } = cortexFalso()
+      const opcoes = montarOpcoesDoJulgamento({
+        prisma,
+        cortex,
+        projectId: 'proj_do_cliente_a',
+        runtimeConfig: null,
+      })
+
+      expect(opcoes.registrarDirecao).toBeDefined()
+      await opcoes.registrarDirecao(PEDIDO)
+      await opcoes.registrarDirecao({ ...PEDIDO, headSha: 'def456' })
+
+      expect([...gavetas.values()]).toEqual([
+        expect.objectContaining({
+          id: 'direcao:proj_do_cliente_a:42',
+          wingId: 'proj_do_cliente_a',
+          roomId: SALA_DA_DIRECAO,
+        }),
+      ])
+      // Lê a ficha do PR DESTE projeto, e não escreve nela.
+      expect(prisma.repoItem.findUnique).toHaveBeenCalledWith({
+        where: {
+          projectId_tipo_numero: { projectId: 'proj_do_cliente_a', tipo: 'pr', numero: 42 },
+        },
+      })
+      expect(prisma.repoItem.upsert).not.toHaveBeenCalled()
+    })
+
+    for (const origem of ['jules_gitorch', 'dependabot', 'outro_bot', null]) {
+      test(`ficha com origem ${String(origem)} não grava nada`, async () => {
+        const { cortex, gavetas } = cortexFalso()
+        const opcoes = montarOpcoesDoJulgamento({
+          prisma: prismaFalso(FICHA_DE(origem)),
+          cortex,
+          projectId: 'proj_1',
+          runtimeConfig: null,
+        })
+
+        await opcoes.registrarDirecao(PEDIDO)
+
+        expect(gavetas.size).toBe(0)
+      })
+    }
+
+    test('PR sem ficha não grava nada', async () => {
+      const { cortex, gavetas } = cortexFalso()
+      const opcoes = montarOpcoesDoJulgamento({
+        prisma: prismaFalso(null),
+        cortex,
+        projectId: 'proj_1',
+        runtimeConfig: null,
+      })
+
+      await opcoes.registrarDirecao(PEDIDO)
+
+      expect(gavetas.size).toBe(0)
+    })
+
+    test('a política `nao` do projeto para aquela origem impede de aprender', async () => {
+      const { cortex, gavetas } = cortexFalso()
+      const opcoes = montarOpcoesDoJulgamento({
+        prisma: prismaFalso(FICHA_DE('pessoa')),
+        cortex,
+        projectId: 'proj_1',
+        runtimeConfig: { cuidaPorOrigem: { pessoa: 'nao' } },
+      })
+
+      await opcoes.registrarDirecao(PEDIDO)
+
+      expect(gavetas.size).toBe(0)
+    })
+
+    test('a política `perguntar` (o padrão) ainda aprende', async () => {
+      const { cortex, gavetas } = cortexFalso()
+      const opcoes = montarOpcoesDoJulgamento({
+        prisma: prismaFalso(FICHA_DE('pessoa')),
+        cortex,
+        projectId: 'proj_1',
+        runtimeConfig: { cuidaPorOrigem: { pessoa: 'perguntar' } },
+      })
+
+      await opcoes.registrarDirecao(PEDIDO)
+
+      expect(gavetas.size).toBe(1)
+    })
+  })
+
   test('avisarDono presente no objeto devolvido quando um notificador foi construído', () => {
     const notify = vi.fn(async (_mensagem: string) => true)
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       prisma: prismaFalso(),
       cortex: cortexFalso().cortex,
       projectId: 'proj_1',
@@ -391,6 +513,7 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('avisarDono AUSENTE (não presente-com-undefined) sem notificador — mesma disciplina do resto do scheduler', () => {
     const opcoes = montarOpcoesDoJulgamento({
+      runtimeConfig: null,
       cortex: cortexFalso().cortex,
       prisma: prismaFalso(),
       projectId: 'proj_1',

@@ -278,6 +278,8 @@ describe.skipIf(!reachable)('um parecer por versão do pedido (integration)', ()
       // A memória do projeto não é o objeto deste teste: uma que não guarda nada.
       cortex: { recallLocal: () => [], writeDrawer: async () => undefined },
       projectId,
+      // Sem configuração de projeto: o teste não depende da direção vinda do runtimeConfig.
+      runtimeConfig: null,
       avisarDono: async () => true,
     })
   }

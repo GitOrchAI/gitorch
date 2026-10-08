@@ -306,6 +306,20 @@ export interface VigiliaDoJulgamentoOptions {
     headSha: string | undefined
     entendimento: QaVerdictForm['entendimento']
   }) => Promise<void>
+  /**
+   * Guarda, na memória do projeto, a direção que um pedido feito FORA do
+   * GitOrch deu ao rumo (só para o que a ficha do PR diz ser de pessoa ou de
+   * assistente de código, e quando o projeto não mandou ignorar). Chamado logo
+   * depois de `registrarEntendimento`, que deixa a ficha pronta, e antes de o
+   * parecer ser postado. Falha aqui nunca derruba o julgamento: vira aviso.
+   *
+   * Gancho pelo mesmo motivo do entendimento: o juiz não lê o que guarda.
+   */
+  registrarDirecao?: (args: {
+    numeroDoPr: number
+    headSha: string | undefined
+    entendimento: QaVerdictForm['entendimento']
+  }) => Promise<void>
 }
 
 import type { PrismaClient } from '@prisma/client'
@@ -1836,6 +1850,19 @@ async function julgarEntregaViaRails(
       })
     } catch (err) {
       options.onWarn?.(`[qa] não consegui guardar o entendimento do PR #${target.number}: ${err}`)
+    }
+  }
+  if (options.registrarDirecao) {
+    try {
+      await options.registrarDirecao({
+        numeroDoPr: target.number,
+        headSha: pr.head?.sha,
+        entendimento: verdict.entendimento,
+      })
+    } catch (err) {
+      options.onWarn?.(
+        `[qa] não consegui guardar a direção do projeto do PR #${target.number}: ${err}`
+      )
     }
   }
 
