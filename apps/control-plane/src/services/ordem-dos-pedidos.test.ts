@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
 import { aplicarOrdemDosPedidos, type DepsDaOrdem } from './ordem-dos-pedidos.js'
+import { limparCacheDeLeituraDoQuadro, lerQuadroComCache } from './leitura-do-quadro-em-cache.js'
 
 const PEDIDOS = [
   { pedido: 36, itemId: 'IT_36' },
@@ -142,5 +143,49 @@ describe('o cliente pode ver o que o produto fez em nome dele', () => {
       aplicarOrdemDosPedidos(d, { projectId: 'PVT_1', pedidos: PEDIDOS })
     ).rejects.toThrow('rede caiu')
     expect(d.registrar).not.toHaveBeenCalled()
+  })
+})
+
+describe('a leitura do quadro guardada não sobrevive a uma reordenação', () => {
+  const leitura = { itens: [], truncado: false, iteracaoCorrenteId: null }
+
+  it('depois de reordenar, a próxima leitura do quadro vai ao GitHub', async () => {
+    limparCacheDeLeituraDoQuadro()
+    const carregar = vi.fn(async () => leitura)
+    await lerQuadroComCache('PVT_1', carregar)
+    await aplicarOrdemDosPedidos(deps(), { projectId: 'PVT_1', pedidos: PEDIDOS })
+    await lerQuadroComCache('PVT_1', carregar)
+    expect(carregar).toHaveBeenCalledTimes(2)
+    limparCacheDeLeituraDoQuadro()
+  })
+
+  it('mesmo quando um movimento falha no meio (o quadro ficou meio mexido)', async () => {
+    limparCacheDeLeituraDoQuadro()
+    const carregar = vi.fn(async () => leitura)
+    await lerQuadroComCache('PVT_1', carregar)
+    const d = deps({
+      quadro: { moverItemDoQuadro: vi.fn().mockRejectedValue(new Error('502')) },
+    })
+    await expect(
+      aplicarOrdemDosPedidos(d, { projectId: 'PVT_1', pedidos: PEDIDOS })
+    ).rejects.toThrow('502')
+    await lerQuadroComCache('PVT_1', carregar)
+    expect(carregar).toHaveBeenCalledTimes(2)
+    limparCacheDeLeituraDoQuadro()
+  })
+
+  it('a guarda recusou: nada mudou no quadro, então a leitura guardada continua valendo', async () => {
+    limparCacheDeLeituraDoQuadro()
+    const carregar = vi.fn(async () => leitura)
+    await lerQuadroComCache('PVT_1', carregar)
+    await expect(
+      aplicarOrdemDosPedidos(deps({ nivel: () => 'so_olhar' }), {
+        projectId: 'PVT_1',
+        pedidos: PEDIDOS,
+      })
+    ).rejects.toBeInstanceOf(EscritaNaoAutorizadaError)
+    await lerQuadroComCache('PVT_1', carregar)
+    expect(carregar).toHaveBeenCalledTimes(1)
+    limparCacheDeLeituraDoQuadro()
   })
 })

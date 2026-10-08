@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
+import type { PrismaClient } from '@prisma/client'
 import {
   atualizarFichaDoItem,
   lerFichaDoItem,
+  mesclarConferenciaDoItem,
   type PrismaDaFichaDoItem,
   type RepoItemRecord,
 } from './ficha-do-item.js'
@@ -298,5 +300,162 @@ describe('lerFichaDoItem', () => {
     expect(
       await lerFichaDoItem({ prisma, projectId: 'proj-1', tipo: 'issue', numero: 7 })
     ).toBeNull()
+  })
+})
+
+describe('mesclarConferenciaDoItem', () => {
+  /** Uma linha com relógio de atualização, como o Prisma de verdade (`@updatedAt`). */
+  function prismaDeConferencia(inicial: { conferencia: unknown } | null, aoLer?: () => void) {
+    let linha = inicial ? { ...inicial, atualizadoEm: new Date('2026-10-08T12:00:00Z') } : null
+    const updateMany = vi.fn(
+      async (args: { where: { atualizadoEm: Date }; data: { conferencia: unknown } }) => {
+        if (!linha || linha.atualizadoEm.getTime() !== args.where.atualizadoEm.getTime()) {
+          return { count: 0 }
+        }
+        linha = {
+          conferencia: args.data.conferencia,
+          atualizadoEm: new Date(linha.atualizadoEm.getTime() + 1),
+        }
+        return { count: 1 }
+      }
+    )
+    const findUnique = vi.fn(async () => {
+      const lida = linha ? { ...linha } : null
+      aoLer?.()
+      return lida
+    })
+    const prisma = { repoItem: { findUnique, updateMany } } as unknown as Pick<
+      PrismaClient,
+      'repoItem'
+    >
+    return { prisma, updateMany, findUnique, atual: () => linha }
+  }
+
+  it('mescla só as chaves recebidas e preserva as outras (original, ajuste)', async () => {
+    const p = prismaDeConferencia({
+      conferencia: { padraoOk: false, original: { titulo: 'a' }, ajuste: { estado: 'aplicado' } },
+    })
+    const ok = await mesclarConferenciaDoItem({
+      prisma: p.prisma,
+      projectId: 'p',
+      tipo: 'issue',
+      numero: 7,
+      parcial: { padraoOk: true, hashDoCorpo: 'h' },
+    })
+    expect(ok).toBe(true)
+    expect(p.atual()?.conferencia).toEqual({
+      padraoOk: true,
+      hashDoCorpo: 'h',
+      original: { titulo: 'a' },
+      ajuste: { estado: 'aplicado' },
+    })
+  })
+
+  it('ficha sem conferência ainda (null) recebe o parcial inteiro', async () => {
+    const p = prismaDeConferencia({ conferencia: null })
+    await mesclarConferenciaDoItem({
+      prisma: p.prisma,
+      projectId: 'p',
+      tipo: 'issue',
+      numero: 7,
+      parcial: { padraoOk: false },
+    })
+    expect(p.atual()?.conferencia).toEqual({ padraoOk: false })
+  })
+
+  it('se outra escrita passa no meio, relê e mescla de novo (nada se perde)', async () => {
+    let primeiraLeitura = true
+    const p = prismaDeConferencia({ conferencia: { a: 1 } }, () => {
+      if (primeiraLeitura) {
+        primeiraLeitura = false
+        // concorrente grava `b` entre a leitura e a nossa escrita
+        void p.updateMany({
+          where: { atualizadoEm: p.atual()!.atualizadoEm },
+          data: { conferencia: { a: 1, b: 2 } },
+        })
+      }
+    })
+    const ok = await mesclarConferenciaDoItem({
+      prisma: p.prisma,
+      projectId: 'p',
+      tipo: 'issue',
+      numero: 7,
+      parcial: { c: 3 },
+    })
+    expect(ok).toBe(true)
+    expect(p.atual()?.conferencia).toEqual({ a: 1, b: 2, c: 3 })
+    expect(p.findUnique).toHaveBeenCalledTimes(2)
+  })
+
+  it('ficha que não existe: devolve false e não escreve', async () => {
+    const p = prismaDeConferencia(null)
+    const ok = await mesclarConferenciaDoItem({
+      prisma: p.prisma,
+      projectId: 'p',
+      tipo: 'issue',
+      numero: 7,
+      parcial: { x: 1 },
+    })
+    expect(ok).toBe(false)
+    expect(p.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('disputa que não acaba: desiste depois de poucas tentativas, sem laço infinito', async () => {
+    const p = prismaDeConferencia({ conferencia: {} })
+    p.updateMany.mockResolvedValue({ count: 0 })
+    const ok = await mesclarConferenciaDoItem({
+      prisma: p.prisma,
+      projectId: 'p',
+      tipo: 'issue',
+      numero: 7,
+      parcial: { x: 1 },
+    })
+    expect(ok).toBe(false)
+    expect(p.updateMany.mock.calls.length).toBeLessThanOrEqual(5)
+  })
+})
+
+describe('atualizarFichaDoItem: a conferência é mesclada por chaves, nunca trocada', () => {
+  const base = { projectId: 'proj-1', tipo: 'issue' as const, numero: 7 }
+
+  it('um valor novo troca só as chaves que traz e preserva original, histórico e ajuste', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      estado: { status: 'open' },
+      conferencia: {
+        padraoOk: false,
+        original: { titulo: 'a', corpo: 'b' },
+        historico: [{ hash: 'h1' }],
+        ajuste: { estado: 'aplicado' },
+      },
+    })
+    const ficha = await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      conferencia: { padraoOk: true, hashDoCorpo: 'novo' },
+    })
+    expect(ficha.conferencia).toEqual({
+      padraoOk: true,
+      hashDoCorpo: 'novo',
+      original: { titulo: 'a', corpo: 'b' },
+      historico: [{ hash: 'h1' }],
+      ajuste: { estado: 'aplicado' },
+    })
+  })
+
+  it('passar um objeto vazio ou sem as chaves protegidas também não apaga nada', async () => {
+    const prisma = prismaFake()
+    await atualizarFichaDoItem({
+      prisma,
+      ...base,
+      conferencia: { original: { titulo: 'a', corpo: 'b' }, ajuste: { estado: 'aplicado' } },
+    })
+    const ficha = await atualizarFichaDoItem({ prisma, ...base, conferencia: {} })
+    expect(ficha.conferencia).toEqual({
+      original: { titulo: 'a', corpo: 'b' },
+      ajuste: { estado: 'aplicado' },
+    })
   })
 })

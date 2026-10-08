@@ -56,4 +56,27 @@ describe('ajustarTarefaForaDoPadrao', () => {
     })
     expect('erroDeValidacao' in resultado).toBe(true)
   })
+
+  it('falha do motor (processo, cota) NÃO vira "formulário torto": sobe para quem decide', async () => {
+    const execute = vi.fn(async () => {
+      throw new Error('quota exhausted')
+    })
+    await expect(
+      ajustarTarefaForaDoPadrao({
+        issueNumber: 88,
+        repository: 'dono/repo',
+        tituloOriginal: 'ajustar algo',
+        corpoOriginal: 'texto solto sem seções',
+        conferencia: {
+          padraoOk: false,
+          erros: ['goal: empty'],
+          peso: null,
+          noQuadro: true,
+          naSprint: true,
+        },
+        contextBlocks: [],
+        execute,
+      })
+    ).rejects.toThrow('quota exhausted')
+  })
 })

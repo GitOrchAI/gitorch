@@ -57,6 +57,17 @@ export interface RegistrarNoPainelUmaVezArgs {
  * gravar de novo.
  */
 export async function registrarNoPainelUmaVez(args: RegistrarNoPainelUmaVezArgs): Promise<void> {
+  await registrarNoPainelSeForNovo(args)
+}
+
+/**
+ * O mesmo registro, dizendo se gravou: `true` quando gravou e `false` quando a
+ * chave já existia. Quem limita quantos eventos NOVOS saem por passada precisa
+ * dessa distinção.
+ */
+export async function registrarNoPainelSeForNovo(
+  args: RegistrarNoPainelUmaVezArgs
+): Promise<boolean> {
   const jaExiste = await args.prisma.event.findFirst({
     where: {
       projectId: args.projectId,
@@ -64,7 +75,7 @@ export async function registrarNoPainelUmaVez(args: RegistrarNoPainelUmaVezArgs)
       payload: { path: ['chave'], equals: args.chave },
     },
   })
-  if (jaExiste) return
+  if (jaExiste) return false
 
   await args.prisma.event.create({
     data: {
@@ -73,4 +84,5 @@ export async function registrarNoPainelUmaVez(args: RegistrarNoPainelUmaVezArgs)
       payload: { texto: args.texto, chave: args.chave },
     },
   })
+  return true
 }
