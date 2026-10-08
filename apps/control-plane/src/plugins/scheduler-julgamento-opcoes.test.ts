@@ -1,6 +1,7 @@
 import { describe, expect, test, vi, type Mock } from 'vitest'
 import { montarOpcoesDoJulgamento } from './scheduler.js'
 import type { PrismaDevSession } from '../services/dev-session-store.js'
+import type { PrismaDaTravaDeParecer } from '../services/trava-de-parecer.js'
 
 // Achado 1 (Crítico) da revisão da Tarefa 7: `registrarPendencia`,
 // `limparPendencia` e `avisarDono` foram ADICIONADAS à interface de
@@ -50,7 +51,12 @@ function prismaFalso() {
       create: vi.fn(async (_args: unknown) => undefined),
       findMany: vi.fn(async (_args: unknown) => []),
     },
-  } as unknown as PrismaDevSession
+    // A trava do parecer (trava-de-parecer.ts) vive na ficha do PR.
+    repoItem: {
+      upsert: vi.fn(async (_args: unknown) => undefined),
+      updateMany: vi.fn(async (_args: unknown) => ({ count: 1 })),
+    },
+  } as unknown as PrismaDevSession & PrismaDaTravaDeParecer
 }
 
 /** O `event` do fake, para conferir o que foi de fato gravado/lido. */
@@ -178,6 +184,81 @@ describe('montarOpcoesDoJulgamento', () => {
         orderBy: { createdAt: 'desc' },
       })
     )
+  })
+
+  // A trava do parecer existia no módulo e em `qa-rails-mission.ts`, mas só
+  // valia se o chamador passasse `prisma`/`projectId` soltos, e o scheduler
+  // nunca passou: em produção, nenhuma ficha chegou a receber a trava. Estes
+  // testes provam que a função devolve os ganchos ligados ao banco E ao projeto
+  // desta iteração.
+  test('adquirirTrava devolvido disputa a trava da ficha do PR no PROJETO recebido', async () => {
+    const prisma = prismaFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+
+    expect(await opcoes.adquirirTrava({ numeroDoPr: 42, headSha: 'abc123' })).toBe(true)
+
+    expect(prisma.repoItem.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          projectId_tipo_numero: { projectId: 'proj_do_cliente_a', tipo: 'pr', numero: 42 },
+        },
+      })
+    )
+    expect(prisma.repoItem.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ projectId: 'proj_do_cliente_a', tipo: 'pr', numero: 42 }),
+        data: expect.objectContaining({ parecerTravaHeadSha: 'abc123' }),
+      })
+    )
+  })
+
+  test('adquirirTrava devolve false quando o banco diz que outra missão já tomou o commit', async () => {
+    const prisma = prismaFalso()
+    vi.mocked(prisma.repoItem.updateMany).mockResolvedValueOnce({ count: 0 })
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+
+    expect(await opcoes.adquirirTrava({ numeroDoPr: 42, headSha: 'abc123' })).toBe(false)
+  })
+
+  test('liberarTrava devolvido zera a validade só do commit informado, no projeto recebido', async () => {
+    const prisma = prismaFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+
+    await opcoes.liberarTrava({ numeroDoPr: 42, headSha: 'abc123' })
+
+    expect(prisma.repoItem.updateMany).toHaveBeenCalledWith({
+      where: {
+        projectId: 'proj_do_cliente_a',
+        tipo: 'pr',
+        numero: 42,
+        parecerTravaHeadSha: 'abc123',
+      },
+      data: { parecerTravadoAte: null },
+    })
+  })
+
+  test('assentarTrava devolvido encurta a validade só do commit informado, no projeto recebido', async () => {
+    const prisma = prismaFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+    const antes = Date.now()
+
+    await opcoes.assentarTrava({ numeroDoPr: 42, headSha: 'abc123' })
+
+    const chamada = vi.mocked(prisma.repoItem.updateMany).mock.calls[0]?.[0] as {
+      where: unknown
+      data: { parecerTravadoAte: Date }
+    }
+    expect(chamada.where).toEqual({
+      projectId: 'proj_do_cliente_a',
+      tipo: 'pr',
+      numero: 42,
+      parecerTravaHeadSha: 'abc123',
+    })
+    // A folga conta a partir de AGORA (a hora da publicação), não de quando a
+    // trava foi tomada.
+    const ate = chamada.data.parecerTravadoAte.getTime()
+    expect(ate).toBeGreaterThanOrEqual(antes + 3 * 60_000)
+    expect(ate).toBeLessThanOrEqual(Date.now() + 3 * 60_000)
   })
 
   test('avisarDono presente no objeto devolvido quando um notificador foi construído', () => {

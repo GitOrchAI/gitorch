@@ -1,4 +1,3 @@
-import * as TravaModule from './trava-de-parecer.js'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   runQaMissionViaRails,
@@ -4635,57 +4634,252 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
     expect(texto).toContain('Por que existe: sessão expirava cedo demais')
   })
 
+  // A trava do parecer entra pelos ganchos `adquirirTrava`/`liberarTrava`
+  // (família `VigiliaDoJulgamentoOptions`), que o scheduler liga ao banco em
+  // `montarOpcoesDoJulgamento`. O caminho com banco real está em
+  // test/parecer-unico-por-versao.integration.test.ts; aqui o gancho é um
+  // dublê para provar o que a missão FAZ com cada resposta dele.
   describe('Trava de Parecer no QA', () => {
-    it('deve publicar o parecer se adquirir a trava com sucesso', async () => {
-      vi.spyOn(TravaModule, 'adquirirTravaDeParecer').mockResolvedValue(true as never)
+    it('toma a trava do commit uma vez só e publica o parecer quando é a dona', async () => {
+      const adquirirTrava = vi.fn(async (_: { numeroDoPr: number; headSha: string }) => true)
+      const execute = vi.fn(async () => APPROVE)
       const f = fakeFetch([{ number: 42, user: 'jules' }])
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
-      const prismaMock = {
-        repoItem: { upsert: vi.fn(), updateMany: vi.fn() },
-      } as unknown as import('@prisma/client').PrismaClient
       await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
-        execute: async () => APPROVE,
+        execute,
         fetchImpl: f,
-        prisma: prismaMock,
-        projectId: 'proj_123',
+        adquirirTrava,
       })
 
-      expect(TravaModule.adquirirTravaDeParecer).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: 'proj_123',
-          numeroDoPr: 42,
-        })
-      )
+      // Pedida no início do julgamento E na hora de publicar, mas disputada
+      // uma única vez: a resposta é a mesma para o mesmo (PR, commit).
+      expect(adquirirTrava).toHaveBeenCalledTimes(1)
+      expect(adquirirTrava).toHaveBeenCalledWith({ numeroDoPr: 42, headSha: 'abc123' })
+      expect(execute).toHaveBeenCalledTimes(1)
       expect(posted.reviews).toHaveLength(1)
     })
 
-    it('NÃO deve publicar o parecer se NÃO adquirir a trava (já ocupada)', async () => {
-      vi.spyOn(TravaModule, 'adquirirTravaDeParecer').mockResolvedValue(false as never)
+    it('quando a trava já é de outra missão: não gasta o motor, não publica e nada do julgamento se repete', async () => {
+      const execute = vi.fn(async () => APPROVE)
+      const limparPendencia = vi.fn(async () => undefined)
+      const registrarJulgamento = vi.fn(async () => undefined)
+      const avisarSessao = vi.fn(async () => true)
+      const liberarTrava = vi.fn(async () => undefined)
+      const onWarn = vi.fn()
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+      const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
+
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute,
+        fetchImpl: f,
+        sessoes: [
+          linha({ issueNumber: 50, pullRequestNumber: 42, pendingSince: new Date('2026-01-01') }),
+        ],
+        adquirirTrava: async () => false,
+        liberarTrava,
+        limparPendencia,
+        registrarJulgamento,
+        avisarSessao,
+        onWarn,
+      })
+
+      expect(r.noOp).toBe(true)
+      expect(r.output).toContain('PR #42')
+      expect(execute).not.toHaveBeenCalled()
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.merges).toHaveLength(0)
+      expect(limparPendencia).not.toHaveBeenCalled()
+      expect(registrarJulgamento).not.toHaveBeenCalled()
+      expect(avisarSessao).not.toHaveBeenCalled()
+      // Quem perdeu a trava não tem o que soltar: ela é de outra missão.
+      expect(liberarTrava).not.toHaveBeenCalled()
+      expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('outra missão já julga'))
+    })
+
+    it('entrega sem conteúdo: a cobrança também passa pela trava, e quem perde não cobra nem avisa o dev', async () => {
+      const execute = vi.fn(async () => APPROVE)
+      const avisarSessao = vi.fn(async () => true)
+      const f = fakeFetch([
+        { number: 468, user: 'jules[bot]', changedFiles: 0, additions: 0, deletions: 0 },
+      ])
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute,
+        fetchImpl: f,
+        sessoes: [linha({ issueNumber: 50, pullRequestNumber: 468 })],
+        adquirirTrava: async () => false,
+        avisarSessao,
+      })
+
+      expect(r.noOp).toBe(true)
+      expect(posted.reviews).toHaveLength(0)
+      expect(avisarSessao).not.toHaveBeenCalled()
+      expect(execute).not.toHaveBeenCalled()
+    })
+
+    it('erro ANTES de publicar solta a trava do commit e relança o erro ORIGINAL', async () => {
+      const liberarTrava = vi.fn(async (_: { numeroDoPr: number; headSha: string }) => undefined)
+      const queda = new Error('motor fora do ar')
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+
+      await expect(
+        runQaMissionViaRails({
+          repository: 'o/r',
+          githubToken: 't',
+          execute: async () => {
+            throw queda
+          },
+          fetchImpl: f,
+          adquirirTrava: async () => true,
+          liberarTrava,
+        })
+      ).rejects.toBe(queda)
+
+      expect(liberarTrava).toHaveBeenCalledTimes(1)
+      expect(liberarTrava).toHaveBeenCalledWith({ numeroDoPr: 42, headSha: 'abc123' })
+    })
+
+    it('parecer publicado: encurta a trava do commit (assentar) e NÃO a solta', async () => {
+      const assentarTrava = vi.fn(async (_: { numeroDoPr: number; headSha: string }) => undefined)
+      const liberarTrava = vi.fn(async () => undefined)
       const f = fakeFetch([{ number: 42, user: 'jules' }])
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
-      const onWarnMock = vi.fn()
 
-      const prismaMock = {
-        repoItem: { upsert: vi.fn(), updateMany: vi.fn() },
-      } as unknown as import('@prisma/client').PrismaClient
       await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
         fetchImpl: f,
-        prisma: prismaMock,
-        projectId: 'proj_123',
-        onWarn: onWarnMock,
+        adquirirTrava: async () => true,
+        liberarTrava,
+        assentarTrava,
       })
 
-      expect(TravaModule.adquirirTravaDeParecer).toHaveBeenCalled()
-      expect(posted.reviews).toHaveLength(0)
-      expect(onWarnMock).toHaveBeenCalledWith(
-        expect.stringContaining('already publishing a review for head')
-      )
+      expect(posted.reviews).toHaveLength(1)
+      expect(assentarTrava).toHaveBeenCalledTimes(1)
+      expect(assentarTrava).toHaveBeenCalledWith({ numeroDoPr: 42, headSha: 'abc123' })
+      expect(liberarTrava).not.toHaveBeenCalled()
+    })
+
+    it('quem perdeu a trava não a encurta nem a solta: ela é de outra missão', async () => {
+      const assentarTrava = vi.fn(async () => undefined)
+      const liberarTrava = vi.fn(async () => undefined)
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+        adquirirTrava: async () => false,
+        liberarTrava,
+        assentarTrava,
+      })
+
+      expect(assentarTrava).not.toHaveBeenCalled()
+      expect(liberarTrava).not.toHaveBeenCalled()
+    })
+
+    it('se encurtar a trava falha, avisa e a missão segue com o resultado', async () => {
+      const onWarn = vi.fn()
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+        adquirirTrava: async () => true,
+        assentarTrava: async () => {
+          throw new Error('banco indisponível')
+        },
+        onWarn,
+      })
+
+      expect(r.exitCode).toBe(0)
+      expect(posted.reviews).toHaveLength(1)
+      expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('não consegui encurtar a trava'))
+      expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('banco indisponível'))
+    })
+
+    it('se soltar a trava também falha, avisa e ainda assim relança o erro ORIGINAL', async () => {
+      const queda = new Error('motor fora do ar')
+      const onWarn = vi.fn()
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+
+      await expect(
+        runQaMissionViaRails({
+          repository: 'o/r',
+          githubToken: 't',
+          execute: async () => {
+            throw queda
+          },
+          fetchImpl: f,
+          adquirirTrava: async () => true,
+          liberarTrava: async () => {
+            throw new Error('banco indisponível')
+          },
+          onWarn,
+        })
+      ).rejects.toBe(queda)
+
+      expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('não consegui soltar a trava'))
+      expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('banco indisponível'))
+    })
+
+    it('erro DEPOIS de o parecer sair NÃO solta a trava: ela segura a segunda missão até vencer', async () => {
+      const liberarTrava = vi.fn(async () => undefined)
+      const assentarTrava = vi.fn(async (_: { numeroDoPr: number; headSha: string }) => undefined)
+      const base = fakeFetch([{ number: 42, user: 'jules[bot]' }])
+      const posted = (base as unknown as { posted: { reviews: unknown[] } }).posted
+      // Depois da review, o GET que antecede a mescla cai: o parecer já está no PR.
+      const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        if (posted.reviews.length > 0 && /\/pulls\/42$/.test(String(url))) {
+          throw new Error('rede caiu')
+        }
+        return base(url, init)
+      }) as typeof fetch
+
+      await expect(
+        runQaMissionViaRails({
+          repository: 'o/r',
+          githubToken: 't',
+          execute: async () => APPROVE,
+          fetchImpl: f,
+          sessoes: [linha({ issueNumber: 50, pullRequestNumber: 42 })],
+          adquirirTrava: async () => true,
+          liberarTrava,
+          assentarTrava,
+        })
+      ).rejects.toThrow('rede caiu')
+
+      expect(posted.reviews).toHaveLength(1)
+      expect(liberarTrava).not.toHaveBeenCalled()
+      // O parecer saiu: a trava passa para a folga, em vez de ficar na validade longa.
+      expect(assentarTrava).toHaveBeenCalledWith({ numeroDoPr: 42, headSha: 'abc123' })
+    })
+
+    it('sem os ganchos da trava o julgamento segue como sempre (nada a tomar nem a soltar)', async () => {
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+      })
+
+      expect(posted.reviews).toHaveLength(1)
     })
   })
 })
@@ -4700,8 +4894,8 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
 describe('runQaMissionViaRails: a fila anda quando o primeiro PR está pendente', () => {
   const PENDENTE = [{ name: 'ci', status: 'in_progress' }]
   const VERDE = [{ name: 'ci', conclusion: 'success', status: 'completed' }]
-  // Uma instância por chamada: o vitest zera os mocks entre testes, e a trava
-  // do parecer precisa do `updateMany` devolvendo `{ count: 1 }` de verdade.
+  // Uma instância por chamada: o vitest zera os mocks entre testes, e o
+  // `updateMany` precisa continuar devolvendo `{ count: 1 }`.
   const novoPrisma = () =>
     ({
       repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -4711,8 +4905,7 @@ describe('runQaMissionViaRails: a fila anda quando o primeiro PR está pendente'
   // par = do mais antigo ao mais novo — fixa o relógio para o teste ser
   // determinístico (só `Date`, os timers reais seguem).
   beforeEach(() => {
-    // Um teste anterior do arquivo espiona a trava do parecer; sem restaurar,
-    // ela vazaria para cá e nenhuma review seria publicada.
+    // Espiões de outros testes do arquivo não podem vazar para cá.
     vi.restoreAllMocks()
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-09-30T12:00:30Z'))
