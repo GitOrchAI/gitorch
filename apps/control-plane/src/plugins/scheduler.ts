@@ -47,6 +47,7 @@ import {
   type MissionMemory,
 } from '../services/mission-context.js'
 import { registrarEntendimentoDoPedido } from '../services/entendimento-do-pedido.js'
+import { registrarDirecaoDoProjeto } from '../services/direcao-do-projeto.js'
 import { resolveMissionDelivery, type MissionPathKind } from '../services/mission-outcome.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
@@ -1178,7 +1179,8 @@ export type PrismaDoJulgamento = PrismaDevSession & PrismaDaTravaDeParecer & Pri
  * `registrarFracassoDeMerge` ligadas ao Prisma real, a trava do parecer
  * (`adquirirTrava`/`liberarTrava`/`assentarTrava`, que segura o segundo
  * julgamento do mesmo commit), o registro do entendimento do pedido
- * (`registrarEntendimento`, ficha do PR + memória do projeto), e `avisarDono`
+ * (`registrarEntendimento`, ficha do PR + memória do projeto), a direção de
+ * fora do GitOrch (`registrarDirecao`, só memória do projeto), e `avisarDono`
  * quando um notificador foi montado.
  *
  * Achado 1 da revisão da Tarefa 7: as três primeiras foram ADICIONADAS à
@@ -1217,6 +1219,13 @@ export function montarOpcoesDoJulgamento(args: {
    * pronta de quem chama (`app.cortex`) para o gancho nunca nascer sem ela.
    */
   cortex: MissionMemory
+  /**
+   * `Project.runtimeConfig` do projeto desta iteração: de onde o registro da
+   * direção lê `cuidaPorOrigem`. Obrigatório (e não opcional) para esquecê-lo
+   * quebrar a build, em vez de o projeto que mandou ignorar uma origem
+   * continuar sendo lido.
+   */
+  runtimeConfig: unknown
   /**
    * O projeto DESTA iteração. Vem pronto porque só quem itera sabe de quem é o
    * repositório: `wingId` não é único global (dois clientes podem cadastrar o
@@ -1318,6 +1327,24 @@ export function montarOpcoesDoJulgamento(args: {
           now: () => new Date().toISOString(),
         },
       }),
+    // A direção de fora do GitOrch: a origem vem da FICHA do PR (nunca do que o
+    // juiz escreveu) e a política, do projeto. Também gancho, pelo mesmo motivo.
+    registrarDirecao: async (a) => {
+      const ficha = await lerFichaDoItem({
+        prisma: args.prisma,
+        projectId: args.projectId,
+        tipo: 'pr',
+        numero: a.numeroDoPr,
+      })
+      await registrarDirecaoDoProjeto({
+        projectId: args.projectId,
+        numeroDoPr: a.numeroDoPr,
+        origem: ficha?.origem ?? null,
+        entendimento: a.entendimento,
+        runtimeConfig: args.runtimeConfig,
+        deps: { cortex: args.cortex, now: () => new Date().toISOString() },
+      })
+    },
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
 }
@@ -4964,6 +4991,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       ...montarOpcoesDoJulgamento({
                         prisma: app.prisma as unknown as PrismaDoJulgamento,
                         cortex: app.cortex,
+                        runtimeConfig: project.runtimeConfig,
                         projectId: project.id,
                         avisarDono,
                       }),

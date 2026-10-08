@@ -36,7 +36,8 @@ export interface RegistrarEntendimentoDeps {
   now: () => string
 }
 
-function estaCompleto(e: EntendimentoDoItem): boolean {
+/** Os quatro campos preenchidos: só então "o pedido foi compreendido". */
+export function estaCompleto(e: EntendimentoDoItem): boolean {
   return [e.deOndeVeio, e.oQueMuda, e.queAjusteE, e.porQueExiste].every(
     (campo) => typeof campo === 'string' && campo.trim().length > 0
   )
