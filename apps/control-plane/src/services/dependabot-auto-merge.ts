@@ -11,6 +11,12 @@ export function decidirMergeDoDependabot(deps: {
   politica: PoliticaDeCuidado
   verificacao: EstadoDaVerificacao
   mergeable: boolean | null
+  /**
+   * Quando o PR é de um membro de grupo que sobe junto (ver
+   * `GRUPOS_DE_IRMAOS`) e o outro membro ainda tem PR aberto: a descrição do
+   * irmão. `null`/ausente = sem irmão pendente.
+   */
+  irmaoPendente?: string | null
 }): { mesclar: boolean; motivo: string } {
   if (deps.politica !== 'sim') {
     return {
@@ -25,6 +31,12 @@ export function decidirMergeDoDependabot(deps: {
     return {
       mesclar: false,
       motivo: 'há conflito ou o GitHub ainda não confirmou que dá para mesclar',
+    }
+  }
+  if (deps.irmaoPendente) {
+    return {
+      mesclar: false,
+      motivo: `irmão pendente: ${deps.irmaoPendente}; os dois precisam subir juntos, então não mescla um sozinho`,
     }
   }
   return { mesclar: true, motivo: 'Dependabot configurado para cuidar sozinho, verificação verde' }

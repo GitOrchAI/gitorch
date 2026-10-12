@@ -1,4 +1,5 @@
 import { decidirAcaoNoPrOrfaoIntegrado } from '../services/decisao-do-vigia.js'
+import { decidirDependabotDoVigia } from '../services/dependabot-expresso.js'
 import { MAX_REQUEUE } from '../services/sessao-terminal.js'
 import fp from 'fastify-plugin'
 import { FastifyInstance, FastifyBaseLogger } from 'fastify'
@@ -7732,6 +7733,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           onWarn: (m) => app.log.warn(m),
         })
 
+        const perguntadorDoDependabot = (
+          app as unknown as {
+            agentQuestionService?: import('../services/agent-question.js').AgentQuestionService
+          }
+        ).agentQuestionService as
+          import('../services/perguntar-se-cuida.js').AgentQuestionAskerDeCuidado | undefined
+
         const resumo = await vigiarPrsOrfaos({
           listarPrsAbertos: () =>
             listarPrsAbertosParaOVigia({
@@ -7818,6 +7826,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                 }),
               },
+            }),
+          // Fase 5.3: o PR do Dependabot não vai para a decisão do vigia (não há
+          // conserto para ele), mas chega à decisão expressa: mescla, pergunta
+          // ao dono ou fica quieto, conforme `cuidaPorOrigem.dependabot`.
+          decidirDependabot: (prDoDependabot) =>
+            decidirDependabotDoVigia({
+              runtimeConfig,
+              agora,
+              projeto,
+              token,
+              numero: prDoDependabot.numero,
+              ghGet,
+              ghSend,
+              registrarNoPainel: registrarStatusNoPainel,
+              prisma: app.prisma,
+              onWarn: (msg) => app.log.warn(msg),
+              pergunta:
+                projeto.userId && perguntadorDoDependabot
+                  ? { userId: projeto.userId, agentQuestion: perguntadorDoDependabot }
+                  : undefined,
             }),
           pedirJulgamento: async (numeroDoPr) => {
             filaDeJulgamento.enfileirar(projeto.id, 1)

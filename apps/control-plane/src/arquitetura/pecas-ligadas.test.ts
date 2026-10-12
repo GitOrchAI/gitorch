@@ -32,6 +32,7 @@ const AS_PECAS = [
   'aplicarMelhoriaDeSeguranca',
   'conferirConformidade',
   'workflowDeAlternativaGratuita',
+  'decidirMergeDoDependabot',
 ] as const
 
 /** As ainda não ligadas. Cada fase seguinte remove as suas. */

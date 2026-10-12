@@ -1,7 +1,7 @@
 import { lerCuidaPorOrigem, lerJanelaEmConstrucaoHoras } from './cuidado-por-origem.js'
 import { horasEmConstrucao } from './em-construcao.js'
 import { decidirProximoPasso } from './motor-do-proximo-passo.js'
-import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
+import { decidirDependabotExpresso } from './dependabot-expresso.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 import { lerEstadoDoCiDoHead } from './estado-da-verificacao-do-github.js'
 import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
@@ -191,71 +191,29 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
   // Fase 5.3/#802: caminho PRÓPRIO do Dependabot — não passa por
   // decidirProximoPasso (Tarefa 3.5), que trata TODO PR do Dependabot como
   // "automação sem conserto" (não há sessão para retomar). Aqui não há
-  // conserto: só a decisão de mesclar ou deixar quieto.
+  // conserto: só a decisão de mesclar, perguntar ou deixar quieto, que vive em
+  // `dependabot-expresso.ts` (a mesma que o laço do vigia usa para o PR cujo
+  // autor é o próprio Dependabot).
   if (origem === 'dependabot') {
-    const depsDependabot = {
-      politica: cuidaPorOrigem.dependabot,
+    const expresso = await decidirDependabotExpresso({
+      runtimeConfig,
+      agora,
+      projeto,
+      token,
+      numero: depsVigia.numero,
       verificacao: depsVigia.verificacao,
       mergeable: depsVigia.mergeable,
-    }
-    const decisaoDependabot = decidirMergeDoDependabot(depsDependabot)
-    if (decisaoDependabot.mesclar) {
-      try {
-        const currentPr = (await ghGet(
-          `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
-          token
-        )) as { head: { sha: string } }
-        const baseDoMerge = await lerBaseParaMerge()
-        const resultadoDoMerge = await mesclarPr({
-          numeroDoPr: depsVigia.numero,
-          ciState: 'green',
-          vereditoDoQa: 'approve',
-          diffTruncado: false,
-          delegado: true,
-          ...baseDoMerge,
-          shaRevisado: currentPr.head.sha,
-          shaAtual: currentPr.head.sha,
-          entendimentoPresente: true,
-          lerCiAgora: lerCiAgoraParaMerge,
-          merge: async () => {
-            try {
-              await ghSend(
-                'PUT',
-                `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`,
-                token,
-                {
-                  sha: currentPr.head.sha,
-                  commit_title: `Merge pull request #${depsVigia.numero} from Dependabot`,
-                  commit_message: 'Auto-merged by GitOrch (Dependabot policy)',
-                }
-              )
-              return true
-            } catch (err) {
-              return false
-            }
-          },
-        })
-        // Antes ignorava o resultado e registrava "merge feito" mesmo com o
-        // merge barrado (base fora da principal, GitHub recusando...).
-        if (!resultadoDoMerge.mesclado) {
-          return {
-            acao: 'ignorar',
-            motivo: `Dependabot expresso não mesclado: ${resultadoDoMerge.motivo}`,
-          }
-        }
-        await registrarNoPainel(
-          projeto.id,
-          `dependabot-merge:${projeto.wingId}:${depsVigia.numero}`,
-          `GitOrch: o PR #${depsVigia.numero} do Dependabot estava verde e a política manda mesclar sozinho. Merge feito e issue associada pode ser fechada caso exista.`
-        )
-        return { acao: 'ignorar', motivo: 'Mesclado pelo caminho expresso do Dependabot' }
-      } catch (err) {
-        return {
-          acao: 'ignorar',
-          motivo: `Erro ao tentar mesclar o Dependabot expresso: ${(err as Error).message}`,
-        }
-      }
-    }
+      ghGet,
+      ghSend,
+      registrarNoPainel,
+      prisma,
+      onWarn,
+      pergunta:
+        userId && agentQuestion
+          ? { userId, agentQuestion, ...(execute ? { execute } : {}) }
+          : undefined,
+    })
+    return { acao: expresso.acao, motivo: expresso.motivo }
   }
 
   // A guarda de segurança sai da sondagem do repositório, lida UMA vez por
