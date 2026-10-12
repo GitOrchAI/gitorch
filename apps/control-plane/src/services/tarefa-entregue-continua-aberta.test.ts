@@ -529,6 +529,43 @@ describe('rodízio justo e idempotência do registro', () => {
     expect(r.consultadas).toBe(5)
   })
 
+  it('vários projetos pulados que juntos passam do teto não tiram a vez do projeto ativo', async () => {
+    // Cada projeto pulado tem poucas candidatas; a SOMA delas passa do teto.
+    // Se o pulo gastasse vaga (por candidata ou por projeto), o projeto ativo,
+    // que vem depois, ficaria de fora da primeira passada.
+    const pulados = ['proj-x', 'proj-y', 'proj-z', 'proj-w'].flatMap((projectId, i) =>
+      [1, 2].map((n) => linha(n, `${projectId}-${n}`, 10 * i + n, VELHA, null, projectId))
+    )
+    const ativas = [21, 22, 23].map((n) => linha(n, `a${n}`, n, VELHA, null, 'proj-a'))
+    const c = cenario({
+      linhas: [...pulados, ...ativas],
+      teto: 3,
+      projetosPulados: ['proj-x', 'proj-y', 'proj-z', 'proj-w'],
+    })
+    const r = await varrerTarefasEntregues(c.deps)
+    expect(pulados.length).toBeGreaterThan(3)
+    expect(c.lidas).toEqual([21, 22, 23].map((n) => `org-a/repo-a#${n}`))
+    expect(r.consultadas).toBe(3)
+  })
+
+  it('com o teto padrão: pulados que somam mais que o teto e o ativo ainda é conferido por inteiro', async () => {
+    const porProjetoPulado = Math.ceil(TETO_DE_TAREFAS_POR_PASSADA / 2)
+    const pulados = ['proj-x', 'proj-y', 'proj-z'].flatMap((projectId, i) =>
+      Array.from({ length: porProjetoPulado }, (_, j) =>
+        linha(j + 1, `${projectId}-${j}`, 1000 * (i + 1) + j, VELHA, null, projectId)
+      )
+    )
+    const ativas = [1, 2, 3, 4, 5].map((n) => linha(n, `a${n}`, n, VELHA, null, 'proj-a'))
+    const c = cenario({
+      linhas: [...pulados, ...ativas],
+      projetosPulados: ['proj-x', 'proj-y', 'proj-z'],
+    })
+    const r = await varrerTarefasEntregues(c.deps)
+    expect(pulados.length).toBeGreaterThan(TETO_DE_TAREFAS_POR_PASSADA)
+    expect(c.lidas).toEqual([1, 2, 3, 4, 5].map((n) => `org-a/repo-a#${n}`))
+    expect(r.consultadas).toBe(5)
+  })
+
   it('o teto vale só para o que foi de fato consultado, entre projetos', async () => {
     const b = [1, 2, 3].map((n) => linha(n, `b${n}`, n, VELHA, null, 'proj-b'))
     const a = [11, 12, 13].map((n) => linha(n, `a${n}`, n, VELHA, null, 'proj-a'))
