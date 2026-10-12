@@ -18,6 +18,21 @@ const OPCOES = [
   { label: 'Ainda falta fazer: seguir com a tarefa', value: RESPOSTA_SEGUIR_COM_A_TAREFA },
 ]
 
+// Compara o HOST de verdade (parser de URL), nunca um trecho do texto.
+function ehChamadaAoGithub(entrada: unknown): boolean {
+  const url =
+    typeof entrada === 'string' || entrada instanceof URL
+      ? String(entrada)
+      : entrada instanceof Request
+        ? entrada.url
+        : String(entrada)
+  try {
+    return new URL(url).hostname === 'api.github.com'
+  } catch {
+    return false
+  }
+}
+
 function buildFakePrisma() {
   const upserts: Array<{ update: Record<string, unknown> }> = []
   const pergunta = {
@@ -88,7 +103,7 @@ describe('resposta do dono à suspeita de tarefa já resolvida (real seam)', () 
       JSON.stringify(u.update).includes('"veredito":"descartada"')
     )
     expect(gravou).toBe(true)
-    expect(fetchSpy.mock.calls.filter((c) => String(c[0]).includes('api.github.com'))).toEqual([])
+    expect(fetchSpy.mock.calls.filter((c) => ehChamadaAoGithub(c[0]))).toEqual([])
     expect(prisma.agentQuestion.update).toHaveBeenCalled()
     await app.close()
   })
