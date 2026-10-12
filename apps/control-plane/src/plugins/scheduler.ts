@@ -265,6 +265,10 @@ import {
 import { esperarAVezDeDevolver } from '../services/devolucao-de-credencial.js'
 import { varrerArvoreDoPlano } from '../services/fechar-o-pai.js'
 import {
+  jaTemRegistroDeEntrega,
+  textoDePublicacaoNaoConfirmada,
+} from '../services/registro-de-entrega.js'
+import {
   chaveDaTarefa,
   varrerTarefasEntregues as conferirTarefasEntregues,
   type FichaDaTarefa,
@@ -275,8 +279,13 @@ import {
   encerrarTarefaEntregue,
   gravarMemoriaDaSuspeita,
   lerMemoriaDaSuspeita,
+  memoriaDaConferencia,
   resolverSuspeita,
 } from '../services/suspeita-de-tarefa-resolvida.js'
+import {
+  buscarPrsQueCitamATarefa,
+  criarDepsDaEvidencia,
+} from '../services/evidencia-de-entrega-da-tarefa.js'
 import { agentLabel } from '../services/agent-label.js'
 import {
   reservarAResposta,
@@ -3123,6 +3132,10 @@ export const varrerRespostasPrParado = async (app: FastifyInstance) => {
 }
 
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
+  // O Prisma real não encaixa na interface mínima da ficha (os campos de
+  // criação ali são soltos); a conversão fica num lugar só.
+  const prismaDaFicha = app.prisma as unknown as PrismaDaFichaDoItem
+
   /**
    * O `fetch` de TODA escrita REST no repositório de um cliente.
    *
@@ -4501,7 +4514,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 const issues: typeof todasAsIssues = []
                 for (const issue of todasAsIssues) {
                   const memoria = await lerMemoriaDaSuspeita(
-                    app.prisma as unknown as PrismaDaFichaDoItem,
+                    prismaDaFicha,
                     project.id,
                     issue.number
                   ).catch(() => null)
@@ -4550,7 +4563,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               atualizadaEm,
               achado,
             }) => {
-              const prismaFicha = app.prisma as unknown as PrismaDaFichaDoItem
+              const prismaFicha = prismaDaFicha
               const repositorio = project.wingId
               const token = railsToken as string
               const lerGitHub = async (caminho: string): Promise<unknown> => ghGet(caminho, token)
@@ -4563,75 +4576,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 gravarMemoria: (m) =>
                   gravarMemoriaDaSuspeita(prismaFicha, project.id, issueNumber, m),
                 coletarEvidencia: () =>
-                  coletarEvidenciaDaTarefa({
-                    sessoesMescladas: async () =>
+                  coletarEvidenciaDaTarefa(
+                    criarDepsDaEvidencia({
+                      prisma: app.prisma,
+                      projectId: project.id,
+                      repositorio,
+                      issueNumber,
+                      lerGitHub,
+                    })
+                  ),
+                buscarCitacao: () =>
+                  buscarPrsQueCitamATarefa({
+                    lerGitHub,
+                    repositorio,
+                    numero: issueNumber,
+                    criadaEm: new Date(criadaEm),
+                    ramoPadrao: async () =>
+                      project.defaultBranch ??
                       (
-                        await app.prisma.devSession.findMany({
-                          where: {
-                            projectId: project.id,
-                            issueNumber,
-                            OR: [{ mergeCommitSha: { not: null } }, { closedReason: 'merged' }],
-                          },
-                          select: { pullRequestNumber: true, closedAt: true, updatedAt: true },
-                        })
-                      ).map((r) => ({
-                        pullRequest: r.pullRequestNumber,
-                        mergedAt: r.closedAt ?? r.updatedAt,
-                      })),
-                    prsLigadosNaFicha: async () => {
-                      const ficha = await app.prisma.repoItem.findUnique({
-                        where: {
-                          projectId_tipo_numero: {
-                            projectId: project.id,
-                            tipo: 'issue',
-                            numero: issueNumber,
-                          },
-                        },
-                        select: { vinculos: { select: { prsLigados: true } } },
-                      })
-                      const ligados = ficha?.vinculos?.prsLigados as {
-                        closedByPullRequests?: unknown
-                      } | null
-                      return Array.isArray(ligados?.closedByPullRequests)
-                        ? ligados.closedByPullRequests.filter(
-                            (n): n is number => typeof n === 'number'
-                          )
-                        : []
-                    },
-                    lerPullRequest: async (numero) => {
-                      try {
-                        const pr = (await lerGitHub(`/repos/${repositorio}/pulls/${numero}`)) as {
-                          merged?: boolean
-                          merged_at?: string | null
-                          base?: { ref?: string; repo?: { default_branch?: string } }
+                        (await lerGitHub(`/repos/${repositorio}`)) as {
+                          default_branch?: string
                         }
-                        return {
-                          mesclado: pr.merged === true,
-                          mergedAt: pr.merged_at ?? null,
-                          baseEhPadrao:
-                            !!pr.base?.ref && pr.base.ref === pr.base.repo?.default_branch,
-                        }
-                      } catch (err) {
-                        if ((err as { status?: number }).status === 404) return null
-                        throw err
-                      }
-                    },
-                    lerEventosDaIssue: async () =>
-                      (await lerGitHub(
-                        `/repos/${repositorio}/issues/${issueNumber}/events?per_page=100`
-                      )) as Array<{ event?: string; created_at?: string }>,
-                    existeTrabalhoEmAndamento: async () =>
-                      (await app.prisma.devSession.count({
-                        where: { projectId: project.id, issueNumber, closedAt: null },
-                      })) > 0,
+                      ).default_branch ??
+                      baseDoDev(),
                   }),
-                fecharTarefa: async (pullRequest) => {
+                fecharTarefa: async (pullRequests) => {
                   await encerrarTarefaEntregue({
                     fetchImpl: fetchDoRepositorio({ nivel: () => project.autonomia }),
                     token,
                     repositorio,
                     numero: issueNumber,
-                    pullRequest,
+                    pullRequests,
+                    aviso: (m) => app.log.warn(`[Scheduler] ${m}`),
                   })
                   await marcarTarefaFechadaNaFicha(project.id, issueNumber, true)
                 },
@@ -9445,10 +9421,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           `/repos/${projeto.wingId}/issues/${sessao.issueNumber}/comments`,
           githubToken,
           {
-            body:
-              `O GitOrch mesclou a entrega desta tarefa (PR #${numeroDoPr}), mas não conseguiu ` +
-              `confirmar que ela foi ao ar: ${motivo} A tarefa continua aberta até isso ser ` +
-              'confirmado ou resolvido manualmente.',
+            body: textoDePublicacaoNaoConfirmada(numeroDoPr, motivo),
           }
         )
       } catch (err) {
@@ -10663,7 +10636,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     numero: number,
     fechadaPelaEntrega: boolean
   ): Promise<void> => {
-    const prismaFicha = app.prisma as unknown as PrismaDaFichaDoItem
+    const prismaFicha = prismaDaFicha
     const atual = await lerFichaDoItem({ prisma: prismaFicha, projectId, tipo: 'issue', numero })
     await atualizarFichaDoItem({
       prisma: prismaFicha,
@@ -10694,6 +10667,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       closedReason: string | null
       projectId: string
       updatedAt: Date
+      closedAt: Date | null
     }>
     try {
       linhas = await app.prisma.devSession.findMany({
@@ -10708,6 +10682,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           closedReason: true,
           projectId: true,
           updatedAt: true,
+          closedAt: true,
         },
       })
     } catch (err) {
@@ -10729,9 +10704,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       for (const f of doBanco) {
         const estado = f.estado as { status?: unknown } | null
         const conferencia = f.conferencia as { fechadaPelaEntregaEm?: unknown } | null
+        const memoria = memoriaDaConferencia(f.conferencia)
         fichas.set(chaveDaTarefa(f.projectId, f.numero), {
           status: typeof estado?.status === 'string' ? estado.status : null,
           fechadaPelaEntrega: typeof conferencia?.fechadaPelaEntregaEm === 'string',
+          ...(memoria
+            ? {
+                memoria: {
+                  veredito: memoria.veredito,
+                  avaliadaEm: memoria.avaliadaEm,
+                  ...(memoria.origem ? { origem: memoria.origem } : {}),
+                },
+              }
+            : {}),
         })
       }
     } catch (err) {
@@ -10748,9 +10733,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       fichas,
       falhasAte: tarefasEntreguesEmDescanso,
       abrirProjeto: async (projectId) => {
-        const projeto = await app.prisma.project
-          .findUnique({ where: { id: projectId }, select: { wingId: true, isActive: true } })
-          .catch(() => null)
+        let projeto: {
+          wingId: string
+          isActive: boolean
+          autonomia: string | null
+          userId: string | null
+        } | null
+        try {
+          projeto = await app.prisma.project.findUnique({
+            where: { id: projectId },
+            select: { wingId: true, isActive: true, autonomia: true, userId: true },
+          })
+        } catch (err) {
+          // Erro de banco não é "projeto inativo": registra e pula o projeto
+          // nesta passada, sem gastar vaga do teto.
+          app.log.warn(
+            { erro: resumirErro(err, 300), projectId },
+            '[Scheduler] varredura de tarefas entregues não conseguiu ler o projeto; pulando-o nesta passada'
+          )
+          return null
+        }
         if (!projeto?.isActive) return null
 
         // Cota do GitHub esgotada para este dono: nem mint de token, nem leitura.
@@ -10800,16 +10802,46 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return r.json()
           })
 
+        const donoDaPergunta = projeto.userId ?? ''
         return {
           wingId: projeto.wingId,
+          autonomia: projeto.autonomia,
           lerIssue: async (n) =>
-            (await rest('GET', `/repos/${projeto.wingId}/issues/${n}`)) as { state?: string },
+            (await rest('GET', `/repos/${projeto.wingId}/issues/${n}`)) as {
+              state?: string
+              title?: string
+              updated_at?: string
+              body?: string | null
+            },
+          jaTemRegistro: async (n) => {
+            const comentarios = await rest(
+              'GET',
+              `/repos/${projeto.wingId}/issues/${n}/comments?per_page=100`
+            )
+            return jaTemRegistroDeEntrega(
+              Array.isArray(comentarios) ? (comentarios as Array<{ body?: string | null }>) : []
+            )
+          },
           comentar: async (n, corpo) => {
             await rest('POST', `/repos/${projeto.wingId}/issues/${n}/comments`, { body: corpo })
           },
           fechar: async (n) => {
             await rest('PATCH', `/repos/${projeto.wingId}/issues/${n}`, { state: 'closed' })
           },
+          perguntar: async (pergunta) => {
+            const servico = (
+              app as unknown as {
+                agentQuestionService?: import('../services/agent-question.js').AgentQuestionService
+              }
+            ).agentQuestionService
+            if (!servico) throw new Error('o serviço de perguntas não está disponível')
+            await servico.ask(donoDaPergunta, projectId, pergunta)
+          },
+          perguntaAberta: async (dedupKey) =>
+            (await app.prisma.agentQuestion.findFirst({
+              where: { projectId, dedupKey, status: 'open' },
+              select: { id: true },
+            })) !== null,
         }
       },
       marcarFicha: async (projectId, numero, quem) => {
@@ -10822,6 +10854,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           )
         }
       },
+      gravarMemoria: (projectId, numero, memoria) =>
+        gravarMemoriaDaSuspeita(prismaDaFicha, projectId, numero, memoria),
       registrarNoPainel: (projectId, chave, texto) =>
         registrarNoPainelUmaVez({
           prisma: app.prisma as never,

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ErroDoGitHub } from './erro-do-github.js'
+import { MARCADOR_DO_REGISTRO_DE_ENTREGA } from './registro-de-entrega.js'
 import {
   CARENCIA_ANTES_DE_VARRER_MS,
   ESPERA_APOS_FALHA_MS,
   TETO_DE_TAREFAS_POR_PASSADA,
   chaveDaTarefa,
   entregasQueMerecemConferencia,
-  recadoDeTarefaJaEntregue,
   varrerTarefasEntregues,
   type ContextoDoProjeto,
   type DepsDaVarredura,
@@ -22,8 +22,17 @@ const linha = (
   pullRequestNumber: number | null = null,
   updatedAt: Date = VELHA,
   closedReason?: string | null,
-  projectId = 'proj-a'
-) => ({ projectId, issueNumber, mergeCommitSha, pullRequestNumber, updatedAt, closedReason })
+  projectId = 'proj-a',
+  closedAt: Date | null = null
+) => ({
+  projectId,
+  issueNumber,
+  mergeCommitSha,
+  pullRequestNumber,
+  updatedAt,
+  closedReason,
+  closedAt,
+})
 
 describe('quais entregas merecem conferência', () => {
   it('sem commit de merge nem closedReason merged não entra — não há o que fechar', () => {
@@ -81,40 +90,6 @@ describe('quais entregas merecem conferência', () => {
   })
 })
 
-describe('o recado do fechamento', () => {
-  it('NÃO afirma que o produto mesclou — porque não foi ele', () => {
-    const texto = recadoDeTarefaJaEntregue({ pullRequestNumber: 42, mergeCommitSha: 'abcdef1234' })
-    expect(texto).not.toMatch(/O GitOrch mesclou/)
-    expect(texto).toContain('#42')
-    expect(texto).toContain('abcdef12')
-  })
-
-  it('sem número de PR o texto continua verdadeiro, sem citar "#null"', () => {
-    const texto = recadoDeTarefaJaEntregue({
-      pullRequestNumber: null,
-      mergeCommitSha: 'abcdef1234',
-    })
-    expect(texto).not.toContain('#null')
-    expect(texto).not.toContain('PR #')
-    expect(texto).toContain('abcdef12')
-  })
-
-  it('com mergeCommitSha nulo exibe "(commit registrado via merge de PR)" sem quebrar', () => {
-    const texto = recadoDeTarefaJaEntregue({
-      pullRequestNumber: 42,
-      mergeCommitSha: null,
-    })
-    expect(texto).toContain('(commit registrado via merge de PR)')
-    expect(texto).toContain('#42')
-  })
-
-  it('é só registro: diz como desfazer e não pede nada a ninguém', () => {
-    const texto = recadoDeTarefaJaEntregue({ pullRequestNumber: 1, mergeCommitSha: '1234567890' })
-    expect(texto).toContain('Para desfazer: reabrir esta issue.')
-    expect(texto).not.toMatch(/\b(confira|por favor|decida|precisa de ação)\b/i)
-  })
-})
-
 const ERRO = (status: number, mensagem: string) =>
   new ErroDoGitHub(mensagem, {
     status,
@@ -126,12 +101,17 @@ const ERRO = (status: number, mensagem: string) =>
 interface Cenario {
   deps: DepsDaVarredura
   lidas: string[]
+  /** Ordem das escritas no GitHub: `comentar:` e `fechar:`. */
+  escritas: string[]
   comentadas: string[]
   fechadas: string[]
+  perguntas: Array<{ projectId: string; text: string; dedupKey: string }>
+  memorias: string[]
   avisos: string[]
   painel: Array<{ projectId: string; chave: string; texto: string }>
   marcadas: string[]
   falhasAte: Map<string, number>
+  abertas: Set<string>
 }
 
 function cenario(args: {
@@ -140,13 +120,21 @@ function cenario(args: {
   fichas?: Record<string, FichaDaTarefa>
   teto?: number
   falhasAte?: Map<string, number>
+  autonomia?: string | null
+  projetosPulados?: string[]
+  jaComentada?: boolean
+  falharAoFechar?: () => boolean
 }): Cenario {
   const lidas: string[] = []
+  const escritas: string[] = []
   const comentadas: string[] = []
   const fechadas: string[] = []
+  const perguntas: Cenario['perguntas'] = []
+  const memorias: string[] = []
   const avisos: string[] = []
   const painel: Cenario['painel'] = []
   const marcadas: string[] = []
+  const abertas = new Set<string>()
   const falhasAte = args.falhasAte ?? new Map<string, number>()
   const repos: Record<string, string> = { 'proj-a': 'org-a/repo-a', 'proj-b': 'org-b/repo-b' }
   const deps: DepsDaVarredura = {
@@ -156,26 +144,40 @@ function cenario(args: {
     fichas: new Map(Object.entries(args.fichas ?? {})),
     falhasAte,
     abrirProjeto: async (projectId) => {
-      const wingId = repos[projectId]!
+      if (args.projetosPulados?.includes(projectId)) return null
+      const wingId = repos[projectId] ?? `org/${projectId}`
       const ctx: ContextoDoProjeto = {
         wingId,
+        autonomia: args.autonomia === undefined ? 'cuidar' : args.autonomia,
         lerIssue: async (n) => {
           lidas.push(`${wingId}#${n}`)
           const e = args.estadoDasIssues?.[`${wingId}#${n}`] ?? 'closed'
           if (e instanceof Error) throw e
-          return { state: e }
+          return { state: e, title: `Tarefa ${n}`, updated_at: '2026-08-20T10:00:00Z' }
         },
+        jaTemRegistro: async () => args.jaComentada === true || abertas.has('registro'),
         comentar: async (n, corpo) => {
-          comentadas.push(`${wingId}#${n}:${corpo.slice(0, 20)}`)
+          escritas.push(`comentar:${wingId}#${n}`)
+          comentadas.push(corpo)
+          abertas.add('registro')
         },
         fechar: async (n) => {
+          if (args.falharAoFechar?.()) throw new Error('GitHub PATCH falhou (502)')
+          escritas.push(`fechar:${wingId}#${n}`)
           fechadas.push(`${wingId}#${n}`)
         },
+        perguntar: async (p) => {
+          perguntas.push({ projectId, text: p.text, dedupKey: p.dedupKey })
+        },
+        perguntaAberta: async (dedupKey) => perguntas.some((p) => p.dedupKey === dedupKey),
       }
       return ctx
     },
     marcarFicha: async (projectId, n, o) => {
       marcadas.push(`${projectId}#${n}:${o.fechadaPelaEntrega ? 'nossa' : 'ja-fechada'}`)
+    },
+    gravarMemoria: async (projectId, n, m) => {
+      memorias.push(`${projectId}#${n}:${m.veredito}`)
     },
     registrarNoPainel: async (projectId, chave, texto) => {
       painel.push({ projectId, chave, texto })
@@ -185,7 +187,20 @@ function cenario(args: {
     aviso: (m) => avisos.push(m),
     info: () => undefined,
   }
-  return { deps, lidas, comentadas, fechadas, avisos, painel, marcadas, falhasAte }
+  return {
+    deps,
+    lidas,
+    escritas,
+    comentadas,
+    fechadas,
+    perguntas,
+    memorias,
+    avisos,
+    painel,
+    marcadas,
+    falhasAte,
+    abertas,
+  }
 }
 
 describe('a varredura confere por projeto e tarefa', () => {
@@ -200,7 +215,7 @@ describe('a varredura confere por projeto e tarefa', () => {
     expect(c.lidas.sort()).toEqual(['org-a/repo-a#190', 'org-b/repo-b#190'])
   })
 
-  it('tarefa aberta com entrega mesclada: comenta como registro, fecha, marca a ficha e registra no painel com o PR e como desfazer', async () => {
+  it('tarefa aberta com entrega mesclada: fecha, comenta o registro, marca a ficha e registra no painel com o PR e como desfazer', async () => {
     const c = cenario({
       linhas: [linha(7, 'abc12345', 42)],
       estadoDasIssues: { 'org-a/repo-a#7': 'open' },
@@ -316,7 +331,7 @@ describe('a varredura confere por projeto e tarefa', () => {
       const ctx = (await abrir(id))!
       return {
         ...ctx,
-        comentar: async () => {
+        fechar: async () => {
           throw recusa
         },
       }
@@ -334,5 +349,266 @@ describe('a varredura confere por projeto e tarefa', () => {
     c.deps.abrirProjeto = vi.fn(async () => null)
     await varrerTarefasEntregues(c.deps)
     expect(c.lidas).toEqual([])
+  })
+})
+
+const ABERTA_A = { 'org-a/repo-a#7': 'open' as const }
+
+describe('o fechamento respeita a autonomia do projeto', () => {
+  it('cuidar: fecha com registro', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+      autonomia: 'cuidar',
+    })
+    const r = await varrerTarefasEntregues(c.deps)
+    expect(c.escritas).toEqual(['fechar:org-a/repo-a#7', 'comentar:org-a/repo-a#7'])
+    expect(c.perguntas).toEqual([])
+    expect(r.fechadas).toBe(1)
+  })
+
+  it('sugerir: NÃO escreve no GitHub e pergunta uma vez, por painel e Telegram', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+      autonomia: 'sugerir',
+    })
+    const r = await varrerTarefasEntregues(c.deps)
+    expect(c.escritas).toEqual([])
+    expect(c.marcadas).toEqual([])
+    expect(c.perguntas).toHaveLength(1)
+    expect(c.perguntas[0]!.text).toContain('#7')
+    expect(c.perguntas[0]!.text).toContain('PR #42')
+    expect(c.perguntas[0]!.dedupKey.startsWith('suspeita-resolvida:org-a/repo-a:7:')).toBe(true)
+    expect(c.memorias).toEqual(['proj-a#7:perguntada'])
+    expect(r.fechadas).toBe(0)
+  })
+
+  it('sugerir: pergunta que já está aberta não é repetida', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+      autonomia: 'sugerir',
+    })
+    await varrerTarefasEntregues(c.deps)
+    // Passada seguinte (a ficha em memória não foi atualizada pelo fake): a
+    // pergunta continua aberta, então não nasce outra.
+    await varrerTarefasEntregues(c.deps)
+    expect(c.perguntas).toHaveLength(1)
+  })
+
+  it('so_olhar: só registra no painel, sem pergunta e sem escrita', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+      autonomia: 'so_olhar',
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.escritas).toEqual([])
+    expect(c.perguntas).toEqual([])
+    expect(c.painel).toHaveLength(1)
+    expect(c.painel[0]!.texto).toContain('PR #42')
+    expect(c.painel[0]!.texto).toContain('só olhar')
+    expect(c.memorias).toEqual(['proj-a#7:registrada'])
+  })
+
+  it('autonomia nula ou desconhecida cai no mais restrito (só olhar)', async () => {
+    for (const autonomia of [null, 'qualquer-coisa']) {
+      const c = cenario({
+        linhas: [linha(7, 'abc12345', 42)],
+        estadoDasIssues: ABERTA_A,
+        autonomia,
+      })
+      await varrerTarefasEntregues(c.deps)
+      expect(c.escritas).toEqual([])
+      expect(c.perguntas).toEqual([])
+      expect(c.painel).toHaveLength(1)
+    }
+  })
+
+  it('tarefa perguntada há pouco, ou que o dono mandou seguir, não ocupa vaga do teto', async () => {
+    const recente = new Date(AGORA.getTime() - 60 * 60_000).toISOString()
+    const c = cenario({
+      linhas: [linha(7, 'a', 1), linha(8, 'b', 2), linha(9, 'c', 3)],
+      fichas: {
+        [chaveDaTarefa('proj-a', 7)]: {
+          status: 'open',
+          fechadaPelaEntrega: false,
+          memoria: { veredito: 'perguntada', avaliadaEm: recente },
+        },
+        [chaveDaTarefa('proj-a', 8)]: {
+          status: 'open',
+          fechadaPelaEntrega: false,
+          memoria: { veredito: 'descartada', origem: 'dono' },
+        },
+      },
+      autonomia: 'sugerir',
+      teto: 1,
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.lidas).toEqual(['org-a/repo-a#9'])
+  })
+
+  it('pergunta antiga sem resposta (mais de um dia) volta a ser avaliada', async () => {
+    const antiga = new Date(AGORA.getTime() - 25 * 60 * 60_000).toISOString()
+    const c = cenario({
+      linhas: [linha(7, 'a', 1)],
+      fichas: {
+        [chaveDaTarefa('proj-a', 7)]: {
+          status: 'open',
+          fechadaPelaEntrega: false,
+          memoria: { veredito: 'perguntada', avaliadaEm: antiga },
+        },
+      },
+      autonomia: 'sugerir',
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.lidas).toEqual(['org-a/repo-a#7'])
+  })
+})
+
+describe('o registro publicado ao fechar', () => {
+  it('um PR: texto seco, sem frase sobre quem mesclou, com o marcador oculto', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.comentadas).toHaveLength(1)
+    expect(c.comentadas[0]).toBe(
+      `${MARCADOR_DO_REGISTRO_DE_ENTREGA}\nEntregue pelo PR #42. Para desfazer: reabrir esta issue.`
+    )
+    expect(c.comentadas[0]).not.toMatch(/mãos do produto|auto-merge|alguém clicando/)
+  })
+
+  it('vários PRs da mesma tarefa: cita todos em ordem de merge, do mais antigo ao mais novo', async () => {
+    const dia = (d: number) => new Date(Date.UTC(2026, 7, d, 12))
+    const c = cenario({
+      linhas: [
+        // chegam na ordem do banco (mais recente primeiro), fora da ordem de merge
+        linha(7, 'c', 218, VELHA, 'merged', 'proj-a', dia(18)),
+        linha(7, 'a', 202, VELHA, 'merged', 'proj-a', dia(2)),
+        linha(7, 'b', 216, VELHA, 'merged', 'proj-a', dia(16)),
+      ],
+      estadoDasIssues: ABERTA_A,
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.comentadas[0]).toContain(
+      'Entregue pelos PRs #202, #216 e #218. Para desfazer: reabrir esta issue.'
+    )
+    expect(c.painel[0]!.texto).toContain(
+      'Entregue pelos PRs #202, #216 e #218. Para desfazer: reabrir esta issue.'
+    )
+  })
+
+  it('PR de outra tarefa (ou de outro projeto) com número parecido não entra na lista', async () => {
+    const c = cenario({
+      linhas: [
+        linha(7, 'a', 42, VELHA, 'merged', 'proj-a'),
+        linha(8, 'b', 99, VELHA, 'merged', 'proj-a'),
+        linha(7, 'c', 77, VELHA, 'merged', 'proj-b'),
+      ],
+      estadoDasIssues: { 'org-a/repo-a#7': 'open' },
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.comentadas[0]).toContain('Entregue pelo PR #42.')
+    expect(c.comentadas[0]).not.toContain('#99')
+    expect(c.comentadas[0]).not.toContain('#77')
+  })
+})
+
+describe('rodízio justo e idempotência do registro', () => {
+  it('45 candidatas de projeto pulado + 5 de projeto ativo: as 5 são conferidas na primeira passada', async () => {
+    const puladas = Array.from({ length: 45 }, (_, i) =>
+      linha(100 + i, `sha${i}`, 500 + i, VELHA, null, 'proj-b')
+    )
+    const ativas = [1, 2, 3, 4, 5].map((n) => linha(n, `sha${n}`, n, VELHA, null, 'proj-a'))
+    const c = cenario({ linhas: [...puladas, ...ativas], projetosPulados: ['proj-b'] })
+    const r = await varrerTarefasEntregues(c.deps)
+    expect(c.lidas).toEqual([1, 2, 3, 4, 5].map((n) => `org-a/repo-a#${n}`))
+    expect(r.consultadas).toBe(5)
+  })
+
+  it('o teto vale só para o que foi de fato consultado, entre projetos', async () => {
+    const b = [1, 2, 3].map((n) => linha(n, `b${n}`, n, VELHA, null, 'proj-b'))
+    const a = [11, 12, 13].map((n) => linha(n, `a${n}`, n, VELHA, null, 'proj-a'))
+    const c = cenario({ linhas: [...b, ...a], teto: 4 })
+    const r = await varrerTarefasEntregues(c.deps)
+    expect(r.consultadas).toBe(4)
+  })
+
+  it('o PATCH de fechamento falha: nada é comentado e, na passada seguinte, nasce um comentário só', async () => {
+    let falhar = true
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+      falharAoFechar: () => falhar,
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.comentadas).toEqual([])
+    expect(c.fechadas).toEqual([])
+    // a falha descansa por seis horas; passada depois do descanso
+    falhar = false
+    c.deps.agora = new Date(AGORA.getTime() + ESPERA_APOS_FALHA_MS + 1_000)
+    await varrerTarefasEntregues(c.deps)
+    expect(c.comentadas).toHaveLength(1)
+    expect(c.fechadas).toEqual(['org-a/repo-a#7'])
+  })
+
+  it('se o registro já está na issue, não publica outro', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+      jaComentada: true,
+    })
+    await varrerTarefasEntregues(c.deps)
+    expect(c.comentadas).toEqual([])
+    expect(c.fechadas).toEqual(['org-a/repo-a#7'])
+    expect(c.marcadas).toEqual(['proj-a#7:nossa'])
+  })
+
+  it('o fechamento já feito e o comentário que falhou depois: segue, marca a ficha e avisa', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+    })
+    const abrir = c.deps.abrirProjeto
+    c.deps.abrirProjeto = async (id) => {
+      const ctx = (await abrir(id))!
+      return {
+        ...ctx,
+        comentar: async () => {
+          throw new Error('GitHub POST falhou (502)')
+        },
+      }
+    }
+    const r = await varrerTarefasEntregues(c.deps)
+    expect(c.fechadas).toEqual(['org-a/repo-a#7'])
+    expect(c.marcadas).toEqual(['proj-a#7:nossa'])
+    expect(c.avisos.join(' ')).toContain('registro')
+    expect(r.fechadas).toBe(1)
+  })
+})
+
+describe('entregue é entregue, mesmo com dependência aberta', () => {
+  it('tarefa com "Blocked by #N" aberto e PR mesclado ligado: fecha — a checagem de bloqueio é da delegação, não do fechamento', async () => {
+    const c = cenario({
+      linhas: [linha(7, 'abc12345', 42)],
+      estadoDasIssues: ABERTA_A,
+    })
+    const abrir = c.deps.abrirProjeto
+    c.deps.abrirProjeto = async (id) => {
+      const ctx = (await abrir(id))!
+      return {
+        ...ctx,
+        lerIssue: async (n) => ({
+          ...(await ctx.lerIssue(n)),
+          state: 'open',
+          body: 'Corpo da tarefa.\n\nBlocked by #5',
+        }),
+      }
+    }
+    await varrerTarefasEntregues(c.deps)
+    expect(c.fechadas).toEqual(['org-a/repo-a#7'])
   })
 })

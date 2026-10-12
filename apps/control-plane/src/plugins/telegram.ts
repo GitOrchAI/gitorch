@@ -833,7 +833,8 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             token,
             repositorio: projeto.wingId,
             numero,
-            pullRequest: null,
+            pullRequests: [],
+            aviso: (m) => app.log.warn(`[Telegram] ${m}`),
           })
           const atual = await lerFichaDoItem({
             prisma: prismaFicha,

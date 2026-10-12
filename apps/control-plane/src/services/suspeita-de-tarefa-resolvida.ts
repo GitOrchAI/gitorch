@@ -14,6 +14,8 @@
 //
 //   com evidência   -> (cuidar) fecha a tarefa, com registro e como desfazer
 //   sem evidência   -> (cuidar) descarta a suspeita: a tarefa volta à fila
+//   só citação      -> um PR mesclado cita a tarefa, mas não há vínculo formal:
+//                      citação não é prova, vira pergunta
 //   ambíguo         -> pergunta ao dono pelo mecanismo de perguntas (painel e
 //                      Telegram); só ESTA tarefa espera
 //
@@ -28,6 +30,7 @@ import type { AgentQuestionOption } from './agent-question.js'
 import { cortarPorPontoDeCodigo } from './texto-seguro.js'
 import { lerMotivoDaResposta } from './erro-do-github.js'
 import { headersGithub } from './github-json.js'
+import { corpoDoRegistroDeEntrega, jaTemRegistroDeEntrega } from './registro-de-entrega.js'
 
 export const PREFIXO_DA_SUSPEITA = 'suspeita-resolvida:'
 export const RESPOSTA_FECHAR_A_TAREFA = 'suspeita-fechar'
@@ -73,8 +76,16 @@ export interface EvidenciaDaTarefa {
 }
 
 export type VereditoDaSuspeita =
-  | { tipo: 'entregue'; entrega: EntregaMesclada }
+  | {
+      tipo: 'entregue'
+      /** A mais recente. */
+      entrega: EntregaMesclada
+      /** Todas as válidas, do merge mais antigo ao mais novo. */
+      entregas: EntregaMesclada[]
+    }
   | { tipo: 'sem-entrega' }
+  /** Um PR mesclado cita a tarefa, mas nada o liga a ela formalmente. */
+  | { tipo: 'citado'; entrega: EntregaMesclada }
   | { tipo: 'ambiguo'; entrega: EntregaMesclada; motivo: string }
 
 /**
@@ -105,7 +116,8 @@ export function decidirSuspeita(args: {
       motivo: 'há outra entrega desta tarefa ainda em andamento',
     }
   }
-  return { tipo: 'entregue', entrega: ultima }
+  const ordenadas = [...validas].sort((a, b) => a.mergedAt.getTime() - b.mergedAt.getTime())
+  return { tipo: 'entregue', entrega: ultima, entregas: ordenadas }
 }
 
 // ---------------------------------------------------------------- evidência
@@ -181,6 +193,8 @@ export interface MemoriaDaSuspeita {
   /** O `updated_at` da issue quando a suspeita foi avaliada. */
   issueAtualizadaEm: string
   avaliadaEm: string
+  /** `dono`: o veredito é a resposta dele ("ainda falta fazer"), não uma avaliação do produto. */
+  origem?: 'dono'
 }
 
 const CHAVE_DA_MEMORIA = 'suspeitaDeTarefaResolvida'
@@ -195,6 +209,13 @@ function ehMemoria(valor: unknown): valor is MemoriaDaSuspeita {
       m['veredito'] === 'registrada') &&
     typeof m['issueAtualizadaEm'] === 'string'
   )
+}
+
+/** A memória da suspeita dentro da `conferencia` de uma ficha, se houver. */
+export function memoriaDaConferencia(conferencia: unknown): MemoriaDaSuspeita | null {
+  if (conferencia === null || typeof conferencia !== 'object') return null
+  const bruto = (conferencia as Record<string, unknown>)[CHAVE_DA_MEMORIA]
+  return ehMemoria(bruto) ? bruto : null
 }
 
 export async function lerMemoriaDaSuspeita(
@@ -233,8 +254,18 @@ export interface DepsDaSuspeita {
   lerMemoria: () => Promise<MemoriaDaSuspeita | null>
   gravarMemoria: (m: Omit<MemoriaDaSuspeita, 'avaliadaEm'>) => Promise<void>
   coletarEvidencia: () => Promise<EvidenciaDaTarefa>
-  /** Comenta o registro, fecha a tarefa e marca a ficha. Lança se a guarda recusar. */
-  fecharTarefa: (pullRequest: number | null) => Promise<void>
+  /**
+   * Fecha a tarefa, publica o registro e marca a ficha. Lança se a guarda
+   * recusar. Os PRs vêm do merge mais antigo ao mais novo.
+   */
+  fecharTarefa: (pullRequests: number[]) => Promise<void>
+  /**
+   * PRs mesclados na branch padrão, depois de a tarefa nascer, que CITAM a
+   * tarefa (`#N`, `issue N`, `issues/N` deste repositório) sem vínculo formal.
+   * No máximo uma chamada ao GitHub. Lança em falha: a decisão fica para a
+   * próxima passada.
+   */
+  buscarCitacao: () => Promise<EntregaMesclada[]>
   perguntar: (p: {
     text: string
     options: AgentQuestionOption[]
@@ -257,12 +288,16 @@ function tituloCurto(titulo: string): string {
   return cortarPorPontoDeCodigo(titulo.replace(/\s+/g, ' ').trim(), MAX_TITULO, { sufixo: '…' })
 }
 
+function capitalizar(texto: string): string {
+  return texto.charAt(0).toUpperCase() + texto.slice(1)
+}
+
 function nomeDaEntrega(pr: number | null): string {
   return pr === null ? 'uma entrega já mesclada' : `o PR #${pr}`
 }
 
-export function textoDoRegistroDeFechamento(pr: number | null): string {
-  return `Entregue ${pr === null ? 'por uma entrega já mesclada' : `pelo PR #${pr}`}. Para desfazer: reabrir esta issue.`
+function dataBr(d: Date): string {
+  return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' })
 }
 
 /** A pergunta ao dono: o que é a tarefa, o PR, o que mudou depois e as opções. */
@@ -283,12 +318,20 @@ export function montarPerguntaDaSuspeita(args: {
     partes.push(
       `Existe ${nomeDaEntrega(veredito.entrega.pullRequest)} mesclado que resolve esta tarefa.`
     )
+  } else if (veredito.tipo === 'citado') {
+    partes.push(
+      `${capitalizar(nomeDaEntrega(veredito.entrega.pullRequest))}, mesclado em ${dataBr(veredito.entrega.mergedAt)}, cita esta tarefa mas não há vínculo formal. Fecho como entregue ou mando fazer?`
+    )
   } else {
     partes.push(
       `Existe ${nomeDaEntrega(veredito.entrega.pullRequest)} mesclado ligado a esta tarefa, mas ${veredito.motivo}.`
     )
   }
-  partes.push('Só esta tarefa fica esperando a sua resposta; as outras seguem. O que eu faço?')
+  partes.push(
+    veredito.tipo === 'citado'
+      ? 'Só esta tarefa fica esperando a sua resposta; as outras seguem.'
+      : 'Só esta tarefa fica esperando a sua resposta; as outras seguem. O que eu faço?'
+  )
   return {
     text: partes.join('\n\n'),
     options: [
@@ -318,8 +361,14 @@ function textoDoPainel(args: {
       ? 'não há entrega mesclada ligada a ela'
       : args.veredito.tipo === 'entregue'
         ? `${nomeDaEntrega(args.veredito.entrega.pullRequest)} mesclado parece resolvê-la`
-        : `${nomeDaEntrega(args.veredito.entrega.pullRequest)} mesclado está ligado a ela, mas ${args.veredito.motivo}`
+        : args.veredito.tipo === 'citado'
+          ? `${nomeDaEntrega(args.veredito.entrega.pullRequest)} mesclado cita a tarefa, mas não há vínculo formal`
+          : `${nomeDaEntrega(args.veredito.entrega.pullRequest)} mesclado está ligado a ela, mas ${args.veredito.motivo}`
   return `${base} parece já resolvida (${achado}). O projeto está em "só olhar", então nada foi alterado e a tarefa não será delegada até você decidir.`
+}
+
+function prsEmOrdemDeMerge(entregas: readonly EntregaMesclada[]): number[] {
+  return entregas.flatMap((e) => (e.pullRequest === null ? [] : [e.pullRequest]))
 }
 
 /**
@@ -343,7 +392,27 @@ export async function resolverSuspeita(deps: DepsDaSuspeita): Promise<ResultadoD
     )
     return { desfecho: 'aguardando', avaliou: true }
   }
-  const veredito = decidirSuspeita({ issueCriadaEm: new Date(tarefa.criadaEm), evidencia })
+  const issueCriadaEm = new Date(tarefa.criadaEm)
+  let veredito: VereditoDaSuspeita = decidirSuspeita({ issueCriadaEm, evidencia })
+  if (veredito.tipo === 'sem-entrega') {
+    // Antes de descartar por falta de evidência: algum PR mesclado cita a tarefa?
+    // Citação não é prova; só muda "descartar" para "perguntar".
+    try {
+      const citacoes = (await deps.buscarCitacao()).filter(
+        (e) => e.mergedAt.getTime() > issueCriadaEm.getTime()
+      )
+      const ultima = citacoes.reduce<EntregaMesclada | null>(
+        (a, b) => (a === null || b.mergedAt > a.mergedAt ? b : a),
+        null
+      )
+      if (ultima) veredito = { tipo: 'citado', entrega: ultima }
+    } catch (err) {
+      deps.aviso(
+        `suspeita da #${tarefa.numero} de ${deps.repositorio}: não consegui buscar citações da tarefa (${(err as Error).message}); decido na próxima passada`
+      )
+      return { desfecho: 'aguardando', avaliou: true }
+    }
+  }
   const nivel = normalizarNivel(deps.autonomia)
   const chaveBase = `suspeita:${deps.repositorio}#${tarefa.numero}:${Date.parse(tarefa.atualizadaEm) || 0}`
   const lembrar = (v: MemoriaDaSuspeita['veredito']): Promise<void> =>
@@ -395,7 +464,7 @@ export async function resolverSuspeita(deps: DepsDaSuspeita): Promise<ResultadoD
   if (nivel === 'sugerir') return perguntar()
 
   // cuidar
-  if (veredito.tipo === 'ambiguo') return perguntar()
+  if (veredito.tipo === 'ambiguo' || veredito.tipo === 'citado') return perguntar()
 
   if (veredito.tipo === 'sem-entrega') {
     await deps
@@ -416,7 +485,7 @@ export async function resolverSuspeita(deps: DepsDaSuspeita): Promise<ResultadoD
   }
 
   try {
-    await deps.fecharTarefa(veredito.entrega.pullRequest)
+    await deps.fecharTarefa(prsEmOrdemDeMerge(veredito.entregas))
   } catch (err) {
     deps.aviso(
       `suspeita da #${tarefa.numero} de ${deps.repositorio}: não consegui encerrar a tarefa (${(err as Error).message}); tento na próxima passada`
@@ -483,7 +552,11 @@ export async function processarRespostaDaSuspeita(
       `suspeita: resposta do dono sobre a #${numeroDaTarefa} de ${repositorio} não foi uma das opções; a tarefa segue o fluxo normal`
     )
   }
-  await deps.gravarMemoria(numeroDaTarefa, { veredito: 'descartada', issueAtualizadaEm })
+  await deps.gravarMemoria(numeroDaTarefa, {
+    veredito: 'descartada',
+    issueAtualizadaEm,
+    ...(seguir ? { origem: 'dono' as const } : {}),
+  })
   await deps.registrarNoPainel(
     `suspeita-resposta:${repositorio}#${numeroDaTarefa}:${atualizadaEmMs}`,
     seguir
@@ -493,24 +566,30 @@ export async function processarRespostaDaSuspeita(
 }
 
 /**
- * Encerra a tarefa no GitHub: primeiro o registro (que diz o PR e como
- * desfazer), depois o fechamento. O `fetchImpl` é o da guarda de autonomia do
- * projeto — quem chama nunca passa um `fetch` cru. Lança, com o motivo que o
- * GitHub deu, se qualquer um dos dois passos for recusado.
+ * Encerra a tarefa no GitHub: primeiro o fechamento, depois o registro (que diz
+ * os PRs e como desfazer). Nessa ordem, falha ao fechar não deixa comentário
+ * para a tentativa seguinte repetir; e o registro só é publicado se a issue
+ * ainda não tem o do produto (marcador oculto). O `fetchImpl` é o da guarda de
+ * autonomia do projeto — quem chama nunca passa um `fetch` cru.
+ *
+ * Lança, com o motivo que o GitHub deu, se o fechamento for recusado. Falha só
+ * do registro não desfaz o fechamento: sai em `aviso`.
  */
 export async function encerrarTarefaEntregue(args: {
   fetchImpl: typeof fetch
   token: string
   repositorio: string
   numero: number
-  pullRequest: number | null
+  /** Do merge mais antigo ao mais novo; vazio = número do pedido não registrado. */
+  pullRequests: readonly number[]
+  aviso: (mensagem: string) => void
 }): Promise<void> {
   const base = `https://api.github.com/repos/${args.repositorio}/issues/${args.numero}`
-  const enviar = async (metodo: string, url: string, corpo: unknown): Promise<void> => {
+  const pedir = async (metodo: string, url: string, corpo?: unknown): Promise<Response> => {
     const resposta = await args.fetchImpl(url, {
       method: metodo,
-      headers: headersGithub(args.token, true),
-      body: JSON.stringify(corpo),
+      headers: headersGithub(args.token, corpo !== undefined),
+      ...(corpo === undefined ? {} : { body: JSON.stringify(corpo) }),
     })
     if (!resposta.ok) {
       const motivo = await lerMotivoDaResposta(resposta)
@@ -518,7 +597,18 @@ export async function encerrarTarefaEntregue(args: {
         `GitHub ${metodo} da tarefa #${args.numero} falhou (${resposta.status})${motivo ? `: ${motivo}` : ''}`
       )
     }
+    return resposta
   }
-  await enviar('POST', `${base}/comments`, { body: textoDoRegistroDeFechamento(args.pullRequest) })
-  await enviar('PATCH', base, { state: 'closed', state_reason: 'completed' })
+  await pedir('PATCH', base, { state: 'closed', state_reason: 'completed' })
+  try {
+    const existentes = (await (
+      await pedir('GET', `${base}/comments?per_page=100`)
+    ).json()) as Array<{ body?: string | null }> | null
+    if (jaTemRegistroDeEntrega(Array.isArray(existentes) ? existentes : [])) return
+    await pedir('POST', `${base}/comments`, { body: corpoDoRegistroDeEntrega(args.pullRequests) })
+  } catch (err) {
+    args.aviso(
+      `tarefa #${args.numero} de ${args.repositorio} encerrada, mas o registro na issue falhou: ${(err as Error).message}`
+    )
+  }
 }

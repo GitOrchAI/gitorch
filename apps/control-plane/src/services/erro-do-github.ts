@@ -82,14 +82,21 @@ export function resumirMotivoDoGitHub(corpo: string): string {
   } catch {
     // Não é JSON: o texto cru, enxuto, ainda explica.
   }
-  return texto
-    .replace(/https?:\/\/\S+/gi, '[endereço]')
-    .replace(/\bgh[pousr]_[A-Za-z0-9_]+/g, '[credencial]')
-    .replace(/\bgithub_pat_[A-Za-z0-9_]+/g, '[credencial]')
-    .replace(/\bBearer\s+\S+/gi, '[credencial]')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, TAMANHO_DO_MOTIVO)
+  return (
+    texto
+      .replace(/https?:\/\/\S+/gi, '[endereço]')
+      .replace(/\bgh[pousr]_[A-Za-z0-9_]+/g, '[credencial]')
+      .replace(/\bgithub_pat_[A-Za-z0-9_]+/g, '[credencial]')
+      .replace(/\bBearer\s+\S+/gi, '[credencial]')
+      // `token <valor>` (cabeçalho do estilo antigo): exige valor longo ou com
+      // dígito, para a palavra "token" em frase comum ("token expired") sobreviver.
+      .replace(/\btoken\s+(?:\S{20,}|(?=\S*\d)\S{8,})/gi, '[credencial]')
+      // JWT: três blocos base64url separados por ponto (assinatura do App, por exemplo).
+      .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[credencial]')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, TAMANHO_DO_MOTIVO)
+  )
 }
 
 /** Lê o corpo de uma resposta ruim (numa cópia) e devolve o motivo; nunca lança. */

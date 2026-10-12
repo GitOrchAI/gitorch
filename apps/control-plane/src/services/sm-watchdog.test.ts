@@ -196,6 +196,32 @@ describe('runSmWatchdog', () => {
     expect(notified).toHaveLength(0)
   })
 
+  it('o comentário da task travada é só registro: não pede revisão nem ação humana', async () => {
+    const mk = (t: string, body: string) => ({ body, created_at: t })
+    const f = fakeFetch([
+      {
+        number: 21,
+        labels: ['gitorch:task', 'jules'],
+        comments: [
+          mk('2026-07-05T08:10:00Z', `${RETRY_MARKER}\n1/3`),
+          mk('2026-07-05T09:10:00Z', `${RETRY_MARKER}\n2/3`),
+          mk('2026-07-05T10:10:00Z', `${RETRY_MARKER}\n3/3`),
+          mk('2026-07-05T11:00:00Z', JULES_FAIL),
+        ],
+      },
+    ])
+    await runSmWatchdog({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      registrarNoPainel: async () => undefined,
+    })
+    const comentario = actionsOf(f).find((x) => x.kind === 'comment')
+    expect(comentario?.detail).toContain('<!-- gitorch:sm-stuck -->')
+    expect(comentario?.detail).toContain('3x')
+    expect(comentario?.detail).not.toMatch(/revis[ãa]o humana|escal|manualmente|por favor|confira/i)
+  })
+
   it('já marcada gitorch:stuck → não escala duas vezes', async () => {
     const f = fakeFetch([
       {

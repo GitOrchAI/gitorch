@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { PrismaDaFichaDoItem, RepoItemRecord } from './ficha-do-item.js'
+import { MARCADOR_DO_REGISTRO_DE_ENTREGA } from './registro-de-entrega.js'
 import {
   RESPOSTA_FECHAR_A_TAREFA,
   RESPOSTA_SEGUIR_COM_A_TAREFA,
@@ -12,7 +13,6 @@ import {
   lerMemoriaDaSuspeita,
   processarRespostaDaSuspeita,
   resolverSuspeita,
-  textoDoRegistroDeFechamento,
   type DepsDaEvidencia,
   type DepsDaSuspeita,
   type EvidenciaDaTarefa,
@@ -178,7 +178,7 @@ describe('coletarEvidenciaDaTarefa', () => {
 
 interface Cenario {
   deps: DepsDaSuspeita
-  fechadas: Array<number | null>
+  fechadas: number[][]
   perguntas: Array<{
     text: string
     options: Array<{ label: string; value: string }>
@@ -187,6 +187,7 @@ interface Cenario {
   painel: Array<{ chave: string; texto: string }>
   memoria: { atual: MemoriaDaSuspeita | null }
   coletas: { n: number }
+  buscas: { n: number }
   avisos: string[]
 }
 
@@ -196,12 +197,14 @@ function cenario(args: {
   memoria?: MemoriaDaSuspeita | null
   perguntaJaAberta?: boolean
   fecharFalha?: Error
+  citacoes?: Array<{ pullRequest: number; mergedAt: Date }> | Error
 }): Cenario {
   const fechadas: Cenario['fechadas'] = []
   const perguntas: Cenario['perguntas'] = []
   const painel: Cenario['painel'] = []
   const memoria = { atual: args.memoria ?? null }
   const coletas = { n: 0 }
+  const buscas = { n: 0 }
   const avisos: string[] = []
   const deps: DepsDaSuspeita = {
     autonomia: args.autonomia,
@@ -223,9 +226,15 @@ function cenario(args: {
       if (e instanceof Error) throw e
       return e
     },
-    fecharTarefa: async (pr) => {
+    fecharTarefa: async (prs) => {
       if (args.fecharFalha) throw args.fecharFalha
-      fechadas.push(pr)
+      fechadas.push(prs)
+    },
+    buscarCitacao: async () => {
+      buscas.n += 1
+      const e = args.citacoes ?? []
+      if (e instanceof Error) throw e
+      return e.map((x) => ({ pullRequest: x.pullRequest, mergedAt: x.mergedAt }))
     },
     perguntar: async (p) => {
       perguntas.push(p)
@@ -236,7 +245,7 @@ function cenario(args: {
     },
     aviso: (m) => avisos.push(m),
   }
-  return { deps, fechadas, perguntas, painel, memoria, coletas, avisos }
+  return { deps, fechadas, perguntas, painel, memoria, coletas, buscas, avisos }
 }
 
 const ENTREGUE = evidencia({ entregas: [{ pullRequest: 7, mergedAt: d('2026-01-11T00:00:00Z') }] })
@@ -250,7 +259,7 @@ describe('resolverSuspeita em cuidar', () => {
     const c = cenario({ autonomia: 'cuidar', evidencia: ENTREGUE })
     const r = await resolverSuspeita(c.deps)
     expect(r).toEqual({ desfecho: 'fechada', avaliou: true })
-    expect(c.fechadas).toEqual([7])
+    expect(c.fechadas).toEqual([[7]])
     expect(c.painel).toHaveLength(1)
     expect(c.painel[0]!.texto).toContain('PR #7')
     expect(c.painel[0]!.texto).toContain('reabrir')
@@ -258,9 +267,19 @@ describe('resolverSuspeita em cuidar', () => {
     expect(c.perguntas).toEqual([])
   })
 
-  it('o registro da issue diz o PR e como desfazer, sem pedir nada a ninguém', () => {
-    const t = textoDoRegistroDeFechamento(7)
-    expect(t).toBe('Entregue pelo PR #7. Para desfazer: reabrir esta issue.')
+  it('com vários PRs mesclados ligados à tarefa, o fechamento leva todos, do mais antigo ao mais novo', async () => {
+    const c = cenario({
+      autonomia: 'cuidar',
+      evidencia: evidencia({
+        entregas: [
+          { pullRequest: 218, mergedAt: d('2026-01-18T00:00:00Z') },
+          { pullRequest: 202, mergedAt: d('2026-01-11T00:00:00Z') },
+          { pullRequest: 216, mergedAt: d('2026-01-16T00:00:00Z') },
+        ],
+      }),
+    })
+    await resolverSuspeita(c.deps)
+    expect(c.fechadas).toEqual([[202, 216, 218]])
   })
 
   it('sem evidência: descarta a suspeita, devolve à fila, registra e NÃO reavalia em laço', async () => {
@@ -386,19 +405,22 @@ describe('a resposta do dono', () => {
   const montar = () => {
     const fechadas: number[] = []
     const memorias: Array<[number, string]> = []
+    const origens: Array<string | undefined> = []
     const painel: string[] = []
     const avisos: string[] = []
     return {
       fechadas,
       memorias,
+      origens,
       painel,
       avisos,
       deps: {
         fecharTarefa: async (n: number) => {
           fechadas.push(n)
         },
-        gravarMemoria: async (n: number, m: { veredito: string }) => {
+        gravarMemoria: async (n: number, m: { veredito: string; origem?: string }) => {
           memorias.push([n, m.veredito])
+          origens.push(m.origem)
         },
         registrarNoPainel: async (_c: string, t: string) => {
           painel.push(t)
@@ -426,6 +448,9 @@ describe('a resposta do dono', () => {
     )
     expect(m.fechadas).toEqual([])
     expect(m.memorias).toEqual([[46, 'descartada']])
+    // Marca que foi o dono quem disse "ainda falta": a varredura de tarefa
+    // entregue não pergunta de novo.
+    expect(m.origens).toEqual(['dono'])
   })
 
   it('texto livre: não vira decisão, não fecha nada, e a tarefa não fica presa', async () => {
@@ -433,6 +458,7 @@ describe('a resposta do dono', () => {
     await processarRespostaDaSuspeita({ dedupKey: key, resposta: 'sei lá, vê aí', opcoes }, m.deps)
     expect(m.fechadas).toEqual([])
     expect(m.memorias).toEqual([[46, 'descartada']])
+    expect(m.origens).toEqual([undefined])
     expect(m.avisos).toHaveLength(1)
   })
 
@@ -507,46 +533,206 @@ describe('a memória na ficha da tarefa', () => {
 })
 
 describe('encerrarTarefaEntregue', () => {
-  it('comenta o registro e depois fecha a tarefa, no repositório dela', async () => {
-    const chamadas: Array<{ url: string; metodo: string; corpo: unknown }> = []
-    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+  type Chamada = { url: string; metodo: string; corpo: unknown }
+  function fetchFalso(
+    chamadas: Chamada[],
+    opcoes: {
+      patch?: number
+      post?: number
+      comentarios?: Array<{ body?: string }>
+      lista?: number
+    } = {}
+  ): typeof fetch {
+    return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const metodo = init?.method ?? 'GET'
       chamadas.push({
         url: String(url),
-        metodo: init?.method ?? 'GET',
+        metodo,
         corpo: init?.body ? JSON.parse(String(init.body)) : null,
       })
+      if (metodo === 'PATCH' && opcoes.patch) {
+        return new Response('{"message":"Bad gateway"}', { status: opcoes.patch })
+      }
+      if (metodo === 'POST' && opcoes.post) {
+        return new Response('{"message":"Issues are disabled"}', { status: opcoes.post })
+      }
+      if (metodo === 'GET') {
+        if (opcoes.lista) return new Response('{}', { status: opcoes.lista })
+        return new Response(JSON.stringify(opcoes.comentarios ?? []), { status: 200 })
+      }
       return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
+  }
+  const base = { token: 't', repositorio: 'org/repo', numero: 46 }
+
+  it('fecha primeiro e só depois confere e publica o registro, no repositório da tarefa', async () => {
+    const chamadas: Chamada[] = []
+    const avisos: string[] = []
     await encerrarTarefaEntregue({
-      fetchImpl,
-      token: 't',
-      repositorio: 'org/repo',
-      numero: 46,
-      pullRequest: 7,
+      ...base,
+      fetchImpl: fetchFalso(chamadas),
+      pullRequests: [7],
+      aviso: (m) => avisos.push(m),
     })
     expect(chamadas.map((c) => [c.metodo, c.url])).toEqual([
-      ['POST', 'https://api.github.com/repos/org/repo/issues/46/comments'],
       ['PATCH', 'https://api.github.com/repos/org/repo/issues/46'],
+      ['GET', 'https://api.github.com/repos/org/repo/issues/46/comments?per_page=100'],
+      ['POST', 'https://api.github.com/repos/org/repo/issues/46/comments'],
     ])
-    expect(chamadas[0]!.corpo).toEqual({
-      body: 'Entregue pelo PR #7. Para desfazer: reabrir esta issue.',
+    expect(chamadas[0]!.corpo).toEqual({ state: 'closed', state_reason: 'completed' })
+    expect(chamadas[2]!.corpo).toEqual({
+      body: `${MARCADOR_DO_REGISTRO_DE_ENTREGA}\nEntregue pelo PR #7. Para desfazer: reabrir esta issue.`,
     })
-    expect(chamadas[1]!.corpo).toEqual({ state: 'closed', state_reason: 'completed' })
+    expect(avisos).toEqual([])
   })
 
-  it('se o GitHub recusa o comentário, não fecha e lança com o motivo', async () => {
-    const fetchImpl = vi.fn(
-      async () => new Response('{"message":"Issues are disabled"}', { status: 410 })
-    ) as unknown as typeof fetch
+  it('se o GitHub recusa o fechamento, lança com o motivo e NÃO comenta nada', async () => {
+    const chamadas: Chamada[] = []
     await expect(
       encerrarTarefaEntregue({
-        fetchImpl,
-        token: 't',
-        repositorio: 'org/repo',
-        numero: 46,
-        pullRequest: null,
+        ...base,
+        fetchImpl: fetchFalso(chamadas, { patch: 502 }),
+        pullRequests: [],
+        aviso: () => undefined,
       })
-    ).rejects.toThrow(/410.*Issues are disabled/)
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    ).rejects.toThrow(/502.*Bad gateway/)
+    expect(chamadas.map((c) => c.metodo)).toEqual(['PATCH'])
+  })
+
+  it('o fechamento falha e a nova tentativa funciona: um comentário só', async () => {
+    const chamadas: Chamada[] = []
+    const avisos: string[] = []
+    await expect(
+      encerrarTarefaEntregue({
+        ...base,
+        fetchImpl: fetchFalso(chamadas, { patch: 502 }),
+        pullRequests: [7],
+        aviso: (m) => avisos.push(m),
+      })
+    ).rejects.toThrow()
+    await encerrarTarefaEntregue({
+      ...base,
+      fetchImpl: fetchFalso(chamadas),
+      pullRequests: [7],
+      aviso: (m) => avisos.push(m),
+    })
+    expect(chamadas.filter((c) => c.metodo === 'POST')).toHaveLength(1)
+  })
+
+  it('o registro já está na issue: fecha e não publica outro', async () => {
+    const chamadas: Chamada[] = []
+    await encerrarTarefaEntregue({
+      ...base,
+      fetchImpl: fetchFalso(chamadas, {
+        comentarios: [{ body: `${MARCADOR_DO_REGISTRO_DE_ENTREGA}\nEntregue pelo PR #7.` }],
+      }),
+      pullRequests: [7],
+      aviso: () => undefined,
+    })
+    expect(chamadas.map((c) => c.metodo)).toEqual(['PATCH', 'GET'])
+  })
+
+  it('o fechamento deu certo e o registro não: não lança, mas avisa com o motivo', async () => {
+    const chamadas: Chamada[] = []
+    const avisos: string[] = []
+    await encerrarTarefaEntregue({
+      ...base,
+      fetchImpl: fetchFalso(chamadas, { post: 410 }),
+      pullRequests: [7],
+      aviso: (m) => avisos.push(m),
+    })
+    expect(chamadas.map((c) => c.metodo)).toEqual(['PATCH', 'GET', 'POST'])
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toMatch(/410.*Issues are disabled/)
+  })
+
+  it('não consegue listar os comentários: não arrisca duplicar, avisa', async () => {
+    const chamadas: Chamada[] = []
+    const avisos: string[] = []
+    await encerrarTarefaEntregue({
+      ...base,
+      fetchImpl: fetchFalso(chamadas, { lista: 500 }),
+      pullRequests: [7],
+      aviso: (m) => avisos.push(m),
+    })
+    expect(chamadas.map((c) => c.metodo)).toEqual(['PATCH', 'GET'])
+    expect(avisos).toHaveLength(1)
+  })
+})
+
+describe('evidência por citação (sem vínculo formal)', () => {
+  const CITACAO = [{ pullRequest: 903, mergedAt: d('2026-01-11T00:00:00Z') }]
+  const PERGUNTA =
+    'O PR #903, mesclado em 11/01/2026, cita esta tarefa mas não há vínculo formal. Fecho como entregue ou mando fazer?'
+
+  it('cuidar: PR que cita a tarefa gera UMA pergunta contextual; não fecha nem descarta', async () => {
+    const c = cenario({ autonomia: 'cuidar', evidencia: evidencia(), citacoes: CITACAO })
+    const r = await resolverSuspeita(c.deps)
+    expect(r).toEqual({ desfecho: 'perguntada', avaliou: true })
+    expect(c.fechadas).toEqual([])
+    expect(c.perguntas).toHaveLength(1)
+    expect(c.perguntas[0]!.text).toContain(PERGUNTA)
+    expect(c.perguntas[0]!.options.map((o) => o.value)).toEqual(
+      expect.arrayContaining([RESPOSTA_FECHAR_A_TAREFA, RESPOSTA_SEGUIR_COM_A_TAREFA])
+    )
+    expect(c.memoria.atual?.veredito).toBe('perguntada')
+
+    // Passada seguinte, nada mudou: vem da memória, sem repetir a pergunta.
+    await resolverSuspeita(c.deps)
+    expect(c.perguntas).toHaveLength(1)
+    expect(c.buscas.n).toBe(1)
+  })
+
+  it('sugerir: pergunta do mesmo jeito, sem escrever', async () => {
+    const c = cenario({ autonomia: 'sugerir', evidencia: evidencia(), citacoes: CITACAO })
+    const r = await resolverSuspeita(c.deps)
+    expect(r.desfecho).toBe('perguntada')
+    expect(c.perguntas).toHaveLength(1)
+    expect(c.fechadas).toEqual([])
+  })
+
+  it('so_olhar: só registra no painel, com o PR e a ausência de vínculo', async () => {
+    const c = cenario({ autonomia: 'so_olhar', evidencia: evidencia(), citacoes: CITACAO })
+    const r = await resolverSuspeita(c.deps)
+    expect(r.desfecho).toBe('registrada')
+    expect(c.perguntas).toEqual([])
+    expect(c.painel).toHaveLength(1)
+    expect(c.painel[0]!.texto).toContain('PR #903')
+    expect(c.painel[0]!.texto).toContain('vínculo formal')
+  })
+
+  it('citação de PR mesclado ANTES de a tarefa nascer não conta: descarta', async () => {
+    const c = cenario({
+      autonomia: 'cuidar',
+      evidencia: evidencia(),
+      citacoes: [{ pullRequest: 903, mergedAt: d('2026-01-09T00:00:00Z') }],
+    })
+    const r = await resolverSuspeita(c.deps)
+    expect(r.desfecho).toBe('descartada')
+    expect(c.perguntas).toEqual([])
+  })
+
+  it('sem nenhuma citação: descarta como antes', async () => {
+    const c = cenario({ autonomia: 'cuidar', evidencia: evidencia(), citacoes: [] })
+    const r = await resolverSuspeita(c.deps)
+    expect(r.desfecho).toBe('descartada')
+  })
+
+  it('a busca falha: não decide, tenta na próxima passada', async () => {
+    const c = cenario({
+      autonomia: 'cuidar',
+      evidencia: evidencia(),
+      citacoes: new Error('GitHub search 403'),
+    })
+    const r = await resolverSuspeita(c.deps)
+    expect(r.desfecho).toBe('aguardando')
+    expect(c.memoria.atual).toBeNull()
+    expect(c.avisos[0]).toContain('403')
+  })
+
+  it('com evidência formal a busca por citação nem acontece', async () => {
+    const c = cenario({ autonomia: 'cuidar', evidencia: ENTREGUE, citacoes: CITACAO })
+    await resolverSuspeita(c.deps)
+    expect(c.buscas.n).toBe(0)
   })
 })
