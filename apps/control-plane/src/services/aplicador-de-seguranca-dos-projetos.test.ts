@@ -584,6 +584,67 @@ describe('aplicador: workflows de deploy/CD e a permissão padrão', () => {
     )
   })
 
+  const SHA = 'a'.repeat(40)
+  const workflowDeCi = (passos: string[]): string =>
+    [
+      'name: ci',
+      'on: push',
+      '',
+      'jobs:',
+      '  build:',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      `      - uses: actions/checkout@${SHA}`,
+      ...passos.map((l) => `      ${l}`),
+      '',
+    ].join('\n')
+
+  it.each([
+    ['npm run deploy', workflowDeCi(['- run: npm run deploy'])],
+    [
+      'docker buildx build com --push na linha seguinte',
+      workflowDeCi(['- run: |', '    docker buildx build \\', '      --push .']),
+    ],
+    [
+      'action de imagem de terceiros com push: true',
+      workflowDeCi([
+        `- uses: crazy-max/ghaction-docker-buildx@${SHA}`,
+        '  with:',
+        '    push: true',
+      ]),
+    ],
+    ['script externo go-live', workflowDeCi(['- run: ./scripts/go-live.sh'])],
+  ])(
+    'workflow com cara de CI mas que não se prova CI puro (%s): sem PR, INTOCADO, o dono é perguntado',
+    async (_nome, texto) => {
+      const github = repositorio('acme/api', { arquivos: { '.github/workflows/ci.yml': texto } })
+      const c = cenario({ 'acme/api': github }, [projeto()])
+      for (let i = 0; i < 12; i += 1) await c.passadaEAvanca()
+
+      expect(github.pulls).toHaveLength(0)
+      expect(github.arquivoNaPadrao('.github/workflows/ci.yml')).toBe(texto)
+      expect(escritas(github).some((e) => e.includes('ci.yml'))).toBe(false)
+      expect(c.perguntador.chamadas).toHaveLength(1)
+      expect(c.perguntador.chamadas[0]!.input['dedupKey']).toBe(
+        'seguranca-permissoes:acme/api:.github/workflows/ci.yml'
+      )
+    }
+  )
+
+  it('CI puro provado (instalar, lint, testar) continua recebendo o PR de permissão mínima, sem pergunta', async () => {
+    const texto = workflowDeCi([
+      `- uses: actions/setup-node@${SHA}`,
+      '- run: pnpm install --frozen-lockfile',
+      '- run: pnpm test',
+    ])
+    const github = repositorio('acme/api', { arquivos: { '.github/workflows/ci.yml': texto } })
+    const c = cenario({ 'acme/api': github }, [projeto()])
+    for (let i = 0; i < 6; i += 1) await c.passadaEAvanca()
+
+    expect(github.pulls.some((p) => p.head.includes('ci-yml'))).toBe(true)
+    expect(c.perguntador.chamadas).toEqual([])
+  })
+
   it('não pergunta de novo se já há pergunta aberta (checagem antes do ask)', async () => {
     const github = repositorio('acme/api', {
       arquivos: { '.github/workflows/cd.yml': CD },
@@ -652,7 +713,7 @@ describe('aplicador: workflows de deploy/CD e a permissão padrão', () => {
     expect(github.pulls).toHaveLength(0)
   })
 
-  it('um workflow que usa o token para escrever NÃO é editado: vai ao painel como "dispensado" e bloqueia a permissão padrão', async () => {
+  it('um workflow que usa o token para escrever NÃO é editado: não se prova CI puro, o dono é perguntado e a permissão padrão não muda', async () => {
     const comToken = CI.replace('npm test', 'gh pr comment 1 --body oi')
     const github = repositorio('acme/api', {
       arquivos: { '.github/workflows/ci.yml': comToken },
@@ -661,8 +722,10 @@ describe('aplicador: workflows de deploy/CD e a permissão padrão', () => {
     for (let i = 0; i < 8; i += 1) await c.passadaEAvanca()
     expect(github.pulls).toHaveLength(0)
     expect(github.config.permissaoDoWorkflow).toBe('write')
-    expect(c.memoria.chavesDeEventos()).toContain(
-      'melhoria-de-seguranca:acme/api:permissoes-minimas-dos-workflows:.github/workflows/ci.yml:dispensado'
+    expect(escritas(github).some((e) => e.includes('ci.yml'))).toBe(false)
+    expect(c.perguntador.chamadas).toHaveLength(1)
+    expect(c.perguntador.chamadas[0]!.input['dedupKey']).toBe(
+      'seguranca-permissoes:acme/api:.github/workflows/ci.yml'
     )
   })
 })

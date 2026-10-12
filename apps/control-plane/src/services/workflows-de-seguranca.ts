@@ -16,7 +16,10 @@ export interface AnaliseDoWorkflow {
   caminho: string
   /** Declara `permissions` no topo ou em todos os jobs. `null` = não deu para analisar. */
   declaraPermissoes: boolean | null
-  /** Nome, caminho ou job de deploy/CD/publicação: o GitOrch não mexe sem perguntar ao dono. */
+  /**
+   * Deploy/CD/publicação OU workflow que não se prova CI puro: o GitOrch não
+   * mexe sem perguntar ao dono. Só quem se prova CI puro fica `false`.
+   */
   ehDeploy: boolean
   /** Só usa Actions que leem e nenhum sinal de escrita com o token. */
   seguroParaPermissaoMinima: boolean
@@ -138,18 +141,20 @@ const ACTION_DE_DEPLOY =
   /deploy|publish|release|push|upload-pages|gh-pages|github-pages|ssh|rsync|ftp|scp|flyctl|netlify|vercel|heroku|firebase|wrangler|aws-actions\/|azure\/|google-github-actions\/|docker\/login|helm|kubectl|terraform|pulumi|changesets|semantic-release|pypi|twine/i
 
 /**
- * Deploy, CD ou publicação. Olha o caminho, o nome e os jobs, e TAMBÉM o corpo:
- * um workflow chamado "Build" que publica um pacote quando se cria uma tag é
- * deploy. Na dúvida é deploy: o custo de errar para esse lado é uma pergunta a
- * mais ao dono; para o outro, uma mudança num fluxo que entrega o projeto, sem
- * ninguém avisado.
+ * Deploy, CD, publicação ou "não se prova CI puro". Olha o caminho, o nome e os
+ * jobs, o corpo (um workflow chamado "Build" que publica ao criar uma tag é
+ * deploy) e, por fim, exige a PROVA de CI puro por lista branca: lista de
+ * proibidos deixa passar o que ninguém listou. Na dúvida é deploy: o custo de
+ * errar para esse lado é uma pergunta a mais ao dono; para o outro, uma mudança
+ * num fluxo que entrega o projeto, sem ninguém avisado.
  */
 function ehDeploy(caminho: string, texto: string): boolean {
   if (SINAIS_DE_DEPLOY.test(caminho)) return true
   const nome = /^name\s*:\s*(.+)$/m.exec(texto)?.[1] ?? ''
   if (NOME_DE_DEPLOY.test(nome)) return true
   if (nomesDosJobs(texto).some((job) => NOME_DE_DEPLOY.test(job))) return true
-  return ehDeployPeloCorpo(texto)
+  if (ehDeployPeloCorpo(texto)) return true
+  return !seProvaCiPuro(texto)
 }
 
 function ehDeployPeloCorpo(texto: string): boolean {
@@ -180,6 +185,90 @@ function ehDeployPeloCorpo(texto: string): boolean {
 }
 
 const LINHA_USES = /^[ \t]*(?:-[ \t]*)?uses:[ \t]*['"]?([^\s'"#]+)/gm
+
+// Lista branca de CI puro. Tudo o que não está aqui NÃO se prova CI puro.
+
+const ACTION_DE_CI =
+  /^(actions\/(checkout|setup-[a-z]+|cache(\/(restore|save))?|upload-artifact|download-artifact)|pnpm\/action-setup|ruby\/setup-ruby|oven-sh\/setup-bun|astral-sh\/setup-uv)@/
+
+/** Entrada de Action que liga publicação (`push: true`, `publish: true`...). */
+const ENTRADA_DE_PUBLICACAO =
+  /^[ \t]*(?:push|publish|deploy|release)[ \t]*:[ \t]*['"]?(?!false\b)[^\s#'"]/im
+
+/** Verbo de publicação em qualquer comando: desclassifica mesmo se o resto parecer CI. */
+const VERBO_DE_PUBLICACAO =
+  /\b(?:deploy|publish|release|push|ship|upload|rsync|scp|sftp|ssh|apply|rollout|promote|terraform|kubectl|helm)\b|\bgo-?live\b/i
+
+const GERENCIADOR = '(?:npm|pnpm|yarn|bun)'
+const SCRIPT_DE_CI =
+  '(?:test|tests|lint|typecheck|type-check|build|check|coverage|format:check|(?:test|lint|build|typecheck|check):[\\w:.-]+)'
+
+const COMANDOS_DE_CI: readonly RegExp[] = [
+  new RegExp(`^${GERENCIADOR}\\s+(?:ci|install|i)(?:\\s+(?!-g\\b|--global\\b)[-\\w=.:/@]+)*$`),
+  /^yarn$/,
+  new RegExp(
+    `^${GERENCIADOR}\\s+(?:(?:-r|--recursive|--if-present|--silent|-s|-w|--workspaces|--filter(?:=|\\s+)\\S+|--workspace(?:=|\\s+)\\S+)\\s+)*(?:run\\s+(?:(?:-r|--recursive|--if-present|--filter(?:=|\\s+)\\S+)\\s+)*)?${SCRIPT_DE_CI}(?:\\s.*)?$`
+  ),
+  /^(?:(?:npx|pnpm\s+exec|yarn|bunx)\s+)?(?:tsc|eslint|prettier|vitest|jest|playwright\s+test|mocha|stylelint|biome|ruff|pytest|mypy|black|flake8|isort)\b.*$/,
+  /^(?:python3?\s+-m\s+)?pip3?\s+install\s+(?!.*(?:-g|--global)\b).+$/,
+  /^python3?\s+-m\s+(?:pytest|unittest|mypy|ruff)\b.*$/,
+  /^go\s+(?:test|build|vet|fmt|mod\s+download)\b.*$/,
+  /^cargo\s+(?:test|build|check|clippy|fmt|fetch)\b.*$/,
+  /^(?:mvn|\.\/mvnw|gradle|\.\/gradlew)(?:\s+-\S+)*\s+(?:test|verify|package|compile|build|check)\b.*$/,
+  /^dotnet\s+(?:restore|build|test)\b.*$/,
+  /^bundle\s+(?:install|exec\s+(?:rspec|rubocop|rake\s+test))\b.*$/,
+  /^(?:echo|cd|ls|pwd|mkdir|corepack\s+enable|set\s+-[euxo]+)\b.*$/,
+]
+
+/**
+ * Os blocos `run:` do arquivo (inline, `|` e `>`), com as continuações de linha
+ * (`\` no fim) já juntadas, cada comando separado por `&&`, `||`, `;`, `|`.
+ */
+function comandosDeRun(texto: string): string[] | null {
+  const linhas = linhasDe(semComentarios(texto))
+  const comandos: string[] = []
+  for (let i = 0; i < linhas.length; i += 1) {
+    const achou = /^(\s*(?:-\s+)?)run\s*:\s*(.*)$/.exec(linhas[i] ?? '')
+    if (!achou) continue
+    const nivel = (achou[1] ?? '').length
+    const partes: string[] = []
+    const inicio = (achou[2] ?? '').trim()
+    if (!/^[|>][+-]?\d*$/.test(inicio)) partes.push(inicio.replace(/^(['"])(.*)\1$/, '$2'))
+    while (i + 1 < linhas.length) {
+      const prox = linhas[i + 1] ?? ''
+      if (!ehComentarioOuVazia(prox) && indentacao(prox) <= nivel) break
+      partes.push(prox.trim())
+      i += 1
+    }
+    const junto = partes.join('\n').replace(/\\\s*\n\s*/g, ' ')
+    if (/\$\(|`/.test(junto)) return null
+    for (const trecho of junto.split(/&&|\|\||;|\||\n/)) {
+      const comando = trecho.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, '')
+      if (comando !== '') comandos.push(comando)
+    }
+  }
+  return comandos
+}
+
+/**
+ * Só é CI puro o workflow que se PROVA CI puro: legível, sem ambiente nem
+ * segredo, com toda Action e todo comando na lista branca e nenhum verbo de
+ * publicação. Script do repositório, `make`, `npm run` de script desconhecido,
+ * Action local ou de terceiros: não se prova, vira pergunta ao dono.
+ */
+function seProvaCiPuro(texto: string): boolean {
+  if (declaraPermissoes(texto) === null) return false
+  const corpo = semComentarios(texto)
+  if (ENTRADA_DE_PUBLICACAO.test(corpo)) return false
+  for (const achado of corpo.matchAll(LINHA_USES)) {
+    if (!ACTION_DE_CI.test(achado[1] ?? '')) return false
+  }
+  const comandos = comandosDeRun(texto)
+  if (comandos === null) return false
+  return comandos.every(
+    (c) => !VERBO_DE_PUBLICACAO.test(c) && COMANDOS_DE_CI.some((padrao) => padrao.test(c))
+  )
+}
 
 const ACTION_QUE_SO_LE =
   /^(actions\/(checkout|setup-node|setup-python|setup-go|setup-java|setup-dotnet|cache(\/(restore|save))?|upload-artifact|download-artifact)|pnpm\/action-setup|ruby\/setup-ruby|oven-sh\/setup-bun|astral-sh\/setup-uv)@/
