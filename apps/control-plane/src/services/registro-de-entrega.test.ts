@@ -1,4 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  acompanharPublicacao,
+  fecharPorTetoAbsoluto,
+  JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+  TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+  TETO_DE_COMMIT_ERRADO_MS,
+} from './publicacao.js'
 import {
   corpoDoRegistroDeEntrega,
   jaTemRegistroDeEntrega,
@@ -61,5 +68,152 @@ describe('o comentário de publicação não confirmada', () => {
     expect(texto).toContain('não conseguiu confirmar que a publicação dela foi ao ar')
     expect(texto).not.toMatch(/continua aberta|(?<![\p{L}])(?:até|ate|será|sera)(?![\p{L}])/iu)
     expect(texto).not.toMatch(/manualmente|resolvid|confira|por favor|revis[ãa]o humana|decida/i)
+  })
+})
+
+/**
+ * Todo motivo que `publicacao.ts` pode devolver e que acaba no comentário da
+ * issue (fechamento por teto e veredito final sem publicação). O comentário
+ * publicado no GitHub só afirma fato verificável: não diz quem mesclou, não
+ * promete nada e não pede ação a ninguém.
+ */
+async function motivosDePublicacaoPossiveis(): Promise<string[]> {
+  const workflow = { tipo: 'workflow', arquivo: 'cd.yml', nome: 'CD' } as const
+  const deployment = { tipo: 'deployment' as const, ambientes: ['staging', 'production'] }
+  const base = {
+    shaDaMescla: 'abc123',
+    lerExecucoes: vi.fn(),
+    lerEtapas: vi.fn(),
+    lerPublicacoes: vi.fn(),
+    lerEstadosDaPublicacao: vi.fn(),
+  }
+  const execucaoDe = (
+    head_sha: string,
+    status = 'completed',
+    conclusion: string | null = 'success'
+  ) => vi.fn().mockResolvedValue([{ id: 9, head_sha, status, conclusion }])
+  const etapas = (...lista: Array<{ name: string; status: string; conclusion: string | null }>) =>
+    vi.fn().mockResolvedValue(lista)
+  const publicacoes = vi
+    .fn()
+    .mockResolvedValue([{ id: 1, sha: 'abc123', production_environment: true }])
+  const estado = (state: string | null) =>
+    vi.fn().mockResolvedValue(state === null ? [] : [{ state, environment_url: null }])
+  const depoisDaJanela = JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS + 1
+
+  const vereditos = await Promise.all([
+    acompanharPublicacao({ ...base, mecanismo: { tipo: 'nenhum' } }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: vi.fn().mockResolvedValue([]),
+      desdeAMescla: 0,
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: vi.fn().mockResolvedValue([]),
+      desdeAMescla: depoisDaJanela,
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: execucaoDe('antigo99'),
+      desdeAMescla: 0,
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: execucaoDe('antigo99'),
+      desdeAMescla: TETO_DE_COMMIT_ERRADO_MS,
+    }),
+    acompanharPublicacao({ ...base, mecanismo: workflow, lerExecucoes: execucaoDe('antigo99') }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: execucaoDe('abc123'),
+      lerEtapas: etapas({ name: 'Deploy', status: 'completed', conclusion: 'failure' }),
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: execucaoDe('abc123'),
+      lerEtapas: etapas({ name: 'Deploy', status: 'in_progress', conclusion: null }),
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: execucaoDe('abc123'),
+      lerEtapas: etapas({ name: 'Deploy production', status: 'completed', conclusion: 'skipped' }),
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: workflow,
+      lerExecucoes: execucaoDe('abc123'),
+      lerEtapas: etapas({ name: 'Deploy', status: 'completed', conclusion: 'success' }),
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: deployment,
+      lerPublicacoes: vi.fn().mockResolvedValue([]),
+      desdeAMescla: 0,
+    }),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: deployment,
+      lerPublicacoes: vi.fn().mockResolvedValue([]),
+      desdeAMescla: depoisDaJanela,
+    }),
+    ...['success', 'failure', 'error', 'in_progress', 'inactive', 'algo-novo'].map((state) =>
+      acompanharPublicacao({
+        ...base,
+        mecanismo: deployment,
+        lerPublicacoes: publicacoes,
+        lerEstadosDaPublicacao: estado(state),
+      })
+    ),
+    acompanharPublicacao({
+      ...base,
+      mecanismo: deployment,
+      lerPublicacoes: publicacoes,
+      lerEstadosDaPublicacao: estado(null),
+    }),
+  ])
+  const motivos = vereditos.map((v) => v.motivo)
+  // O fechamento por teto absoluto embrulha a última observação de qualquer um
+  // deles, e a de quem publica fora do GitHub.
+  for (const m of [...motivos, 'a leitura do GitHub falhou repetidamente (403).']) {
+    motivos.push(
+      fecharPorTetoAbsoluto({
+        desdeAMescla: TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+        ultimaObservacao: m,
+      }).motivo
+    )
+  }
+  motivos.push('quem publica avisou que a publicação desta versão FALHOU.')
+  return motivos
+}
+
+describe('o comentário de publicação não confirmada, para todo motivo possível', () => {
+  it('nenhum motivo faz o comentário afirmar quem mesclou, prometer ou pedir ação', async () => {
+    const motivos = await motivosDePublicacaoPossiveis()
+    expect(motivos.length).toBeGreaterThan(20)
+    for (const motivo of motivos) {
+      const texto = textoDePublicacaoNaoConfirmada(42, motivo)
+      expect(texto, motivo).not.toMatch(
+        /mesclamos|mesclei|(?<![\p{L}])nós |confira|feche|por favor|continua aberta|(?<![\p{L}])será(?![\p{L}])/iu
+      )
+    }
+  })
+
+  it('o teto absoluto diz só o que o GitOrch fez: acompanhou, sem confirmação', () => {
+    const { motivo } = fecharPorTetoAbsoluto({
+      desdeAMescla: 24 * 60 * 60_000,
+      ultimaObservacao: 'publicando — a etapa "Deploy" ainda não terminou',
+    })
+    expect(motivo).toBe(
+      'o GitOrch acompanhou por 24h sem confirmação de que a publicação chegou ao ar. ' +
+        'Última coisa que vimos: publicando — a etapa "Deploy" ainda não terminou.'
+    )
   })
 })
