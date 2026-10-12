@@ -38,5 +38,5 @@ export function jaTemRegistroDeEntrega(
  * painel e Telegram; a issue não fica pedindo que alguém resolva.
  */
 export function textoDePublicacaoNaoConfirmada(numeroDoPr: number, motivo: string): string {
-  return `A entrega desta tarefa (PR #${numeroDoPr}) foi mesclada, mas a publicação dela ainda não foi confirmada: ${motivo} A tarefa continua aberta até a publicação ser confirmada.`
+  return `A entrega desta tarefa (PR #${numeroDoPr}) foi mesclada, mas o GitOrch não conseguiu confirmar que a publicação dela foi ao ar: ${motivo}`
 }
