@@ -174,7 +174,7 @@ describe('freio de cota nas etapas do tique (real seam)', () => {
     expect(listas).toHaveLength(1)
   })
 
-  test('403 de permissão (cota sobrando) NÃO freia: a etapa continua tentando', async () => {
+  test('403 de permissão (cota sobrando) NÃO freia: as outras tarefas continuam sendo lidas, e a que falhou não é relida', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).includes('/issues/')) {
         return new Response('{"message":"Resource not accessible"}', {
@@ -194,12 +194,22 @@ describe('freio de cota nas etapas do tique (real seam)', () => {
     await vi.waitFor(
       () => {
         const leituras = urlsChamadas(fetchMock).filter((u) =>
-          /\/repos\/acme\/api\/issues\/7$/.test(u)
+          /\/repos\/acme\/api\/issues\/\d+$/.test(u)
         )
-        expect(leituras.length).toBeGreaterThanOrEqual(2)
+        // Sem freio de cota, a falha de uma tarefa não impede a leitura da outra.
+        expect(leituras).toEqual([
+          'https://api.github.com/repos/acme/api/issues/7',
+          'https://api.github.com/repos/acme/api/issues/8',
+        ])
       },
       { timeout: 5000, interval: 10 }
     )
+    // E a tarefa que falhou descansa: passadas seguintes não repetem a leitura.
+    await new Promise((r) => setTimeout(r, 300))
+    const leiturasDepois = urlsChamadas(fetchMock).filter((u) =>
+      /\/repos\/acme\/api\/issues\/\d+$/.test(u)
+    )
+    expect(leiturasDepois).toHaveLength(2)
     const avisosDeFreio = infoSpy.mock.calls
       .map((c) => String(c[0]))
       .filter((m) => m.includes('freio de cota'))
