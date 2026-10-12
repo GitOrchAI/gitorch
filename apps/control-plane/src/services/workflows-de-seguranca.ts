@@ -200,8 +200,9 @@ const VERBO_DE_PUBLICACAO =
   /\b(?:deploy|publish|release|push|ship|upload|rsync|scp|sftp|ssh|apply|rollout|promote|terraform|kubectl|helm)\b|\bgo-?live\b/i
 
 const GERENCIADOR = '(?:npm|pnpm|yarn|bun)'
-const SCRIPT_DE_CI =
-  '(?:test|tests|lint|typecheck|type-check|build|check|coverage|format:check|(?:test|lint|build|typecheck|check):[\\w:.-]+)'
+// Só nomes EXATOS: o GitOrch não lê o package.json do cliente, então um script
+// com sufixo (`build:prod`) pode ser qualquer coisa.
+const SCRIPT_DE_CI = '(?:test|tests|lint|typecheck|type-check|build|check|coverage|format:check)'
 
 const COMANDOS_DE_CI: readonly RegExp[] = [
   new RegExp(`^${GERENCIADOR}\\s+(?:ci|install|i)(?:\\s+(?!-g\\b|--global\\b)[-\\w=.:/@]+)*$`),
@@ -221,15 +222,35 @@ const COMANDOS_DE_CI: readonly RegExp[] = [
 ]
 
 /**
- * Os blocos `run:` do arquivo (inline, `|` e `>`), com as continuações de linha
- * (`\` no fim) já juntadas, cada comando separado por `&&`, `||`, `;`, `|`.
+ * Redirecionamento só para arquivo comum (ou `/dev/null`, ou `2>&1`). Qualquer
+ * outro `>` ou `<` (`/dev/tcp`, substituição de processo, here-string) leva o
+ * comando para fora da prova.
  */
-function comandosDeRun(texto: string): string[] | null {
+function temRedirecionamentoSeguro(comando: string): boolean {
+  const restante = comando
+    .replace(/\d?>&\d/g, '')
+    .replace(/\d?>>?[ \t]*(?:\/dev\/null\b|[A-Za-z0-9_][\w./-]*)/g, '')
+  return !/[<>]/.test(restante)
+}
+
+interface LeituraDosRuns {
+  comandos: string[]
+  /** Quantas chaves `run` o leitor de linhas efetivamente analisou. */
+  quantidade: number
+}
+
+/**
+ * Os blocos `run:` do arquivo (inline, `|` e `>`), com as continuações de linha
+ * (`\` no fim) já juntadas, cada comando separado por `&&`, `||`, `;`, `|`, `&`.
+ */
+function comandosDeRun(texto: string): LeituraDosRuns | null {
   const linhas = linhasDe(semComentarios(texto))
   const comandos: string[] = []
+  let quantidade = 0
   for (let i = 0; i < linhas.length; i += 1) {
     const achou = /^(\s*(?:-\s+)?)run\s*:\s*(.*)$/.exec(linhas[i] ?? '')
     if (!achou) continue
+    quantidade += 1
     const nivel = (achou[1] ?? '').length
     const partes: string[] = []
     const inicio = (achou[2] ?? '').trim()
@@ -242,30 +263,77 @@ function comandosDeRun(texto: string): string[] | null {
     }
     const junto = partes.join('\n').replace(/\\\s*\n\s*/g, ' ')
     if (/\$\(|`/.test(junto)) return null
-    for (const trecho of junto.split(/&&|\|\||;|\||\n/)) {
+    for (const trecho of junto.split(/&&|\|\||;|\||(?<![>&\d])&(?!>)|\n/)) {
       const comando = trecho.trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, '')
-      if (comando !== '') comandos.push(comando)
+      if (comando === '') continue
+      // O redirecionamento é validado aqui; depois dele o que sobra é o comando.
+      if (!temRedirecionamentoSeguro(comando)) return null
+      comandos.push(comando.replace(/\d?>>?[ \t]*\S+|\d?>&\d/g, '').trim())
     }
   }
-  return comandos
+  return { comandos: comandos.filter((c) => c !== ''), quantidade }
+}
+
+/** O texto sem o conteúdo dos blocos `|` e `>`: é script, não estrutura do YAML. */
+function estruturaSemScripts(texto: string): string[] {
+  const linhas = linhasDe(semComentarios(texto))
+  const saida: string[] = []
+  for (let i = 0; i < linhas.length; i += 1) {
+    const linha = linhas[i] ?? ''
+    saida.push(linha)
+    if (!/(?::|-)[ \t]+[|>][+-]?\d*[ \t]*$/.test(linha)) continue
+    const nivel = indentacao(linha)
+    while (i + 1 < linhas.length) {
+      const prox = linhas[i + 1] ?? ''
+      if (!ehComentarioOuVazia(prox) && indentacao(prox) <= nivel) break
+      i += 1
+    }
+  }
+  return saida
+}
+
+const CHAVE_SOLTA = /(?:^|[\s{,[])["']?(run|uses)["']?[ \t]*:(?=\s|$)/g
+
+/**
+ * O que o leitor de linhas não consegue garantir que leu: estilo flow nos
+ * jobs/passos, chaves entre aspas, âncoras e mesclas, ou chaves `run`/`uses`
+ * que uma busca frouxa acha e o leitor não analisou.
+ */
+function temEstruturaIlegivel(texto: string, runsLidos: number, usesLidos: number): boolean {
+  const linhas = estruturaSemScripts(texto)
+  const estrutura = linhas.join('\n')
+  if (/["'](?:run|uses|steps|jobs)["']\s*:/.test(estrutura)) return true
+  if (/^(?:jobs|steps)\s*:\s*[{[]/m.test(estrutura)) return true
+  if (/(?:steps|jobs)\s*:\s*[{[]/.test(estrutura)) return true
+  if (linhas.some((l) => /[{[][^}\]]*\b(?:run|uses|steps|jobs)\s*:/.test(l))) return true
+  if (/(?:^|[\s,[{:])&[A-Za-z0-9_-]+/m.test(estrutura)) return true
+  if (/(?:^|[\s,[{:-])\*[A-Za-z_][\w-]*/m.test(estrutura)) return true
+  if (/<<\s*:/.test(estrutura)) return true
+  const soltas = [...estrutura.matchAll(CHAVE_SOLTA)].length
+  return soltas !== runsLidos + usesLidos
 }
 
 /**
  * Só é CI puro o workflow que se PROVA CI puro: legível, sem ambiente nem
  * segredo, com toda Action e todo comando na lista branca e nenhum verbo de
  * publicação. Script do repositório, `make`, `npm run` de script desconhecido,
- * Action local ou de terceiros: não se prova, vira pergunta ao dono.
+ * Action local ou de terceiros: não se prova, vira pergunta ao dono. O que o
+ * leitor não consegue ler (nenhum passo achado, estilo flow, chaves entre
+ * aspas, âncoras) também não prova nada.
  */
 function seProvaCiPuro(texto: string): boolean {
   if (declaraPermissoes(texto) === null) return false
   const corpo = semComentarios(texto)
   if (ENTRADA_DE_PUBLICACAO.test(corpo)) return false
-  for (const achado of corpo.matchAll(LINHA_USES)) {
+  const usos = [...corpo.matchAll(LINHA_USES)]
+  for (const achado of usos) {
     if (!ACTION_DE_CI.test(achado[1] ?? '')) return false
   }
-  const comandos = comandosDeRun(texto)
-  if (comandos === null) return false
-  return comandos.every(
+  const leitura = comandosDeRun(texto)
+  if (leitura === null) return false
+  if (leitura.quantidade + usos.length === 0) return false
+  if (temEstruturaIlegivel(texto, leitura.quantidade, usos.length)) return false
+  return leitura.comandos.every(
     (c) => !VERBO_DE_PUBLICACAO.test(c) && COMANDOS_DE_CI.some((padrao) => padrao.test(c))
   )
 }
