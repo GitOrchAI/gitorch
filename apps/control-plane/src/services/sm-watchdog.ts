@@ -151,7 +151,7 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
         labels: [STUCK_LABEL],
       })
       await gh('POST', `/repos/${options.repository}/issues/${issue.number}/comments`, {
-        body: `${STUCK_MARKER}\nGitOrch SM: o dev assíncrono falhou ${retryCount}x nesta task. Escalando para revisão humana.`,
+        body: `${STUCK_MARKER}\nGitOrch SM: o dev assíncrono falhou ${retryCount}x nesta task; ela foi marcada como travada (${STUCK_LABEL}).`,
       })
       stuck.push(issue.number)
       const textoDaTravada = `GitOrch SM: task #${issue.number} de ${options.repository} travada após ${retryCount} retentativas (label ${STUCK_LABEL} aplicada).`

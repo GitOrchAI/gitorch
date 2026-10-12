@@ -70,6 +70,33 @@ describe('resumirMotivoDoGitHub', () => {
     expect(texto).not.toContain('https://')
   })
 
+  it.each([
+    ['token <valor>', 'falhou com token a1b2c3d4e5f6g7h8 no cabeçalho', 'a1b2c3d4e5f6g7h8'],
+    ['Bearer <valor>', 'cabeçalho Authorization: Bearer abcdef0123456789', 'abcdef0123456789'],
+    ['PAT clássico', 'usou ghp_0123456789abcdefABCDEF0123456789abcd na chamada', 'ghp_0123'],
+    [
+      'PAT fino',
+      'usou github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz na chamada',
+      'github_pat_11',
+    ],
+    ['token de instalação', 'usou ghs_0123456789abcdefABCDEF0123456789abcd', 'ghs_0123'],
+    [
+      'JWT',
+      'assertion eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjMifQ.c2lnbmF0dXJlQUJDREVGR0g falhou',
+      'eyJhbGciOi',
+    ],
+  ])('esconde %s', (_nome, mensagem, pedaco) => {
+    const texto = resumirMotivoDoGitHub(JSON.stringify({ message: mensagem }))
+    expect(texto).not.toContain(pedaco)
+    expect(texto).toContain('[credencial]')
+  })
+
+  it('a palavra "token" em frase comum não vira credencial', () => {
+    expect(resumirMotivoDoGitHub('{"message":"Bad credentials: token expired"}')).toBe(
+      'Bad credentials: token expired'
+    )
+  })
+
   it('corta mensagem enorme', () => {
     expect(resumirMotivoDoGitHub('x'.repeat(5000)).length).toBeLessThanOrEqual(200)
   })
