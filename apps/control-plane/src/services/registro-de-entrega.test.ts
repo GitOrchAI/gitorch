@@ -52,7 +52,9 @@ describe('o marcador do registro', () => {
     const corpo = corpoDoRegistroDeEntrega([42])
     const [primeiraLinha, ...resto] = corpo.split('\n')
     expect(primeiraLinha).toBe(MARCADOR_DO_REGISTRO_DE_ENTREGA)
-    expect(MARCADOR_DO_REGISTRO_DE_ENTREGA).toMatch(/^<!--.*-->$/)
+    expect(MARCADOR_DO_REGISTRO_DE_ENTREGA.startsWith('<!--')).toBe(true)
+    expect(MARCADOR_DO_REGISTRO_DE_ENTREGA.endsWith('-->')).toBe(true)
+    expect(MARCADOR_DO_REGISTRO_DE_ENTREGA.includes('\n')).toBe(false)
     expect(resto.join('\n')).toBe(textoDoRegistroDeEntrega([42]))
   })
 
