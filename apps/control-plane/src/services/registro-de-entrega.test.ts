@@ -9,6 +9,7 @@ import {
 import {
   corpoDoRegistroDeEntrega,
   jaTemRegistroDeEntrega,
+  MARCADOR_DO_REGISTRO_DE_ENTREGA,
   textoDePublicacaoNaoConfirmada,
   textoDoRegistroDeEntrega,
 } from './registro-de-entrega.js'
@@ -49,8 +50,10 @@ describe('o texto do registro de entrega', () => {
 describe('o marcador do registro', () => {
   it('o comentário leva um marcador oculto e o texto continua o mesmo', () => {
     const corpo = corpoDoRegistroDeEntrega([42])
-    expect(corpo).toContain('<!--')
-    expect(corpo.replace(/<!--.*?-->\n?/s, '').trim()).toBe(textoDoRegistroDeEntrega([42]))
+    const [primeiraLinha, ...resto] = corpo.split('\n')
+    expect(primeiraLinha).toBe(MARCADOR_DO_REGISTRO_DE_ENTREGA)
+    expect(MARCADOR_DO_REGISTRO_DE_ENTREGA).toMatch(/^<!--.*-->$/)
+    expect(resto.join('\n')).toBe(textoDoRegistroDeEntrega([42]))
   })
 
   it('reconhece o registro que já existe entre os comentários', () => {
