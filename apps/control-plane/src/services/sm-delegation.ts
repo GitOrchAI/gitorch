@@ -450,9 +450,8 @@ export interface SmDelegationOptions {
    * issueNumber → achado, só para as que o diagnóstico marcou 'ja_resolvido'.
    *
    * O diagnóstico tem 43% de erro medido (o autor conferiu à mão) — por
-   * isso ele nunca fecha nada sozinho aqui: `runSmDelegation` só SUSPENDE a
-   * delegação e chama `sinalizarPossivelmenteResolvida`, que existe para
-   * pedir revisão humana/RA, nunca para fechar a issue.
+   * isso ele nunca decide sozinho: quem decide é `decidirSuspeitaDeJaResolvida`,
+   * por evidência de entrega (suspeita-de-tarefa-resolvida.ts).
    *
    * Ausente: comportamento antigo, sem gate nenhum (compatibilidade com quem
    * já chama `runSmDelegation` sem esta capacidade).
@@ -462,17 +461,34 @@ export interface SmDelegationOptions {
   ) => Promise<Map<number, AchadoDeDiagnostico>>
   /**
    * Chamado no lugar de delegar, para cada issue que o diagnóstico marcou
-   * 'ja_resolvido'. NÃO fecha a issue (o diagnóstico sugere, nunca fecha
-   * sozinho — 43% de erro medido): o desenho aqui é "a tarefa vai para
-   * revisão em vez de execução" — sinaliza (ex.: comentário na issue) para
-   * quem decide (RA/humano) confirmar antes de fechar ou delegar mesmo
-   * assim. Best-effort: uma falha aqui não pode travar o resto do ciclo.
+   * 'ja_resolvido'. O PRODUTO decide, nunca o dono: o dono não acompanha issue
+   * nem PR no GitHub, então pedir-lhe em comentário que confira e feche deixava
+   * a tarefa parada para sempre. Devolve o desfecho:
+   *
+   *  - 'descartada': sem entrega mesclada ligada à tarefa — ela segue para a
+   *    fila na mesma passada;
+   *  - 'fechada': a entrega mesclada foi achada e a tarefa foi encerrada;
+   *  - 'perguntada' / 'registrada' / 'aguardando': só ESTA tarefa espera
+   *    (pergunta ao dono, registro no painel, ou nova tentativa).
+   *
+   * `avaliou` diz se a decisão gastou leitura ou escrita; só essas contam no
+   * teto de `TETO_DE_SUSPEITAS_POR_CICLO` por passada. Best-effort: uma falha
+   * aqui não pode travar o resto do ciclo (a tarefa espera).
    */
-  sinalizarPossivelmenteResolvida?: (args: {
+  decidirSuspeitaDeJaResolvida?: (args: {
     issueNumber: number
+    titulo: string
+    criadaEm: string
+    atualizadaEm: string
     achado: AchadoDeDiagnostico
-  }) => Promise<void>
+  }) => Promise<{
+    desfecho: 'fechada' | 'descartada' | 'perguntada' | 'registrada' | 'aguardando'
+    avaliou: boolean
+  }>
 }
+
+/** Quantas suspeitas o produto avalia (com leitura/escrita) por passada. */
+export const TETO_DE_SUSPEITAS_POR_CICLO = 8
 
 export interface SmDelegationResult {
   exitCode: number
@@ -491,10 +507,13 @@ export interface SmDelegationResult {
   travadaPorVaga: boolean
   /**
    * D14: issues que o diagnóstico marcou 'ja_resolvido' e que por isso NÃO
-   * foram delegadas neste ciclo — sinalizadas para revisão em vez de
-   * viraram sessão. Vazio quando `diagnosticarJaResolvido` não foi passado.
+   * foram delegadas neste ciclo — esperam a decisão (pergunta ao dono,
+   * registro ou nova tentativa) em vez de virar sessão. Vazio quando
+   * `diagnosticarJaResolvido` não foi passado.
    */
   sinalizadasComoResolvidas: number[]
+  /** Suspeitas que o produto confirmou com evidência de entrega e encerrou. */
+  fechadasPorEntrega: number[]
   /**
    * DJ-T5: quantas candidatas PRONTAS (sem bloqueador, sem sessão viva, sem
    * análise pendente, sem PR aberto do dev — a mesma `estaPronta` de
@@ -672,6 +691,8 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
         )
       : new Map<number, AchadoDeDiagnostico>()
   const sinalizadasComoResolvidas: number[] = []
+  const fechadasPorEntrega: number[] = []
+  let suspeitasAvaliadasNoCiclo = 0
 
   const candidatas: IssueCandidata[] = []
   // Os arquivos de quem JÁ está em trabalho. Quem tem sessão viva é filtrado
@@ -712,24 +733,44 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       }
       continue
     }
-    // D14: o diagnóstico marcou esta issue como 'ja_resolvido'. NÃO delega —
-    // o diagnóstico SUGERE (43% de erro medido), nunca fecha sozinho, então
-    // a tarefa vai para revisão (sinalizada) em vez de virar sessão nova. É
-    // exatamente o gasto que o caso real (#46 de GitOrchAI/gitorch, 17 dias
-    // obsoleta) evidenciou: uma sessão inteira do dev para descobrir o óbvio.
+    // D14: o diagnóstico marcou esta issue como 'ja_resolvido'. Ele erra quase
+    // metade das vezes, então a tarefa só deixa de ser delegada se o PRODUTO
+    // concluir, por evidência de entrega, que ela está feita ou se precisar
+    // perguntar. Sem entrega mesclada ligada, a suspeita é descartada e a
+    // tarefa segue o caminho normal (bloqueadores, vaga, cota) logo abaixo.
+    // Nunca é o dono quem destrava: ele não acompanha a issue no GitHub.
     const achadoJaResolvido = achadosJaResolvido.get(t.number)
     if (achadoJaResolvido) {
-      sinalizadasComoResolvidas.push(t.number)
-      if (options.sinalizarPossivelmenteResolvida) {
-        await options
-          .sinalizarPossivelmenteResolvida({ issueNumber: t.number, achado: achadoJaResolvido })
-          .catch((err) =>
-            options.onWarn(
-              `sm-delegation: sinalizar #${t.number} como possivelmente resolvida falhou: ${String(err).slice(0, 120)}`
-            )
+      let desfecho: 'fechada' | 'descartada' | 'perguntada' | 'registrada' | 'aguardando' =
+        'aguardando'
+      if (
+        options.decidirSuspeitaDeJaResolvida &&
+        suspeitasAvaliadasNoCiclo < TETO_DE_SUSPEITAS_POR_CICLO
+      ) {
+        try {
+          const decisao = await options.decidirSuspeitaDeJaResolvida({
+            issueNumber: t.number,
+            titulo: t.title ?? '',
+            criadaEm: t.created_at ?? new Date(0).toISOString(),
+            atualizadaEm: t.updated_at ?? new Date(0).toISOString(),
+            achado: achadoJaResolvido,
+          })
+          desfecho = decisao.desfecho
+          if (decisao.avaliou) suspeitasAvaliadasNoCiclo += 1
+        } catch (err) {
+          options.onWarn(
+            `sm-delegation: decidir a suspeita de #${t.number} como possivelmente resolvida falhou: ${String(err).slice(0, 120)}`
           )
+        }
       }
-      continue
+      if (desfecho === 'fechada') {
+        fechadasPorEntrega.push(t.number)
+        continue
+      }
+      if (desfecho !== 'descartada') {
+        sinalizadasComoResolvidas.push(t.number)
+        continue
+      }
     }
     let abertosCount = 0
     for (const b of extractBlockers(t.body ?? '')) {
@@ -1109,12 +1150,14 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       paraJulgar.length === 0 &&
       recusadas.length === 0 &&
       sinalizadasComoResolvidas.length === 0 &&
+      fechadasPorEntrega.length === 0 &&
       !falhaAoEnfileirar &&
       !falhaAoProtegerContraDuplicata,
     delegated,
     paraJulgar,
     travadaPorVaga,
     sinalizadasComoResolvidas,
+    fechadasPorEntrega,
     // Nunca negativo: `escolhidas` é sempre um subconjunto das prontas
     // (mesma função `estaPronta`), mas o `Math.max` blinda contra uma
     // futura divergência entre as duas contagens virar número negativo no

@@ -270,6 +270,13 @@ import {
   type FichaDaTarefa,
 } from '../services/tarefa-entregue-continua-aberta.js'
 import { lerMotivoDaResposta } from '../services/erro-do-github.js'
+import {
+  coletarEvidenciaDaTarefa,
+  encerrarTarefaEntregue,
+  gravarMemoriaDaSuspeita,
+  lerMemoriaDaSuspeita,
+  resolverSuspeita,
+} from '../services/suspeita-de-tarefa-resolvida.js'
 import { agentLabel } from '../services/agent-label.js'
 import {
   reservarAResposta,
@@ -4487,8 +4494,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // nunca decide sozinho aqui — só builds o mapa; quem decide não
             // delegar é sm-delegation.ts, e quem sinaliza é o comentário
             // abaixo (nunca fecha a issue).
-            diagnosticarJaResolvido: async (issues) => {
+            diagnosticarJaResolvido: async (todasAsIssues) => {
               try {
+                // Suspeita já descartada pelo produto e issue sem mudança desde
+                // então: não gasta grafo nem reavalia. A tarefa segue direto.
+                const issues: typeof todasAsIssues = []
+                for (const issue of todasAsIssues) {
+                  const memoria = await lerMemoriaDaSuspeita(
+                    app.prisma as unknown as PrismaDaFichaDoItem,
+                    project.id,
+                    issue.number
+                  ).catch(() => null)
+                  if (
+                    memoria?.veredito === 'descartada' &&
+                    memoria.issueAtualizadaEm === issue.updatedAt
+                  ) {
+                    continue
+                  }
+                  issues.push(issue)
+                }
+                if (issues.length === 0) return new Map()
                 const ws = (await activeStack.workspaceProvider.allocateWorkspace(
                   project.userId ?? 'scheduler-user',
                   project.id,
@@ -4514,49 +4539,129 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 return new Map()
               }
             },
-            // NÃO fecha a issue — o diagnóstico sugere, nunca decide sozinho
-            // (43% de erro medido). Comenta uma vez (idempotente pelo
-            // marcador, mesmo padrão de `comentarCoberturaDeIncidente` acima)
-            // pedindo revisão humana/RA antes de fechar ou redelegar.
-            sinalizarPossivelmenteResolvida: async ({ issueNumber, achado }) => {
-              const marcador = '<!-- gitorch:possivelmente-ja-resolvida -->'
-              const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
-                const resp = await ghComGuarda(`https://api.github.com${path}`, {
-                  method,
-                  headers: {
-                    authorization: `token ${railsToken as string}`,
-                    accept: 'application/vnd.github+json',
-                    'user-agent': 'gitorch',
-                    ...(body ? { 'content-type': 'application/json' } : {}),
-                  },
-                  ...(body ? { body: JSON.stringify(body) } : {}),
-                })
-                if (!resp.ok) throw new Error(`GitHub ${method} ${path} → ${resp.status}`)
-                return resp.json().catch(() => ({}))
-              }
-              const existentes = (await gh(
-                'GET',
-                `/repos/${project.wingId}/issues/${issueNumber}/comments?per_page=100`
-              )) as Array<{ body?: string }>
-              if (
-                (Array.isArray(existentes) ? existentes : []).some((c) =>
-                  (c.body ?? '').includes(marcador)
-                )
-              ) {
-                return
-              }
-              await gh('POST', `/repos/${project.wingId}/issues/${issueNumber}/comments`, {
-                body:
-                  `${marcador}\nO GitOrch NÃO delegou esta tarefa ao dev assíncrono: o grafo do ` +
-                  `código sugere que o trabalho já está feito.\n\n${achado.motivo}` +
-                  (achado.evidencia ? `\n\nEvidência: ${achado.evidencia}` : '') +
-                  '\n\nEste diagnóstico tem uma taxa de erro medida — ele SUGERE, não fecha nada ' +
-                  'sozinho. Confira e feche a issue (ou remova esta suspeita) para que a esteira ' +
-                  'volte a considerá-la para delegação.',
+            // O diagnóstico sugere; quem decide é o produto, por evidência de
+            // entrega (suspeita-de-tarefa-resolvida.ts). Nada é publicado na
+            // issue pedindo ação do dono: ele não acompanha o GitHub. Dúvida
+            // real vira pergunta pelo painel e Telegram; só a tarefa espera.
+            decidirSuspeitaDeJaResolvida: async ({
+              issueNumber,
+              titulo,
+              criadaEm,
+              atualizadaEm,
+              achado,
+            }) => {
+              const prismaFicha = app.prisma as unknown as PrismaDaFichaDoItem
+              const repositorio = project.wingId
+              const token = railsToken as string
+              const lerGitHub = async (caminho: string): Promise<unknown> => ghGet(caminho, token)
+              const resultado = await resolverSuspeita({
+                autonomia: project.autonomia,
+                repositorio,
+                tarefa: { numero: issueNumber, titulo, criadaEm, atualizadaEm },
+                motivoDoDiagnostico: achado.motivo,
+                lerMemoria: () => lerMemoriaDaSuspeita(prismaFicha, project.id, issueNumber),
+                gravarMemoria: (m) =>
+                  gravarMemoriaDaSuspeita(prismaFicha, project.id, issueNumber, m),
+                coletarEvidencia: () =>
+                  coletarEvidenciaDaTarefa({
+                    sessoesMescladas: async () =>
+                      (
+                        await app.prisma.devSession.findMany({
+                          where: {
+                            projectId: project.id,
+                            issueNumber,
+                            OR: [{ mergeCommitSha: { not: null } }, { closedReason: 'merged' }],
+                          },
+                          select: { pullRequestNumber: true, closedAt: true, updatedAt: true },
+                        })
+                      ).map((r) => ({
+                        pullRequest: r.pullRequestNumber,
+                        mergedAt: r.closedAt ?? r.updatedAt,
+                      })),
+                    prsLigadosNaFicha: async () => {
+                      const ficha = await app.prisma.repoItem.findUnique({
+                        where: {
+                          projectId_tipo_numero: {
+                            projectId: project.id,
+                            tipo: 'issue',
+                            numero: issueNumber,
+                          },
+                        },
+                        select: { vinculos: { select: { prsLigados: true } } },
+                      })
+                      const ligados = ficha?.vinculos?.prsLigados as {
+                        closedByPullRequests?: unknown
+                      } | null
+                      return Array.isArray(ligados?.closedByPullRequests)
+                        ? ligados.closedByPullRequests.filter(
+                            (n): n is number => typeof n === 'number'
+                          )
+                        : []
+                    },
+                    lerPullRequest: async (numero) => {
+                      try {
+                        const pr = (await lerGitHub(`/repos/${repositorio}/pulls/${numero}`)) as {
+                          merged?: boolean
+                          merged_at?: string | null
+                          base?: { ref?: string; repo?: { default_branch?: string } }
+                        }
+                        return {
+                          mesclado: pr.merged === true,
+                          mergedAt: pr.merged_at ?? null,
+                          baseEhPadrao:
+                            !!pr.base?.ref && pr.base.ref === pr.base.repo?.default_branch,
+                        }
+                      } catch (err) {
+                        if ((err as { status?: number }).status === 404) return null
+                        throw err
+                      }
+                    },
+                    lerEventosDaIssue: async () =>
+                      (await lerGitHub(
+                        `/repos/${repositorio}/issues/${issueNumber}/events?per_page=100`
+                      )) as Array<{ event?: string; created_at?: string }>,
+                    existeTrabalhoEmAndamento: async () =>
+                      (await app.prisma.devSession.count({
+                        where: { projectId: project.id, issueNumber, closedAt: null },
+                      })) > 0,
+                  }),
+                fecharTarefa: async (pullRequest) => {
+                  await encerrarTarefaEntregue({
+                    fetchImpl: fetchDoRepositorio({ nivel: () => project.autonomia }),
+                    token,
+                    repositorio,
+                    numero: issueNumber,
+                    pullRequest,
+                  })
+                  await marcarTarefaFechadaNaFicha(project.id, issueNumber, true)
+                },
+                perguntar: async (pergunta) => {
+                  const servico = (
+                    app as unknown as {
+                      agentQuestionService?: import('../services/agent-question.js').AgentQuestionService
+                    }
+                  ).agentQuestionService
+                  if (!servico) throw new Error('o serviço de perguntas não está disponível')
+                  await servico.ask(project.userId ?? '', project.id, pergunta)
+                },
+                perguntaAberta: async (dedupKey) =>
+                  (await app.prisma.agentQuestion.findFirst({
+                    where: { projectId: project.id, dedupKey, status: 'open' },
+                    select: { id: true },
+                  })) !== null,
+                registrarNoPainel: (chave, texto) =>
+                  registrarNoPainelUmaVez({
+                    prisma: app.prisma as never,
+                    projectId: project.id,
+                    chave,
+                    texto,
+                  }),
+                aviso: (m) => app.log.warn(`[Scheduler] ${m}`),
               })
               app.log.info(
-                `[Scheduler] #${issueNumber} de ${project.wingId} sinalizada como possivelmente já resolvida — NÃO delegada`
+                `[Scheduler] #${issueNumber} de ${repositorio}: suspeita de já resolvida ${resultado.desfecho}`
               )
+              return resultado
             },
             // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
             // §3.1). Até aqui o julgamento só era acordado por aviso do
@@ -10552,6 +10657,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * de gente não fechavam nada. Aqui é a MESMA regra, aplicada também nesses
    * casos.
    */
+  /** Anota na ficha da tarefa que ela está fechada (e se foi o produto quem a fechou). */
+  const marcarTarefaFechadaNaFicha = async (
+    projectId: string,
+    numero: number,
+    fechadaPelaEntrega: boolean
+  ): Promise<void> => {
+    const prismaFicha = app.prisma as unknown as PrismaDaFichaDoItem
+    const atual = await lerFichaDoItem({ prisma: prismaFicha, projectId, tipo: 'issue', numero })
+    await atualizarFichaDoItem({
+      prisma: prismaFicha,
+      projectId,
+      tipo: 'issue',
+      numero,
+      estado: { ...(atual?.estado ?? {}), status: 'closed' },
+    })
+    if (fechadaPelaEntrega) {
+      await mesclarConferenciaDoItem({
+        prisma: app.prisma,
+        projectId,
+        tipo: 'issue',
+        numero,
+        parcial: { fechadaPelaEntregaEm: new Date().toISOString() },
+      })
+    }
+  }
+
   /** Até quando cada tarefa que não deu para ler descansa (vive no processo). */
   const tarefasEntreguesEmDescanso = new Map<string, number>()
 
@@ -10683,28 +10814,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       },
       marcarFicha: async (projectId, numero, quem) => {
         try {
-          const atual = await lerFichaDoItem({
-            prisma: app.prisma as unknown as PrismaDaFichaDoItem,
-            projectId,
-            tipo: 'issue',
-            numero,
-          })
-          await atualizarFichaDoItem({
-            prisma: app.prisma as unknown as PrismaDaFichaDoItem,
-            projectId,
-            tipo: 'issue',
-            numero,
-            estado: { ...(atual?.estado ?? {}), status: 'closed' },
-          })
-          if (quem.fechadaPelaEntrega) {
-            await mesclarConferenciaDoItem({
-              prisma: app.prisma,
-              projectId,
-              tipo: 'issue',
-              numero,
-              parcial: { fechadaPelaEntregaEm: new Date().toISOString() },
-            })
-          }
+          await marcarTarefaFechadaNaFicha(projectId, numero, quem.fechadaPelaEntrega)
         } catch (err) {
           app.log.warn(
             { erro: resumirErro(err, 300) },
