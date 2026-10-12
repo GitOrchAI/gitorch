@@ -611,6 +611,13 @@ export interface VigiaDoPrDeps {
   /** Vagas de sessão simultânea que sobram na conta do dev nesta passada. */
   vagasLivres: number
   decidirAcaoNoPrOrfao?: (pr: PrOrfaoObservado, rawPr: PrAberto) => Promise<AcaoDoVigia>
+  /**
+   * Fase 5.3: o caminho expresso do Dependabot. Recebe o PR cru e devolve só se
+   * mesclou e por quê: o vigia NÃO tem caminho de conserto para o Dependabot
+   * (não retoma sessão, não fecha, não escala), então nada daqui vira ação.
+   * Sem esta dep, o PR do Dependabot só é contado, como antes.
+   */
+  decidirDependabot?: ((pr: PrAberto) => Promise<{ mesclou: boolean; motivo: string }>) | undefined
   pedirJulgamento: (numeroDoPr: number) => Promise<void>
   abrirSessaoDeConserto: (args: {
     numeroDoPr: number
@@ -737,6 +744,21 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
       }
       if (ehAutomacaoQueOVigiaNaoConserta(pr)) {
         doDependabot += 1
+        if (deps.decidirDependabot) {
+          // O merge é escrita: conta no mesmo teto das outras ações da passada.
+          if (acoesFeitas >= teto) {
+            adiadosPeloTeto += 1
+            deps.registrarAdiadoPeloTeto?.(pr.numero)
+            warn(
+              `[vigia-do-pr] o Dependabot #${pr.numero} seria examinado, mas já fiz ${acoesFeitas} ` +
+                `ações nesta passada (teto ${teto}); fica para a próxima`
+            )
+            continue
+          }
+          const expresso = await deps.decidirDependabot(pr)
+          if (expresso.mesclou) acoesFeitas += 1
+          info(`[vigia-do-pr] Dependabot #${pr.numero}: ${expresso.motivo}`)
+        }
         continue
       }
       if (deps.prsComSessaoViva.has(pr.numero)) {
