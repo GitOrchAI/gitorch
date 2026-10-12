@@ -265,9 +265,11 @@ import {
 import { esperarAVezDeDevolver } from '../services/devolucao-de-credencial.js'
 import { varrerArvoreDoPlano } from '../services/fechar-o-pai.js'
 import {
-  entregasQueMerecemConferencia,
-  recadoDeTarefaJaEntregue,
+  chaveDaTarefa,
+  varrerTarefasEntregues as conferirTarefasEntregues,
+  type FichaDaTarefa,
 } from '../services/tarefa-entregue-continua-aberta.js'
+import { lerMotivoDaResposta } from '../services/erro-do-github.js'
 import { agentLabel } from '../services/agent-label.js'
 import {
   reservarAResposta,
@@ -339,6 +341,7 @@ import {
 import {
   atualizarFichaDoItem,
   lerFichaDoItem,
+  mesclarConferenciaDoItem,
   type PrismaDaFichaDoItem,
 } from '../services/ficha-do-item.js'
 import { lancarErroDoGitHub, pularSeFreioDeCotaAtivo } from '../services/freio-de-cota-do-github.js'
@@ -418,6 +421,7 @@ import {
   fetchDoRepositorio,
   guardaPorRepositorio,
   fetchSemPermissao,
+  comProjetoDaGuarda,
 } from '../services/guarda-de-autonomia.js'
 import { nivelDoRepositorio } from '../services/nivel-do-repositorio.js'
 import { garantirSprintDosProjetos } from '../services/garantir-sprint-dos-projetos.js'
@@ -7946,7 +7950,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
     if (recusadas.length > 0) {
       app.log.warn(
-        `[Scheduler] alertas de ${args.projeto.wingId}: a leitura falhou com a credencial de ${recusadas.join(' e de ')}`
+        `[Scheduler] alertas de ${args.projeto.wingId}: o GitHub recusou a leitura com a credencial de ${recusadas.join(' e de ')}${
+          ultima.divida.motivoDaFalhaDosAlertas ? ` (${ultima.divida.motivoDaFalhaDosAlertas})` : ''
+        }`
       )
     }
     const tokenQueLeu = ultima.token
@@ -10546,6 +10552,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * de gente não fechavam nada. Aqui é a MESMA regra, aplicada também nesses
    * casos.
    */
+  /** Até quando cada tarefa que não deu para ler descansa (vive no processo). */
+  const tarefasEntreguesEmDescanso = new Map<string, number>()
+
   const varrerTarefasEntregues = async (): Promise<void> => {
     let linhas: Array<{
       issueNumber: number
@@ -10560,7 +10569,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         where: {
           OR: [{ mergeCommitSha: { not: null } }, { closedReason: 'merged' }],
         },
-        orderBy: { createdAt: 'asc' },
+        orderBy: { updatedAt: 'desc' },
         select: {
           issueNumber: true,
           pullRequestNumber: true,
@@ -10575,101 +10584,156 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return
     }
 
-    const porProjeto = new Map<string, typeof linhas>()
-    for (const l of entregasQueMerecemConferencia(linhas, new Date())) {
-      const lista = porProjeto.get(l.projectId) ?? []
-      lista.push(l)
-      porProjeto.set(l.projectId, lista)
+    // O que a ficha já sabe: tarefa fechada não é consultada de novo.
+    const fichas = new Map<string, FichaDaTarefa>()
+    try {
+      const doBanco = await app.prisma.repoItem.findMany({
+        where: {
+          tipo: 'issue',
+          projectId: { in: [...new Set(linhas.map((l) => l.projectId))] },
+          numero: { in: [...new Set(linhas.map((l) => l.issueNumber))] },
+        },
+        select: { projectId: true, numero: true, estado: true, conferencia: true },
+      })
+      for (const f of doBanco) {
+        const estado = f.estado as { status?: unknown } | null
+        const conferencia = f.conferencia as { fechadaPelaEntregaEm?: unknown } | null
+        fichas.set(chaveDaTarefa(f.projectId, f.numero), {
+          status: typeof estado?.status === 'string' ? estado.status : null,
+          fechadaPelaEntrega: typeof conferencia?.fechadaPelaEntregaEm === 'string',
+        })
+      }
+    } catch (err) {
+      app.log.warn(
+        { erro: resumirErro(err, 300) },
+        '[Scheduler] varredura de tarefas entregues não conseguiu ler as fichas; seguindo sem elas'
+      )
     }
 
     const donosJaAvisados = new Set<string>()
-    for (const [projectId, entregas] of porProjeto) {
-      const projeto = await app.prisma.project
-        .findUnique({ where: { id: projectId }, select: { wingId: true, isActive: true } })
-        .catch(() => null)
-      if (!projeto?.isActive) continue
+    const resumo = await conferirTarefasEntregues({
+      linhas,
+      agora: new Date(),
+      fichas,
+      falhasAte: tarefasEntreguesEmDescanso,
+      abrirProjeto: async (projectId) => {
+        const projeto = await app.prisma.project
+          .findUnique({ where: { id: projectId }, select: { wingId: true, isActive: true } })
+          .catch(() => null)
+        if (!projeto?.isActive) return null
 
-      // Cota do GitHub esgotada para este dono: nem mint de token, nem leitura.
-      if (
+        // Cota do GitHub esgotada para este dono: nem mint de token, nem leitura.
+        if (
+          pularSeFreioDeCotaAtivo({
+            etapa: 'varrerTarefasEntregues',
+            repositorio: projeto.wingId,
+            agora: new Date(),
+            jaAvisados: donosJaAvisados,
+            info: (m) => app.log.info(`[Scheduler] ${m}`),
+          })
+        ) {
+          return null
+        }
+
+        const githubToken =
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: projeto.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
+        if (!githubToken) return null
+
+        // Cada escrita passa pela guarda de autonomia DESTE projeto.
+        const rest = (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> =>
+          comProjetoDaGuarda(projectId, async () => {
+            const r = await ghComGuarda(`https://api.github.com${caminho}`, {
+              method: metodo,
+              headers: {
+                authorization: `Bearer ${githubToken}`,
+                accept: 'application/vnd.github+json',
+                ...(corpo ? { 'content-type': 'application/json' } : {}),
+              },
+              ...(corpo ? { body: JSON.stringify(corpo) } : {}),
+            })
+            if (!r.ok) {
+              // O corpo diz POR QUE: cota, permissão, recurso desligado.
+              const motivo = await lerMotivoDaResposta(r)
+              lancarErroDoGitHub(
+                `GitHub ${metodo} ${caminho} falhou (${r.status})${motivo ? `: ${motivo}` : ''}`,
+                r,
+                caminho
+              )
+            }
+            return r.json()
+          })
+
+        return {
+          wingId: projeto.wingId,
+          lerIssue: async (n) =>
+            (await rest('GET', `/repos/${projeto.wingId}/issues/${n}`)) as { state?: string },
+          comentar: async (n, corpo) => {
+            await rest('POST', `/repos/${projeto.wingId}/issues/${n}/comments`, { body: corpo })
+          },
+          fechar: async (n) => {
+            await rest('PATCH', `/repos/${projeto.wingId}/issues/${n}`, { state: 'closed' })
+          },
+        }
+      },
+      marcarFicha: async (projectId, numero, quem) => {
+        try {
+          const atual = await lerFichaDoItem({
+            prisma: app.prisma as unknown as PrismaDaFichaDoItem,
+            projectId,
+            tipo: 'issue',
+            numero,
+          })
+          await atualizarFichaDoItem({
+            prisma: app.prisma as unknown as PrismaDaFichaDoItem,
+            projectId,
+            tipo: 'issue',
+            numero,
+            estado: { ...(atual?.estado ?? {}), status: 'closed' },
+          })
+          if (quem.fechadaPelaEntrega) {
+            await mesclarConferenciaDoItem({
+              prisma: app.prisma,
+              projectId,
+              tipo: 'issue',
+              numero,
+              parcial: { fechadaPelaEntregaEm: new Date().toISOString() },
+            })
+          }
+        } catch (err) {
+          app.log.warn(
+            { erro: resumirErro(err, 300) },
+            `[Scheduler] não consegui gravar na ficha a tarefa #${numero} entregue`
+          )
+        }
+      },
+      registrarNoPainel: (projectId, chave, texto) =>
+        registrarNoPainelUmaVez({
+          prisma: app.prisma as never,
+          projectId,
+          chave,
+          texto,
+        }),
+      aposFalha: (wingId) =>
         pularSeFreioDeCotaAtivo({
           etapa: 'varrerTarefasEntregues',
-          repositorio: projeto.wingId,
+          repositorio: wingId,
           agora: new Date(),
           jaAvisados: donosJaAvisados,
           info: (m) => app.log.info(`[Scheduler] ${m}`),
-        })
-      ) {
-        continue
-      }
-
-      const githubToken =
-        process.env['GITORCH_GITHUB_TOKEN'] ??
-        (await mintInstallationToken({
-          repository: projeto.wingId,
-          onError: (m) => app.log.error(m),
-          onWarn: (m) => app.log.warn(m),
-        })) ??
-        undefined
-      if (!githubToken) continue
-
-      const rest = async (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> => {
-        const r = await ghComGuarda(`https://api.github.com${caminho}`, {
-          method: metodo,
-          headers: {
-            authorization: `Bearer ${githubToken}`,
-            accept: 'application/vnd.github+json',
-            ...(corpo ? { 'content-type': 'application/json' } : {}),
-          },
-          ...(corpo ? { body: JSON.stringify(corpo) } : {}),
-        })
-        if (!r.ok) {
-          lancarErroDoGitHub(`GitHub ${metodo} ${caminho} falhou (${r.status})`, r, caminho)
-        }
-        return r.json()
-      }
-
-      for (const entrega of entregas) {
-        try {
-          const issue = (await rest(
-            'GET',
-            `/repos/${projeto.wingId}/issues/${entrega.issueNumber}`
-          )) as { state?: string }
-          if (issue.state !== 'open') continue
-
-          const recado = recadoDeTarefaJaEntregue({
-            pullRequestNumber: entrega.pullRequestNumber,
-            mergeCommitSha: entrega.mergeCommitSha,
-          })
-          await rest('POST', `/repos/${projeto.wingId}/issues/${entrega.issueNumber}/comments`, {
-            body: recado,
-          })
-          await rest('PATCH', `/repos/${projeto.wingId}/issues/${entrega.issueNumber}`, {
-            state: 'closed',
-          })
-          app.log.info(
-            `[Scheduler] ${projeto.wingId}: tarefa #${entrega.issueNumber} encerrada — a entrega dela já estava mesclada`
-          )
-        } catch (err) {
-          // Best-effort por tarefa: uma issue apagada ou sem permissão não
-          // pode deixar as outras abertas para sempre.
-          app.log.warn(
-            `[Scheduler] ${projeto.wingId}: não consegui conferir a tarefa #${entrega.issueNumber}: ${(err as Error).message}`
-          )
-          // Limite de taxa: insistir nas outras tarefas só gasta mais cota.
-          if (
-            pularSeFreioDeCotaAtivo({
-              etapa: 'varrerTarefasEntregues',
-              repositorio: projeto.wingId,
-              agora: new Date(),
-              jaAvisados: donosJaAvisados,
-              info: (m) => app.log.info(`[Scheduler] ${m}`),
-            })
-          ) {
-            break
-          }
-        }
-      }
-    }
+        }),
+      naoAutorizado: (err) => err instanceof EscritaNaoAutorizadaError,
+      aviso: (m) => app.log.warn(`[Scheduler] ${m}`),
+      info: (m) => app.log.info(`[Scheduler] ${m}`),
+    })
+    app.log.info(
+      `[Scheduler] tarefas entregues: ${resumo.candidatas} candidatas, ${resumo.consultadas} consultadas, ${resumo.fechadas} encerradas, ${resumo.falhas} falhas`
+    )
   }
 
   /**

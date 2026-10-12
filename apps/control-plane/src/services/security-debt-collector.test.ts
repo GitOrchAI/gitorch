@@ -164,6 +164,23 @@ describe('coletarDividaDeSeguranca', () => {
     expect(d.naoVerificado).toContain('alertas')
   })
 
+  it('alertas recusados com 403: guarda o motivo real que o GitHub deu, sem culpar a credencial', async () => {
+    const fetchImpl = githubDeMentira({
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+        status: 403,
+        corpo: { message: 'Dependabot alerts are disabled for this repository.' },
+      },
+    })
+
+    const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+
+    expect(d.naoVerificado).toContain('alertas')
+    expect(d.motivoDaFalhaDosAlertas).toBe(
+      '403: Dependabot alerts are disabled for this repository.'
+    )
+  })
+
   // Mesmo raciocínio do teste de "falha de rede" acima, mas para o caso em
   // que a conexão fica pendurada em vez de recusar na hora: sem
   // tempo-limite, uma rota que nunca responde trava a coleta inteira (até

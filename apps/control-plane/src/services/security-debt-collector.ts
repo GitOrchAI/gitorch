@@ -7,6 +7,8 @@
 // estado de primeira classe: dizer zero alertas quando ninguém olhou seria
 // mentir sobre segurança.
 
+import { lerMotivoDaResposta } from './erro-do-github.js'
+
 const GITHUB_API = 'https://api.github.com'
 
 // `deps.repository` chega de um valor que o cliente escolhe (o repo
@@ -137,6 +139,10 @@ export interface DividaDeSeguranca {
    *  `dono/repo` que o GitHub aceita — nenhuma chamada de rede é feita
    *  nesse caso). */
   naoVerificado: string[]
+  /** Quando a leitura dos alertas foi recusada: o status e o motivo que o
+   *  GitHub deu (ex.: "403: Dependabot alerts are disabled for this
+   *  repository."), sem credencial. Só existe nessa falha. */
+  motivoDaFalhaDosAlertas?: string
 }
 
 export interface AlertaBruto {
@@ -246,6 +252,7 @@ export async function coletarDividaDeSeguranca(deps: {
 
   const alertas: AlertaDeSeguranca[] = []
   let severidadeDesconhecida = false
+  let motivoDaFalhaDosAlertas: string | undefined
   // Esta rota pagina por CURSOR, não por número: `?page=N` é recusado com 400
   // ("Pagination using the `page` parameter is not supported"). A URL da
   // próxima página vem pronta no cabeçalho Link (rel="next") — segui-lo é a
@@ -259,6 +266,8 @@ export async function coletarDividaDeSeguranca(deps: {
       const resp = await pedirUrl(proximaUrl)
       if (!resp.ok) {
         naoVerificado.push('alertas')
+        const motivo = await lerMotivoDaResposta(resp)
+        motivoDaFalhaDosAlertas = motivo ? `${resp.status}: ${motivo}` : String(resp.status)
         break
       }
       lote = (await resp.json()) as AlertaBruto[]
@@ -300,6 +309,7 @@ export async function coletarDividaDeSeguranca(deps: {
     alertas,
     porSeveridade,
     naoVerificado,
+    ...(motivoDaFalhaDosAlertas === undefined ? {} : { motivoDaFalhaDosAlertas }),
   }
 }
 

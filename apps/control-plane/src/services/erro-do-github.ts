@@ -57,3 +57,46 @@ export function erroDaRespostaDoGitHub(
     limiteResetaEmSegundos: numeroDoCabecalho(resposta, 'x-ratelimit-reset'),
   })
 }
+
+const TAMANHO_DO_MOTIVO = 160
+
+/**
+ * O motivo que o GitHub deu, em uma linha curta e sem credencial.
+ *
+ * Um 403 pode ser cota, falta de permissão, recurso desligado no repositório
+ * ou issue de outro dono — e só a mensagem do corpo distingue. Sem ela o aviso
+ * culpava a credencial mesmo quando o recurso estava apenas desligado.
+ * O texto vem de serviço externo: tira o que parece token, cabeçalho de
+ * autorização ou endereço (que pode carregar usuário e senha) antes de sair.
+ */
+export function resumirMotivoDoGitHub(corpo: string): string {
+  let texto = corpo
+  try {
+    const json: unknown = JSON.parse(corpo)
+    if (json !== null && typeof json === 'object' && 'message' in json) {
+      const m = (json as { message: unknown }).message
+      texto = typeof m === 'string' ? m : ''
+    } else {
+      texto = ''
+    }
+  } catch {
+    // Não é JSON: o texto cru, enxuto, ainda explica.
+  }
+  return texto
+    .replace(/https?:\/\/\S+/gi, '[endereço]')
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]+/g, '[credencial]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]+/g, '[credencial]')
+    .replace(/\bBearer\s+\S+/gi, '[credencial]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, TAMANHO_DO_MOTIVO)
+}
+
+/** Lê o corpo de uma resposta ruim (numa cópia) e devolve o motivo; nunca lança. */
+export async function lerMotivoDaResposta(resposta: Response): Promise<string> {
+  try {
+    return resumirMotivoDoGitHub(await resposta.clone().text())
+  } catch {
+    return ''
+  }
+}
