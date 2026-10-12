@@ -3,6 +3,7 @@ import { decidirAcaoNoPrOrfaoIntegrado } from '../services/decisao-do-vigia.js'
 import type { PrismaClient } from '@prisma/client'
 import type { VigiaDoPrDeps } from '../services/vigia-do-pr.js'
 import { MARCA_DO_PARECER, MARCA_DE_APROVACAO } from '../services/parecer-do-qa.js'
+import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import { contextoExecutivoVazio } from '../services/contexto-executivo-da-pergunta.js'
 
 const CI_VERDE = { check_runs: [{ status: 'completed', conclusion: 'success' }] }
@@ -186,6 +187,60 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     )
   })
 
+  it('dois projetos no MESMO repositório: o merge do dev usa a autonomia do projeto que decide', async () => {
+    const niveis: Record<string, string> = { 'proj-cuidar': 'cuidar', 'proj-olhar': 'so_olhar' }
+    const chamadasAoGithub: string[] = []
+    const guardado = guardaPorRepositorio(
+      (async (url: string, init?: RequestInit) => {
+        chamadasAoGithub.push(`${init?.method ?? 'GET'} ${url}`)
+        return new Response('{}', { status: 200 })
+      }) as unknown as typeof fetch,
+      {
+        nivelDoRepositorio: async (_repo, id) => (id ? (niveis[id] ?? null) : null),
+        nossosRepositorios: new Set(),
+      }
+    )
+    const decidir = async (id: string) => {
+      const ghGet = vi.fn(async (url: string) => {
+        if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
+          return [{ body: `${MARCA_DE_APROVACAO}\n${MARCA_DO_PARECER}`, commit_id: 'sha1' }]
+        }
+        if (url === '/repos/org/repo/pulls/42')
+          return { head: { sha: 'sha1', ref: 'feat/entrega' }, base: { ref: 'main' } }
+        if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
+        if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
+        if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1'))
+          return SEM_WORKFLOW_RODANDO
+        return null
+      })
+      const ghSend = async (m: string, c: string, _t: string, b: unknown) => {
+        await guardado(`https://api.github.com${c}`, { method: m, body: JSON.stringify(b) })
+        return {}
+      }
+      return decidirAcaoNoPrOrfaoIntegrado({
+        guardaDeSeguranca: async () => false,
+        runtimeConfig: config('sim'),
+        agora,
+        projeto: { id, wingId: 'org/repo' },
+        token,
+        depsVigia: buildDepsVigia(),
+        prisma: getPrismaMock(true),
+        ghGet,
+        ghSend,
+        registrarNoPainel: vi.fn(),
+        onWarn: vi.fn(),
+      })
+    }
+
+    const doOlhar = await decidir('proj-olhar')
+    expect(doOlhar).not.toEqual({ acao: 'ignorar', motivo: 'Mesclado com sucesso' })
+    expect(chamadasAoGithub.filter((c) => c.startsWith('PUT'))).toHaveLength(0)
+
+    const doCuidar = await decidir('proj-cuidar')
+    expect(doCuidar).toEqual({ acao: 'ignorar', motivo: 'Mesclado com sucesso' })
+    expect(chamadasAoGithub.filter((c) => c.startsWith('PUT'))).toHaveLength(1)
+  })
+
   it('aprovado + verde na varredura, mas só um check-run skipped no instante do merge → NÃO mescla', async () => {
     const ghGet = vi.fn(async (url: string) => {
       if (url === '/repos/org/repo/pulls/42/reviews?per_page=100') {
@@ -272,7 +327,11 @@ describe('decidirAcaoNoPrOrfaoIntegrado', () => {
     ) {
       return vi.fn(async (url: string) => {
         if (url === '/repos/org/repo/pulls/42')
-          return { head: { sha: 'sha1', ref: ramo }, base: { ref: baseRef } }
+          return {
+            user: { login: 'dependabot[bot]' },
+            head: { sha: 'sha1', ref: ramo },
+            base: { ref: baseRef },
+          }
         if (url === '/repos/org/repo') return { private: true, default_branch: 'main' }
         if (url.startsWith('/repos/org/repo/commits/sha1/check-runs')) return CI_VERDE
         if (url.startsWith('/repos/org/repo/actions/runs?head_sha=sha1')) return workflowsAgora

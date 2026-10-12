@@ -108,6 +108,19 @@ export function extrairReferencias(texto: string): string[] {
   return [...achadas]
 }
 
+/**
+ * Menções que notificam: `@usuario` e `@org/time`. Não conta o `@` colado a
+ * uma palavra (e-mail), nem o de um código entre crases (decorador).
+ */
+const MENCAO_NO_TEXTO =
+  /(?<![\w@./`-])@([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\/[A-Za-z0-9_.-]+)?)/g
+
+export function extrairMencoes(texto: string): string[] {
+  const achadas = new Set<string>()
+  for (const m of texto.matchAll(MENCAO_NO_TEXTO)) achadas.add(`@${(m[1] as string).toLowerCase()}`)
+  return [...achadas]
+}
+
 // ---------------------------------------------------------------------------
 // Validação e montagem do corpo novo
 // ---------------------------------------------------------------------------
@@ -262,6 +275,25 @@ export function validarAjusteDeTarefa(args: {
     ...marcadoresDoOriginal(args.corpoOriginal),
     renderIssueBody({ ...campos, titulo }, MARCADOR_DO_AJUSTE, pesoDoOriginal(args.corpoOriginal)),
   ].join('\n\n')
+
+  // O texto vai ao GitHub do cliente: uma menção ou um link que o original não
+  // tinha notificaria gente ou levaria a um endereço que ninguém escreveu ali.
+  const textoNovo = `${titulo}\n\n${corpoDosCampos}`
+  const textoOriginal = `${args.tituloOriginal}\n\n${args.corpoOriginal}`
+  const mencoesDoOriginal = new Set(extrairMencoes(textoOriginal))
+  const mencoesNovas = extrairMencoes(textoNovo).filter((m) => !mencoesDoOriginal.has(m))
+  if (mencoesNovas.length > 0) {
+    return recusa(
+      `a reescrita menciona quem o original não mencionava (notificaria): ${mencoesNovas.join(', ')}`
+    )
+  }
+  const linksDoOriginal = new Set(extrairReferencias(textoOriginal))
+  const linksNovos = extrairReferencias(textoNovo).filter(
+    (r) => /^https?:\/\//i.test(r) && !linksDoOriginal.has(r)
+  )
+  if (linksNovos.length > 0) {
+    return recusa(`a reescrita traz link que o original não tinha: ${linksNovos.join(', ')}`)
+  }
 
   // Só o que o texto NOVO diz conta: o original inteiro vai no bloco recolhido
   // e, se contasse, qualquer reescrita "preservaria" tudo por definição.
@@ -477,10 +509,11 @@ function linkDaIssue(repo: string, numero: number): string {
 
 /** O que o painel diz sobre como desfazer: o original verdadeiro e o texto anterior. */
 const COMO_DESFAZER =
-  'Como desfazer: restaure o título e o texto do bloco "Texto original" ' +
-  '(ou o histórico de edições da issue); o GitOrch também restaura pela ficha ' +
-  '(desfazerAjusteDeTarefa), por padrão para o texto ORIGINAL, o primeiro de antes do ' +
-  "GitOrch, ou, com alvo 'anterior', só para o texto imediatamente anterior a esta reescrita."
+  'Como desfazer: o texto ORIGINAL verdadeiro, o primeiro de antes do GitOrch, está na ficha da ' +
+  'tarefa (conferencia.original). O bloco "Texto original" do corpo guarda só o texto de antes da ' +
+  'ÚLTIMA reescrita, que depois de uma segunda reescrita já não é o original. O GitOrch restaura pela ficha ' +
+  "(desfazerAjusteDeTarefa), por padrão para o ORIGINAL, ou, com alvo 'anterior', só para o texto " +
+  'imediatamente anterior a esta reescrita.'
 
 /**
  * Depois de um erro no PATCH, o que a tarefa tem no GitHub? A escrita pode ter
@@ -743,11 +776,22 @@ export async function desfazerAjusteDeTarefa(
 
   const ajuste = objetoOuNulo(conferencia?.['ajuste']) ?? {}
   const estado = texto(ajuste['estado'])
-  if (estado === null || !ESTADOS_QUE_PODEM_SER_DESFEITOS.has(estado)) {
+  // Desfeito só para o texto anterior ainda deixa voltar ao original; desfeito
+  // para o original é o fim da cadeia.
+  const desfeitoParaOAnterior = estado === 'desfeito' && ajuste['desfeitoPara'] === 'anterior'
+  if (
+    estado === null ||
+    !(ESTADOS_QUE_PODEM_SER_DESFEITOS.has(estado) || (desfeitoParaOAnterior && alvo === 'original'))
+  ) {
     return nao(`o ajuste desta tarefa não está aplicado (estado: ${estado ?? 'nenhum'})`)
   }
 
-  const atual = await deps.lerIssue(pedido.numero)
+  let atual: IssueNoGitHub
+  try {
+    atual = await deps.lerIssue(pedido.numero)
+  } catch (err) {
+    return nao(`não consegui reler a tarefa para desfazer: ${resumirErro(err, 200)}`)
+  }
   const hashAtual = hashDoCorpoDaTarefa(atual.titulo, atual.corpo)
   const hashDoAlvo = hashDoCorpoDaTarefa(titulo, corpo)
   if (hashAtual === hashDoAlvo) {
@@ -757,7 +801,12 @@ export async function desfazerAjusteDeTarefa(
         : 'a tarefa já está com o texto original'
     )
   }
-  if (!pedido.forcar && hashAtual !== ajuste['hashDoCorpoNovo']) {
+  // O que o último passo deixou no GitHub: o texto novo da reescrita, ou, depois
+  // de um desfazer para o anterior, o texto que o próprio desfazer escreveu.
+  const hashEsperado = desfeitoParaOAnterior
+    ? ajuste['hashDoTextoRestaurado']
+    : ajuste['hashDoCorpoNovo']
+  if (!pedido.forcar && hashAtual !== hashEsperado) {
     return nao('a tarefa foi editada depois do ajuste; restaurar apagaria essa edição')
   }
 
@@ -771,6 +820,7 @@ export async function desfazerAjusteDeTarefa(
       estado: 'desfeito',
       desfeitoEm: agora.toISOString(),
       desfeitoPara: alvo,
+      hashDoTextoRestaurado: hashDoAlvo,
       hashDoCorpoOriginal: hashDoAlvo,
     },
   })

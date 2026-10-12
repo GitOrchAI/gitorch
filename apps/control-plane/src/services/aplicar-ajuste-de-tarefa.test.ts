@@ -93,6 +93,58 @@ describe('validarAjusteDeTarefa', () => {
     expect(r.corpo.split('<details>')[0]).toContain('**5**')
   })
 
+  describe('o texto que vai ao GitHub do cliente não notifica gente nova', () => {
+    it('recusa @usuario que não estava no original', () => {
+      const r = validarAjusteDeTarefa({
+        ...base,
+        form: formulario({ notes: 'Avisar @fulano-de-tal quando terminar.' }),
+      })
+      expect(r.ok).toBe(false)
+      if (r.ok) return
+      expect(r.motivo).toContain('@fulano-de-tal')
+    })
+
+    it('recusa menção de time (@org/time) que não estava no original', () => {
+      const r = validarAjusteDeTarefa({
+        ...base,
+        form: formulario({ notes: 'Revisão do @acme/seguranca.' }),
+      })
+      expect(r.ok).toBe(false)
+    })
+
+    it('aceita @usuario que JÁ estava no original', () => {
+      const r = validarAjusteDeTarefa({
+        tituloOriginal: ORIGINAL_TITULO,
+        corpoOriginal: `${ORIGINAL_CORPO}\n\nPediu: @dono-original.`,
+        form: formulario({ notes: 'Pedido por @dono-original.' }),
+      })
+      expect(r.ok).toBe(true)
+    })
+
+    it('e-mail e decorador em código não são menção', () => {
+      const r = validarAjusteDeTarefa({
+        ...base,
+        form: formulario({ notes: 'Contato: equipe@exemplo.com. Usa o decorador `@Injectable`.' }),
+      })
+      expect(r.ok).toBe(true)
+    })
+
+    it('recusa link externo novo', () => {
+      const r = validarAjusteDeTarefa({
+        ...base,
+        form: formulario({ notes: 'Veja https://site-novo.example/pagina.' }),
+      })
+      expect(r.ok).toBe(false)
+      if (r.ok) return
+      expect(r.motivo).toContain('https://site-novo.example/pagina')
+    })
+
+    it('aceita link que já estava no original', () => {
+      const r = validarAjusteDeTarefa({ ...base, form: formulario() })
+      expect(r.ok).toBe(true)
+    })
+  })
+
   it('o corpo novo passa na MESMA conferência do sistema (ida e volta)', () => {
     const r = validarAjusteDeTarefa({ ...base, form: formulario() })
     if (!r.ok) throw new Error(r.motivo)
@@ -690,6 +742,18 @@ describe('desfazerAjusteDeTarefa', () => {
     expect(c.escritas).toHaveLength(1)
   })
 
+  it('a releitura da tarefa falha: devolve desfeito false com motivo, não lança', async () => {
+    const c = cenario()
+    c.deps.lerIssue = vi.fn(async () => {
+      throw new Error('GitHub GET falhou (502)')
+    })
+    const r = await desfazerAjusteDeTarefa(c.deps, { numero: 7 })
+    expect(r.desfeito).toBe(false)
+    if (r.desfeito) return
+    expect(r.motivo).toContain('502')
+    expect(c.escritas).toEqual([])
+  })
+
   it('já desfeito: não escreve de novo', async () => {
     const c = cenario()
     ;(c.conferencia['ajuste'] as Record<string, unknown>)['estado'] = 'desfeito'
@@ -944,6 +1008,32 @@ describe('segunda reescrita: a cadeia guarda o original verdadeiro', () => {
     expect(w.issue).toEqual({ titulo: TITULO_HUMANO, corpo: CORPO_HUMANO })
   })
 
+  it('depois de desfazer para o anterior, ainda dá para voltar ao ORIGINAL', async () => {
+    const { w } = await duasReescritas()
+    expect(await desfazerAjusteDeTarefa(w.deps, { numero: 7, alvo: 'anterior' })).toEqual({
+      desfeito: true,
+    })
+    const r = await desfazerAjusteDeTarefa(w.deps, { numero: 7 })
+    expect(r).toEqual({ desfeito: true })
+    expect(w.issue).toEqual({ titulo: ORIGINAL_TITULO, corpo: ORIGINAL_CORPO })
+  })
+
+  it('depois de desfazer para o anterior, edição de gente no meio continua protegida', async () => {
+    const { w } = await duasReescritas()
+    await desfazerAjusteDeTarefa(w.deps, { numero: 7, alvo: 'anterior' })
+    w.issue.corpo = `${w.issue.corpo}\n\nEditado por uma pessoa.`
+    const r = await desfazerAjusteDeTarefa(w.deps, { numero: 7 })
+    expect(r.desfeito).toBe(false)
+    expect(w.issue.corpo).toContain('Editado por uma pessoa.')
+  })
+
+  it('desfazer para o ORIGINAL é definitivo: um 2º desfazer é recusado', async () => {
+    const { w } = await duasReescritas()
+    await desfazerAjusteDeTarefa(w.deps, { numero: 7 })
+    const r = await desfazerAjusteDeTarefa(w.deps, { numero: 7 })
+    expect(r.desfeito).toBe(false)
+  })
+
   it('depois de desfazer, o texto restaurado não é reescrito de novo pela mesma conferência', async () => {
     const { w } = await duasReescritas()
     await desfazerAjusteDeTarefa(w.deps, { numero: 7 })
@@ -960,6 +1050,16 @@ describe('segunda reescrita: a cadeia guarda o original verdadeiro', () => {
     expect(aviso).toContain('Como desfazer')
     expect(aviso).toMatch(/original/i)
     expect(aviso).toMatch(/anterior/i)
+  })
+
+  it('o aviso aponta a ficha (conferencia.original) como o original verdadeiro e diz o que o bloco do corpo guarda', async () => {
+    const { w } = await duasReescritas()
+    const aviso = w.painel.at(-1)?.texto ?? ''
+    expect(aviso).toContain('conferencia.original')
+    // Depois da 2ª reescrita o bloco do corpo traz o texto anterior à ÚLTIMA
+    // reescrita, não o original: o aviso não pode mandar restaurá-lo como se fosse.
+    expect(aviso).toMatch(/última reescrita/i)
+    expect(aviso).not.toContain('restaure o título e o texto do bloco "Texto original"')
   })
 
   it('"anterior" sem histórico legível: recusa e não escreve', async () => {

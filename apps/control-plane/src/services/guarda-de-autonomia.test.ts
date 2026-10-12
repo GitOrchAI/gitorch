@@ -3,6 +3,7 @@ import { EscritaNaoAutorizadaError, podeEscrever } from '@gitorch/cadence'
 import {
   guardaDeAutonomia,
   guardaPorRepositorio,
+  comProjetoDaGuarda,
   repositorioDaUrl,
   classificarRequisicao,
   vaiParaOGithub,
@@ -385,5 +386,41 @@ describe('ACHADO 5 — fechar o pull request do cliente NÃO é "propor"', () =>
       'propor'
     )
     expect(classificarRequisicao({ url: `${REPO}/pulls/342/merge`, metodo: 'PUT' })).toBe('mesclar')
+  })
+})
+
+describe('guardaPorRepositorio — o projeto em andamento decide o nível', () => {
+  it('dois projetos do MESMO repositório: cada escrita usa o nível do projeto que a faz', async () => {
+    const f = fetchFalso()
+    const niveis: Record<string, string> = { 'p-cuidar': 'cuidar', 'p-olhar': 'so_olhar' }
+    const g = guardaPorRepositorio(f, {
+      nivelDoRepositorio: async (_repo, projectId) =>
+        projectId ? (niveis[projectId] ?? null) : null,
+      nossosRepositorios: new Set(),
+    })
+    const url = 'https://api.github.com/repos/cliente/api/pulls/1/merge'
+
+    await comProjetoDaGuarda('p-cuidar', () => g(url, { method: 'PUT' }))
+    expect(f).toHaveBeenCalledTimes(1)
+
+    await expect(comProjetoDaGuarda('p-olhar', () => g(url, { method: 'PUT' }))).rejects.toThrow(
+      EscritaNaoAutorizadaError
+    )
+    expect(f).toHaveBeenCalledTimes(1)
+  })
+
+  it('o cache não mistura projetos do mesmo repositório', async () => {
+    const f = fetchFalso()
+    const niveis: Record<string, string> = { 'p-cuidar': 'cuidar', 'p-olhar': 'so_olhar' }
+    const g = guardaPorRepositorio(f, {
+      nivelDoRepositorio: async (_repo, projectId) =>
+        projectId ? (niveis[projectId] ?? null) : null,
+      nossosRepositorios: new Set(),
+    })
+    const url = 'https://api.github.com/repos/cliente/api/pulls/1/merge'
+    await comProjetoDaGuarda('p-cuidar', () => g(url, { method: 'PUT' }))
+    await expect(comProjetoDaGuarda('p-olhar', () => g(url, { method: 'PUT' }))).rejects.toThrow(
+      EscritaNaoAutorizadaError
+    )
   })
 })

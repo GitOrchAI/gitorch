@@ -30,6 +30,7 @@ import { baseDoPrDe, branchPadraoDoRepositorio, campoNumero } from '../services/
 import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
 import { ehParticipanteDoRepo } from '../services/participante-do-repo.js'
 import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
+import { nivelDoRepositorio } from '../services/nivel-do-repositorio.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 
 declare module 'fastify' {
@@ -589,13 +590,8 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
   // chamada e respeita o nível de autonomia que o cliente configurou.
   const ghComGuarda = fetchComTeto(
     guardaPorRepositorio(fetch, {
-      nivelDoRepositorio: async (repo: string) => {
-        const linha = await app.prisma.project.findFirst({
-          where: { wingId: repo, isActive: true },
-          select: { autonomia: true },
-        })
-        return linha?.autonomia ?? null
-      },
+      nivelDoRepositorio: (repo: string, projectId?: string) =>
+        nivelDoRepositorio(app.prisma, repo, projectId),
       nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
     })
   )

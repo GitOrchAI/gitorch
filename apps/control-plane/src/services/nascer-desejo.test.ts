@@ -118,6 +118,29 @@ describe('nascerDesejo', () => {
     expect(chamadas.some((c) => c.body?.includes('addProjectV2ItemById'))).toBe(true)
   })
 
+  it('a autonomia vem do PROJETO que pediu (id), nunca só do nome do repositório', async () => {
+    const prisma = fakePrisma({ autonomia: 'cuidar' })
+    const { impl } = fakeFetch({
+      quadros: [{ id: 'PVT_1', number: 2, title: REPO, closed: false }],
+    })
+
+    await nascerDesejo(
+      { projectId: PROJECT_ID, repo: REPO, titulo: 't', corpo: 'c', etiquetas: [] },
+      {
+        prisma,
+        engineConnections: { getRawGithubToken: vi.fn(async () => 'token-do-login') },
+        fetchImpl: impl,
+        obterToken: async () => 'token-da-issue',
+      }
+    )
+
+    expect(prisma.project.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: PROJECT_ID, wingId: REPO, isActive: true },
+      })
+    )
+  })
+
   it('so_olhar: a escrita real é recusada — EscritaNaoAutorizadaError propaga (o 403 de 065d779 continua funcionando)', async () => {
     const prisma = fakePrisma({ autonomia: 'so_olhar' })
     const getRawGithubToken = vi.fn(async () => 'token-do-login')

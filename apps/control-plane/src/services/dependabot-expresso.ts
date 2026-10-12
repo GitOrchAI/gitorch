@@ -22,10 +22,11 @@
 import { createHash } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
 import { lerCuidaPorOrigem } from './cuidado-por-origem.js'
+import { comProjetoDaGuarda } from './guarda-de-autonomia.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
 import { lerEstadoDoCiDoHead } from './estado-da-verificacao-do-github.js'
-import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
+import { baseDoPrDe, branchPadraoLidaDoRepositorio } from './base-do-dev.js'
 import { contextoExecutivoVazio } from './contexto-executivo-da-pergunta.js'
 import {
   dedupKeyDeCuidaDestePedido,
@@ -284,10 +285,20 @@ async function perguntarAoDono(
   return resultado('Dependabot expresso: pergunta "cuido deste pedido?" enviada ao dono')
 }
 
-/** A decisão e, se for o caso, o merge. Nunca retoma sessão nem fecha o PR. */
-export async function decidirDependabotExpresso(
+/**
+ * A decisão e, se for o caso, o merge. Nunca retoma sessão nem fecha o PR.
+ *
+ * O merge sai pela guarda de autonomia por endereço, que só conhece o
+ * repositório; o projeto em andamento é informado a ela para que dois projetos
+ * do mesmo repositório não herdem a autonomia um do outro.
+ */
+export function decidirDependabotExpresso(
   deps: DepsDoDependabotExpresso
 ): Promise<ResultadoDoDependabot> {
+  return comProjetoDaGuarda(deps.projeto.id, () => decidirDoProjeto(deps))
+}
+
+async function decidirDoProjeto(deps: DepsDoDependabotExpresso): Promise<ResultadoDoDependabot> {
   const { projeto, numero, token } = deps
   const politica = lerCuidaPorOrigem(deps.runtimeConfig, false).dependabot
   if (politica === 'nao') {
@@ -303,7 +314,16 @@ export async function decidirDependabotExpresso(
   if (pr.estado !== null && pr.estado !== 'open') {
     return resultado(`Dependabot expresso: o PR #${numero} não está aberto (${pr.estado})`)
   }
-  if (pr.autor !== null && !AUTORES_QUE_O_VIGIA_NAO_CONSERTA.includes(pr.autor)) {
+  // Autor ausente não prova nada: só quem a leitura NOMEIA como o Dependabot
+  // passa. O merge sozinho exige saber de quem é o pedido.
+  if (pr.autor === null) {
+    return recusar(
+      deps,
+      pr.sha,
+      'não deu para saber o autor do PR, então não é provado que é do Dependabot'
+    )
+  }
+  if (!AUTORES_QUE_O_VIGIA_NAO_CONSERTA.includes(pr.autor)) {
     return recusar(deps, pr.sha, `o autor é ${pr.autor}, não o Dependabot`)
   }
 
@@ -362,10 +382,17 @@ export async function decidirDependabotExpresso(
     )
   }
   const cabecaViva = viva.sha
-  const branchPadrao = await branchPadraoDoRepositorio(
+  const branchPadrao = await branchPadraoLidaDoRepositorio(
     async () => deps.ghGet(`/repos/${projeto.wingId}`, token),
     deps.onWarn
   )
+  if (branchPadrao === null) {
+    return recusar(
+      deps,
+      pr.sha,
+      'não deu para ler a branch padrão do repositório — por segurança não mescla sem saber para onde o PR deve apontar'
+    )
+  }
 
   const feito = await mesclarPr({
     numeroDoPr: numero,

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   classificarOrigem,
   ehEntregaDoDevAssincrono,
+  ehOrigemDoDevAssincronoOuLegada,
   issueConfiavelDaFicha,
   origemPrecisaDeReclassificacao,
 } from './origem-do-item.js'
@@ -177,6 +178,28 @@ describe('ehEntregaDoDevAssincrono', () => {
       'inventada',
     ]) {
       expect(ehEntregaDoDevAssincrono(origem)).toBe(false)
+    }
+  })
+})
+
+describe('ehOrigemDoDevAssincronoOuLegada', () => {
+  it('vale para as origens atuais do dev assíncrono e para o nome antigo, que fichas velhas ainda podem trazer', () => {
+    expect(ehOrigemDoDevAssincronoOuLegada('jules_gitorch')).toBe(true)
+    expect(ehOrigemDoDevAssincronoOuLegada('jules_fora')).toBe(true)
+    expect(ehOrigemDoDevAssincronoOuLegada('jules')).toBe(true)
+  })
+
+  it('não vale para o resto', () => {
+    for (const origem of [
+      null,
+      undefined,
+      '',
+      'desconhecido',
+      'pessoa',
+      'dependabot',
+      'inventada',
+    ]) {
+      expect(ehOrigemDoDevAssincronoOuLegada(origem)).toBe(false)
     }
   })
 })

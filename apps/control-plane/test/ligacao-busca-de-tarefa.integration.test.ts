@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Fastify, { type FastifyInstance } from 'fastify'
-import type { PrismaClient } from '@prisma/client'
+import type { Prisma, PrismaClient } from '@prisma/client'
 import { telegramPlugin } from '../src/plugins/telegram.js'
 import {
   buscarTarefaParecidaDosPrs,
@@ -180,13 +180,11 @@ describe.skipIf(!reachable)('busca da tarefa pelo código e pergunta ao dono (in
 
   afterAll(async () => {
     if (prisma) await prisma.$disconnect()
-    try {
-      psql(requireAdminUrl(), `DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`)
-    } catch {}
+    psql(requireAdminUrl(), `DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`)
   })
 
   /** Projeto com dono e chat do Telegram vinculado (para a notificação sair). */
-  async function novoProjeto(runtimeConfig: unknown = null) {
+  async function novoProjeto(runtimeConfig: Prisma.InputJsonValue | null = null) {
     const projectId = randomUUID()
     await prisma.plan.upsert({
       where: { id: 'free' },
@@ -206,7 +204,7 @@ describe.skipIf(!reachable)('busca da tarefa pelo código e pergunta ao dono (in
         wingId: REPO,
         name: `repo-${projectId}`,
         userId,
-        ...(runtimeConfig !== null ? { runtimeConfig: runtimeConfig as never } : {}),
+        ...(runtimeConfig !== null ? { runtimeConfig } : {}),
       },
     })
     return { projectId, userId }
@@ -448,6 +446,57 @@ describe.skipIf(!reachable)('busca da tarefa pelo código e pergunta ao dono (in
     // Responder de novo é inofensivo.
     await perguntas.answer(pergunta!.id, 'vinculo-issue-713', 'telegram')
     expect(await ficha(projectId, 590)).toMatchObject({ issue: 713, vinculoOrigem: 'dono' })
+  })
+
+  it.each(['formal', 'texto', 'dono'])(
+    'vínculo já gravado com origem confiável (%s): a resposta do dono NÃO o sobrescreve',
+    async (origemDoVinculo) => {
+      const { projectId, userId } = await novoProjeto()
+      await semearPr(projectId, 590)
+      await prisma.repoItem.update({
+        where: { projectId_tipo_numero: { projectId, tipo: 'pr', numero: 590 } },
+        data: { issueNumber: 30, vinculoOrigem: origemDoVinculo },
+      })
+      const { perguntas } = await iniciar({ prs: [{ number: 590, sha: 'abc' }], issues: ISSUES })
+      const { question } = (await perguntas.ask(userId, projectId, {
+        text: 'a qual tarefa pertence?',
+        options: [{ label: '#713', value: 'vinculo-issue-713' }],
+        dedupKey: `vinculo-da-tarefa:${REPO}:590`,
+      })) as { question: { id: string } }
+
+      await perguntas.answer(question.id, 'vinculo-issue-713', 'panel')
+
+      expect(await ficha(projectId, 590)).toMatchObject({
+        issue: 30,
+        vinculoOrigem: origemDoVinculo,
+      })
+    }
+  )
+
+  it('resposta livre e o GitHub fora do ar: não grava e o erro fica no log, não some', async () => {
+    const { projectId, userId } = await novoProjeto()
+    await semearPr(projectId, 590)
+    const { perguntas } = await iniciar({ prs: [{ number: 590, sha: 'abc' }], issues: ISSUES })
+    await missao({
+      projectId,
+      userId,
+      perguntas,
+      execute: motorFalso(() => ({ issueNumberEncontrado: null, justificativa: 'nada' })),
+    })
+    const [pergunta] = await perguntasDoProjeto(projectId)
+    const aviso = vi.spyOn(app!.log, 'warn')
+    // A conferência da tarefa sai para o GitHub; derrubado o servidor, a rede falha.
+    await new Promise<void>((resolve) => servidor!.close(() => resolve()))
+    servidor = null
+
+    await perguntas.answer(pergunta!.id, 'é a #713', 'panel')
+
+    expect(await ficha(projectId, 590)).toMatchObject({ issue: null, vinculoOrigem: null })
+    expect(
+      aviso.mock.calls.some((c) =>
+        c.some((a) => String(a).includes('não consegui conferir a tarefa #713'))
+      )
+    ).toBe(true)
   })
 
   it('"nenhuma destas": nada muda na ficha e a pergunta não volta', async () => {

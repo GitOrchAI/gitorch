@@ -736,6 +736,10 @@ describe('mudança em arquivo SEMPRE por PR: permissões mínimas de um workflow
     ])
     expect(github.pulls[0]?.body).toMatch(/Como reverter/)
     expect(github.pulls[0]?.body).toContain('contents: read')
+    expect(github.pulls[0]?.body).toContain(
+      'Confira se esta automação publica alguma coisa (site, pacote, imagem). ' +
+        'Se publica, feche este PR sem mesclar: ela precisa da permissão de escrita.'
+    )
     expect(resultado).toMatchObject({
       estado: 'aguardando-revisao',
       pr: { ramo, caminho, acao: 'editar' },

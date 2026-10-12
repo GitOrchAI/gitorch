@@ -5,6 +5,7 @@ import {
   type AcaoNoRepositorio,
   type NivelDeAutonomia,
 } from '@gitorch/cadence'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { fetchComTeto } from './fetch-com-teto.js'
 
 /**
@@ -283,10 +284,28 @@ export function repositorioDaUrl(url: string): string | null {
   }
 }
 
+const projetoEmAndamento = new AsyncLocalStorage<string>()
+
+/**
+ * Roda `fn` dizendo à guarda por endereço de QUAL projeto são as escritas que
+ * ela fizer. O repositório sozinho não basta: dois projetos podem apontar para
+ * o mesmo e ter autonomias diferentes. Quem decide uma escrita num projeto
+ * conhecido (merge, pull request, comentário) embrulha a decisão aqui.
+ */
+export function comProjetoDaGuarda<T>(projectId: string, fn: () => T): T {
+  return projetoEmAndamento.run(projectId, fn)
+}
+
 /** Quem responde qual é o nível de um repositório. */
 export interface DonoDoRepositorio {
-  /** Nível do projeto com este endereço, ou `null` se não houver projeto. */
-  nivelDoRepositorio: (repo: string) => Promise<NivelDeAutonomia | string | null>
+  /**
+   * Nível do projeto com este endereço, ou `null` se não houver projeto.
+   * `projectId` vem de `comProjetoDaGuarda`, quando quem escreve o informou.
+   */
+  nivelDoRepositorio: (
+    repo: string,
+    projectId?: string
+  ) => Promise<NivelDeAutonomia | string | null>
   /** Repositórios do PRÓPRIO produto — não são de cliente e não são governados. */
   nossosRepositorios: ReadonlySet<string>
 }
@@ -349,13 +368,15 @@ export function guardaPorRepositorio(
     if (dono.nossosRepositorios.has(repo)) return fetchImpl(input, init)
 
     const agora = Date.now()
-    const guardado = cache.get(repo)
+    const projectId = projetoEmAndamento.getStore()
+    const chaveDoCache = `${repo}\u0000${projectId ?? ''}`
+    const guardado = cache.get(chaveDoCache)
     let nivel: string | null
     if (guardado && guardado.ate > agora) {
       nivel = guardado.nivel
     } else {
-      nivel = await dono.nivelDoRepositorio(repo)
-      cache.set(repo, { nivel, ate: agora + cacheMs })
+      nivel = await dono.nivelDoRepositorio(repo, projectId)
+      cache.set(chaveDoCache, { nivel, ate: agora + cacheMs })
     }
 
     if (nivel === null) {

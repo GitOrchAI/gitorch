@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { decidirProximoPasso, type MotorDoProximoPassoDeps } from './motor-do-proximo-passo.js'
+import {
+  baldeDeCuidado,
+  decidirProximoPasso,
+  type MotorDoProximoPassoDeps,
+} from './motor-do-proximo-passo.js'
 import { PADRAO_DE_CUIDADO } from './cuidado-por-origem.js'
 
 function base(): MotorDoProximoPassoDeps {
@@ -206,5 +210,18 @@ describe('decidirProximoPasso — PR de participante do repositório', () => {
       }
     }
     expect([...acoes]).toEqual(['so-acompanhar'])
+  })
+})
+
+describe('baldeDeCuidado: o dev assíncrono cai no balde jules, com o nome atual ou o antigo', () => {
+  it.each(['jules_gitorch', 'jules_fora', 'jules', 'desconhecido'])('%s -> jules', (origem) => {
+    expect(baldeDeCuidado(origem)).toBe('jules')
+  })
+
+  it('os demais mantêm o seu balde, e outro_bot nunca é julgado', () => {
+    expect(baldeDeCuidado('assistente')).toBe('assistente')
+    expect(baldeDeCuidado('pessoa')).toBe('pessoa')
+    expect(baldeDeCuidado('dependabot')).toBe('dependabot')
+    expect(baldeDeCuidado('outro_bot')).toBeNull()
   })
 })

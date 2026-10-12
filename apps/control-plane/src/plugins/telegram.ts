@@ -56,7 +56,11 @@ import { chaveDoDevDoProjeto as resolverChaveDoDevDoProjeto } from '../services/
 import { criarSessaoJules } from '../services/jules-client.js'
 import { abrirSessao, registrarPr, type PrismaDevSession } from '../services/dev-session-store.js'
 import { ghJson, headersGithub } from '../services/github-json.js'
-import { atualizarFichaDoItem, type PrismaDaFichaDoItem } from '../services/ficha-do-item.js'
+import {
+  atualizarFichaDoItem,
+  lerFichaDoItem,
+  type PrismaDaFichaDoItem,
+} from '../services/ficha-do-item.js'
 import { registrarNoPainelUmaVez } from '../services/registro-no-painel.js'
 import { parseDedupKeyDeVinculoDaTarefa } from '../services/perguntar-vinculo-da-tarefa.js'
 import { processarRespostaDoVinculoDaTarefa } from '../services/processar-resposta-vinculo-da-tarefa.js'
@@ -709,6 +713,26 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       { dedupKey: args.dedupKey, resposta: args.resposta, opcoes: args.opcoes },
       {
         gravarVinculo: async ({ numeroDoPr, issueNumber }) => {
+          // Só o palpite do código (ou a ausência de vínculo) cede à resposta:
+          // um vínculo já gravado por origem confiável não é trocado por uma
+          // resposta que pode ter chegado atrasada, de pergunta antiga.
+          const atual = await lerFichaDoItem({
+            prisma: app.prisma as unknown as PrismaDaFichaDoItem,
+            projectId: args.projectId,
+            tipo: 'pr',
+            numero: numeroDoPr,
+          })
+          if (
+            atual?.issueNumber != null &&
+            atual.issueNumber !== issueNumber &&
+            atual.vinculoOrigem != null &&
+            atual.vinculoOrigem !== 'codigo'
+          ) {
+            app.log.warn(
+              `[Telegram] vinculo-da-tarefa: o pull request #${numeroDoPr} já está ligado à tarefa #${atual.issueNumber} (origem ${atual.vinculoOrigem}); a resposta do dono (#${issueNumber}) não sobrescreveu`
+            )
+            return
+          }
           await atualizarFichaDoItem({
             prisma: app.prisma as unknown as PrismaDaFichaDoItem,
             projectId: args.projectId,
@@ -737,7 +761,11 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             const issue = (await resp.json()) as { state?: unknown; pull_request?: unknown }
             // A rota de issues também devolve pull requests.
             return issue.state === 'open' && !issue.pull_request
-          } catch {
+          } catch (err) {
+            app.log.warn(
+              err,
+              `[Telegram] vinculo-da-tarefa: não consegui conferir a tarefa #${numero} de ${projeto.wingId} no GitHub`
+            )
             return null
           }
         },

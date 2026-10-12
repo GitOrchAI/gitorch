@@ -9,6 +9,7 @@ import {
 } from './dependabot-expresso.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { vigiarPrsOrfaos, type PrAberto, type VigiaDoPrDeps } from './vigia-do-pr.js'
+import { guardaPorRepositorio } from './guarda-de-autonomia.js'
 
 const CI_VERDE = { check_runs: [{ status: 'completed', conclusion: 'success' }] }
 const SEM_WORKFLOW_RODANDO = { workflow_runs: [{ status: 'completed', conclusion: 'success' }] }
@@ -16,6 +17,8 @@ const SEM_WORKFLOW_RODANDO = { workflow_runs: [{ status: 'completed', conclusion
 interface Cenario {
   titulo?: string
   autor?: string
+  /** O GitHub não devolveu o autor (conta apagada, resposta sem `user`). */
+  semAutor?: boolean
   ramo?: string
   base?: string
   mergeable?: boolean | null
@@ -30,6 +33,8 @@ interface Cenario {
   listaDeAbertosFalha?: boolean
   putFalha?: Error
   padrao?: string
+  /** A leitura do repositório (branch padrão) falha ou vem sem o campo. */
+  repositorio?: 'falha' | 'sem-padrao'
 }
 
 function github(c: Cenario = {}) {
@@ -44,14 +49,18 @@ function github(c: Cenario = {}) {
         number: 42,
         state: c.estado ?? 'open',
         title: c.titulo ?? 'Bump lodash from 4.17.20 to 4.17.21',
-        user: { login: c.autor ?? 'dependabot[bot]' },
+        ...(c.semAutor ? {} : { user: { login: c.autor ?? 'dependabot[bot]' } }),
         body: 'Bumps lodash.',
         head: { sha: heads[Math.min(i, heads.length - 1)], ref: c.ramo ?? 'dependabot/npm/lodash' },
         base: { ref: c.base ?? 'main' },
         mergeable: c.mergeable === undefined ? true : c.mergeable,
       }
     }
-    if (caminho === '/repos/org/repo') return { default_branch: c.padrao ?? 'main' }
+    if (caminho === '/repos/org/repo') {
+      if (c.repositorio === 'falha') throw new Error('GitHub fora do ar')
+      if (c.repositorio === 'sem-padrao') return {}
+      return { default_branch: c.padrao ?? 'main' }
+    }
     if (caminho.startsWith('/repos/org/repo/pulls?state=open')) {
       if (c.listaDeAbertosFalha) throw new Error('lista indisponível')
       return c.abertos ?? []
@@ -265,6 +274,24 @@ describe('decidirDependabotExpresso: merge com as garantias do merge do dev', ()
     expect(r.mesclou).toBe(false)
     expect(puts(gh.ghSend)).toHaveLength(0)
     expect(r.motivo).toContain('Dependabot')
+  })
+
+  it('autor ausente na leitura: NÃO mescla e diz o motivo (autor desconhecido não é o Dependabot)', async () => {
+    const { gh, deps } = depsDoCore({ semAutor: true })
+    const r = await decidirDependabotExpresso(deps)
+    expect(r.mesclou).toBe(false)
+    expect(puts(gh.ghSend)).toHaveLength(0)
+    expect(r.motivo).toContain('autor')
+  })
+
+  it('não conseguiu ler a branch padrão: NÃO mescla (nada de supor `main`) e diz o motivo', async () => {
+    for (const repositorio of ['falha', 'sem-padrao'] as const) {
+      const { gh, deps } = depsDoCore({ repositorio })
+      const r = await decidirDependabotExpresso(deps)
+      expect(r.mesclou).toBe(false)
+      expect(puts(gh.ghSend)).toHaveLength(0)
+      expect(r.motivo).toContain('branch padrão')
+    }
   })
 
   it('PR do aplicador de segurança do GitOrch: NÃO mescla (guarda do 5B intacta)', async () => {
@@ -603,5 +630,50 @@ describe('o vigia leva o PR do Dependabot à decisão expressa, e só a ela', ()
     })
     expect(decidirDependabot).toHaveBeenCalledTimes(2)
     expect(resumo).toContain('além do teto')
+  })
+})
+
+describe('dependabot expresso: a autonomia do merge é a do projeto, não a do nome do repositório', () => {
+  // Dois projetos apontam para `org/repo`: um cuida, outro só olha. O merge sai
+  // pela guarda por endereço, que só sabe o repositório; o projeto em
+  // andamento é quem desempata.
+  function mergeGuardado(projectId: string) {
+    const niveis: Record<string, string> = { 'proj-cuidar': 'cuidar', 'proj-olhar': 'so_olhar' }
+    const chamadas: string[] = []
+    const guardado = guardaPorRepositorio(
+      (async (url: string, init?: RequestInit) => {
+        chamadas.push(`${init?.method ?? 'GET'} ${url}`)
+        return new Response('{}', { status: 200 })
+      }) as unknown as typeof fetch,
+      {
+        nivelDoRepositorio: async (_repo, id) => (id ? (niveis[id] ?? null) : null),
+        nossosRepositorios: new Set(),
+      }
+    )
+    const { deps } = depsDoCore(
+      {},
+      {
+        projeto: { id: projectId, wingId: 'org/repo' },
+        ghSend: async (m: string, c: string, _t: string, b: unknown) => {
+          await guardado(`https://api.github.com${c}`, { method: m, body: JSON.stringify(b) })
+          return {}
+        },
+      }
+    )
+    return { deps, chamadas }
+  }
+
+  it('o projeto que cuida mescla', async () => {
+    const { deps, chamadas } = mergeGuardado('proj-cuidar')
+    const r = await decidirDependabotExpresso(deps)
+    expect(r.mesclou).toBe(true)
+    expect(chamadas.filter((c) => c.startsWith('PUT'))).toHaveLength(1)
+  })
+
+  it('o projeto que só olha, no MESMO repositório, não mescla', async () => {
+    const { deps, chamadas } = mergeGuardado('proj-olhar')
+    const r = await decidirDependabotExpresso(deps)
+    expect(r.mesclou).toBe(false)
+    expect(chamadas.filter((c) => c.startsWith('PUT'))).toHaveLength(0)
   })
 })

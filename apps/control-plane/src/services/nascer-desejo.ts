@@ -46,12 +46,12 @@ import type { LeitorDeCredencialDeLogin } from './project-credential.js'
 
 /** O recorte de Prisma que este serviço precisa: o de
  *  `resolverQuadroDoRepositorio` (achar repositório/dono do projeto) MAIS
- *  `findFirst` por `wingId` — o MESMO jeito que 065d779 lê a autonomia REAL
+ *  `findFirst` por id do projeto — o jeito de ler a autonomia REAL
  *  na hora de escrever (nunca uma reaproveitada de outro lugar). */
 export interface PrismaLikeParaNascerDesejo extends PrismaLikeParaQuadro {
   project: PrismaLikeParaQuadro['project'] & {
     findFirst: (args: {
-      where: { wingId: string; isActive: boolean }
+      where: { id: string; wingId: string; isActive: boolean }
       select: { autonomia: boolean }
     }) => Promise<{ autonomia?: string | null } | null>
   }
@@ -109,11 +109,12 @@ export async function nascerDesejo(
     quadroDeps
   )
 
-  // A autonomia REAL do projeto, lida no prisma pelo `wingId` — o mesmo
-  // filtro (`isActive: true`) que 065d779 já usava em routes/index.ts e
-  // plugins/telegram.ts.
+  // A autonomia REAL do projeto que pediu, lida no prisma pelo id: `wingId`
+  // sozinho não identifica o projeto (dois podem apontar para o mesmo
+  // repositório, e um inativo guarda a sua), e o filtro `isActive: true` o
+  // mesmo que routes/index.ts e plugins/telegram.ts já usavam.
   const projeto = await deps.prisma.project.findFirst({
-    where: { wingId: args.repo, isActive: true },
+    where: { id: args.projectId, wingId: args.repo, isActive: true },
     select: { autonomia: true },
   })
   const nivel = projeto?.autonomia ?? null
