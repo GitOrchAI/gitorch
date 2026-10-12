@@ -148,6 +148,10 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(webhookVerifyPlugin)
   await app.register(cortexPlugin)
 
+  import('../wishlist-worker.js')
+    .then((worker) => worker.startWishlistWorker())
+    .catch(app.log.error)
+
   // GITORCH_FAKE_ENGINES=1 (nunca em produção — fakeEnginesEnabled() já
   // recusa NODE_ENV=production): troca o login assistido e a liveness dos 3
   // motores por fakes determinísticos no boot. Existe só para o E2E do funil
