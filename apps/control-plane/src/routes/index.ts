@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import { healthRoutes } from './health.js'
+import { versionRoutes } from './version.js'
 import { metricsRoutes } from './metrics.js'
 import { githubWebhookRoutes } from './github-webhook.js'
 import { projectRoutes } from './projects.js'
@@ -198,15 +199,5 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Events SSE endpoint
   await eventRoutes(app)
 
-  app.get('/api/v1/status', async () => ({
-    status: 'operational',
-    version: '0.1.0',
-    timestamp: new Date().toISOString(),
-  }))
-
-  app.get('/api/v1/version', async () => ({
-    version: '0.1.0',
-    name: 'gitorch-control-plane',
-    timestamp: new Date().toISOString(),
-  }))
+  await versionRoutes(app)
 }

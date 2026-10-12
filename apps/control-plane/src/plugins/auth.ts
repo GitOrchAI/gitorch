@@ -63,23 +63,27 @@ function unauthorized(message: string): Error {
   return error
 }
 
-const authPluginImpl: FastifyPluginAsync = async (app) => {
-  const publicPaths = [
-    '/health',
-    '/ready',
-    '/metrics',
-    '/api/webhooks/github',
-    '/api/v1/auth/github',
-    '/api/v1/auth/github/callback',
-    // Billing público: preços pra landing exibir, waitlist e o webhook do Stripe
-    // (que autentica por assinatura, não por Bearer). Checkout fica autenticado.
-    '/api/pricing',
-    '/api/waitlist',
-    '/api/billing/webhook',
-    '/api/v1/invitations/validate/',
-    '/api/v1/invites/claim/',
-  ]
+// Caminhos públicos (por prefixo). Cada entrada nova é superfície aberta sem
+// login: o teste do plugin trava a lista exata para a mudança ser deliberada.
+export const CAMINHOS_PUBLICOS_DE_API: readonly string[] = [
+  '/health',
+  '/ready',
+  '/metrics',
+  // Versão e commit no ar: não é segredo e quem publica confere sem credencial.
+  '/api/v1/version',
+  '/api/webhooks/github',
+  '/api/v1/auth/github',
+  '/api/v1/auth/github/callback',
+  // Billing público: preços pra landing exibir, waitlist e o webhook do Stripe
+  // (que autentica por assinatura, não por Bearer). Checkout fica autenticado.
+  '/api/pricing',
+  '/api/waitlist',
+  '/api/billing/webhook',
+  '/api/v1/invitations/validate/',
+  '/api/v1/invites/claim/',
+]
 
+const authPluginImpl: FastifyPluginAsync = async (app) => {
   // O front estático (wizard Next export) é servido pela MESMA origem e é
   // público por natureza: todo endpoint protegido vive sob `/api/`. Então
   // qualquer path fora de `/api/` (/, /setup, /_next/*, favicon, etc.) é
@@ -88,7 +92,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   const isPublicPath = (url: string) => {
     const pathOnly = url.split('?')[0] ?? url
     if (!pathOnly.startsWith('/api/')) return true
-    return publicPaths.some((p) => pathOnly.startsWith(p))
+    return CAMINHOS_PUBLICOS_DE_API.some((p) => pathOnly.startsWith(p))
   }
 
   // Register rate limit for authenticated routes with a stricter limit.
