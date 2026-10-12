@@ -808,6 +808,53 @@ async function julgarEntregaViaRails(
     return { estado: investigado.estado, culpado: investigado.culpado }
   }
 
+  // Aviso ao dono e pedido de resgate ao dev são ações do laço, antes de
+  // qualquer julgamento, e só se desduplicam lendo a marca e gravando depois:
+  // duas missões ao mesmo tempo as faziam em dobro. Aqui elas passam pela MESMA
+  // trava do parecer (PR + commit). Quem perde deixa a ação para quem tomou;
+  // quem tomou a assenta (folga curta, que cobre a missão que já tinha lido a
+  // marca velha) quando a ação chegou, e a solta quando não chegou, para a
+  // próxima acordada tentar de novo.
+  const sobTravaDoPr = async (
+    numeroDoPr: number,
+    headSha: string | null | undefined,
+    agir: () => Promise<boolean>
+  ): Promise<void> => {
+    if (!options.adquirirTrava) {
+      await agir()
+      return
+    }
+    const alvo = { numeroDoPr, headSha: headSha ?? 'unknown' }
+    let tomou: boolean
+    try {
+      tomou = await options.adquirirTrava(alvo)
+    } catch (err) {
+      options.onWarn?.(
+        `[qa] PR #${numeroDoPr}: não consegui tomar a trava para avisar (${err instanceof Error ? err.message : String(err)}); tento na próxima acordada`
+      )
+      return
+    }
+    if (!tomou) {
+      options.onWarn?.(
+        `[qa] PR #${numeroDoPr}: outra missão já cuida do aviso deste commit — esta não repete`
+      )
+      return
+    }
+    let concluiu = false
+    try {
+      concluiu = await agir()
+    } finally {
+      const gancho = concluiu ? options.assentarTrava : options.liberarTrava
+      if (gancho) {
+        await gancho(alvo).catch((err: unknown) =>
+          options.onWarn?.(
+            `[qa] PR #${numeroDoPr}: não consegui acertar a trava do aviso: ${err instanceof Error ? err.message : String(err)}`
+          )
+        )
+      }
+    }
+  }
+
   // O que fazer com uma entrega cuja verificação ainda NÃO dá veredito
   // (`esperar` / `avisar-demora`). Vale tanto para o candidato pulado no laço
   // quanto para o alvo — um lugar só, para a marca de pendência e o aviso de
@@ -842,22 +889,24 @@ async function julgarEntregaViaRails(
       const hashDoAviso = hashDaMensagem(`avisar-demora:${headSha ?? ''}`)
       const jaAvisado = linha?.answeredHash === hashDoAviso
       if (!jaAvisado && options.avisarDono) {
-        // fix/telegram-notifier-propaga-falha: só marca o hash (idempotência)
-        // se a entrega REALMENTE chegou — marcar numa falha de Telegram
-        // emudecia o dono até o próximo push mudar o head, o mesmo defeito
-        // que este aviso existe para evitar.
-        const entregue = await options
-          .avisarDono(
+        const avisarDono = options.avisarDono
+        await sobTravaDoPr(numeroDoPr, headSha, async () => {
+          // fix/telegram-notifier-propaga-falha: só marca o hash (idempotência)
+          // se a entrega REALMENTE chegou — marcar numa falha de Telegram
+          // emudecia o dono até o próximo push mudar o head, o mesmo defeito
+          // que este aviso existe para evitar.
+          const entregue = await avisarDono(
             `GitOrch: a verificação automática do PR #${numeroDoPr} (${options.repository}) ` +
               `está parada — ${decisao.motivo}.`
-          )
-          .catch(() => false)
-        if (entregue && linha && options.registrarAvisoDeDemora) {
-          await options.registrarAvisoDeDemora({
-            sessionName: linha.sessionName,
-            hash: hashDoAviso,
-          })
-        }
+          ).catch(() => false)
+          if (entregue && linha && options.registrarAvisoDeDemora) {
+            await options.registrarAvisoDeDemora({
+              sessionName: linha.sessionName,
+              hash: hashDoAviso,
+            })
+          }
+          return entregue
+        })
       }
     }
   }
@@ -1365,29 +1414,31 @@ async function julgarEntregaViaRails(
     })
 
     if (decisao.resgatar && options.avisarSessao) {
-      const pediu = await options
-        .avisarSessao({
+      const avisarSessao = options.avisarSessao
+      await sobTravaDoPr(travada.numeroDoPr, travada.headAtual, async () => {
+        const pediu = await avisarSessao({
           sessionName: travada.linha.sessionName,
           texto: pedidoDeResgate(travada.numeroDoPr),
-        })
-        .catch(() => false)
-      if (pediu && options.registrarConserto) {
-        // A marca leva o COMMIT: se o dev empurrar um novo, ela deixa de casar
-        // e o resgate volta a valer — que é exatamente o que se quer, porque
-        // aí o conflito é outro.
-        await options
-          .registrarConserto({
-            sessionName: travada.linha.sessionName,
-            chave: chaveDoResgate(travada.headAtual),
-            agora: agoraDoResgate,
-          })
-          .catch(() => undefined)
-      }
-      options.onWarn?.(
-        pediu
-          ? `[qa] PR #${travada.numeroDoPr} travado no teto de mescla: pedi ao dev para resolver`
-          : `[qa] PR #${travada.numeroDoPr} travado no teto e o pedido ao dev NÃO chegou`
-      )
+        }).catch(() => false)
+        if (pediu && options.registrarConserto) {
+          // A marca leva o COMMIT: se o dev empurrar um novo, ela deixa de casar
+          // e o resgate volta a valer — que é exatamente o que se quer, porque
+          // aí o conflito é outro.
+          await options
+            .registrarConserto({
+              sessionName: travada.linha.sessionName,
+              chave: chaveDoResgate(travada.headAtual),
+              agora: agoraDoResgate,
+            })
+            .catch(() => undefined)
+        }
+        options.onWarn?.(
+          pediu
+            ? `[qa] PR #${travada.numeroDoPr} travado no teto de mescla: pedi ao dev para resolver`
+            : `[qa] PR #${travada.numeroDoPr} travado no teto e o pedido ao dev NÃO chegou`
+        )
+        return pediu
+      })
     } else if (!decisao.resgatar && decisao.avisarDono) {
       // O aviso ao dono também é marcado por commit. Sem isso ele chegaria a
       // cada acordada do QA enquanto a entrega continuasse travada — e o
@@ -1409,27 +1460,30 @@ async function julgarEntregaViaRails(
       // sem canal nenhum, não há o que retentar, e reprocessar esta entrega
       // a cada tique pra sempre seria desperdício sem propósito. Só quando
       // HÁ um `avisarDono` e a ENTREGA falha é que a marca fica pendente.
-      const entregue = options.avisarDono
-        ? await options
-            .avisarDono(
-              `GitOrch: a entrega do pull request #${travada.numeroDoPr} travou — ${decisao.motivo}.`
-            )
-            .catch(() => false)
-        : true
-      options.onWarn?.(
-        entregue
-          ? `[qa] PR #${travada.numeroDoPr}: ${decisao.motivo}`
-          : `[qa] PR #${travada.numeroDoPr}: ${decisao.motivo} — e o aviso ao dono NÃO chegou`
-      )
-      if (entregue && options.registrarConserto) {
-        await options
-          .registrarConserto({
-            sessionName: travada.linha.sessionName,
-            chave: chaveDoResgate(travada.headAtual),
-            agora: agoraDoResgate,
-          })
-          .catch(() => undefined)
-      }
+      await sobTravaDoPr(travada.numeroDoPr, travada.headAtual, async () => {
+        const entregue = options.avisarDono
+          ? await options
+              .avisarDono(
+                `GitOrch: a entrega do pull request #${travada.numeroDoPr} travou — ${decisao.motivo}.`
+              )
+              .catch(() => false)
+          : true
+        options.onWarn?.(
+          entregue
+            ? `[qa] PR #${travada.numeroDoPr}: ${decisao.motivo}`
+            : `[qa] PR #${travada.numeroDoPr}: ${decisao.motivo} — e o aviso ao dono NÃO chegou`
+        )
+        if (entregue && options.registrarConserto) {
+          await options
+            .registrarConserto({
+              sessionName: travada.linha.sessionName,
+              chave: chaveDoResgate(travada.headAtual),
+              agora: agoraDoResgate,
+            })
+            .catch(() => undefined)
+        }
+        return entregue
+      })
     }
   }
 
@@ -1538,13 +1592,8 @@ async function julgarEntregaViaRails(
   // que tomou a trava faz tudo isso, e repetir é exatamente o defeito que a
   // trava existe para barrar.
   //
-  // A trava só cobre o que vem DEPOIS dela. O que roda antes continua sem
-  // proteção contra duas missões ao mesmo tempo: o aviso de demora ao dono
-  // (`avisar-demora`, em `agirSobreVerificacaoPendente`, que só se desduplica
-  // lendo e depois gravando a marca do aviso, sem atomicidade) e o resgate da
-  // entrega travada no teto de mescla (aviso à sessão do dev). Sob corrida
-  // esses dois podem sair em dobro. Fica como pendência conhecida: tomar a
-  // trava antes deles muda o comportamento e pede o seu próprio teste.
+  // O aviso de demora ao dono e o resgate da entrega travada no teto de mescla
+  // rodam antes do julgamento e passam pela mesma trava (`sobTravaDoPr`).
   const resultadoDeQuemPerdeuATrava = (): QaRailsMissionResult => {
     options.onWarn?.(
       `[qa] ${options.repository} #${target.number}: outra missão já julga o commit ${headDoParecer} — esta não repete`

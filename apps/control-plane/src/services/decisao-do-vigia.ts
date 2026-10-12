@@ -21,8 +21,13 @@ import type {
   montarContextoExecutivoDaPergunta,
   DepsDoContextoExecutivo,
 } from './contexto-executivo-da-pergunta.js'
-import { ehEntregaDoDevAssincrono, type OrigemDoItem } from './origem-do-item.js'
+import {
+  ehEntregaDoDevAssincrono,
+  ehOrigemDoDevAssincronoOuLegada,
+  type OrigemDoItem,
+} from './origem-do-item.js'
 import { montarContextoDoItem } from './tudo-sobre-o-item.js'
+import { comProjetoDaGuarda } from './guarda-de-autonomia.js'
 
 type AcaoDoVigia = ReturnType<
   NonNullable<
@@ -63,7 +68,18 @@ export interface DecisaoDoVigiaDeps {
   onWarn: (mensagem: string) => void
 }
 
-export async function decidirAcaoNoPrOrfaoIntegrado({
+/**
+ * O merge e as demais escritas desta decisão saem pela guarda de autonomia por
+ * endereço; o projeto em andamento é informado a ela para que dois projetos do
+ * mesmo repositório não herdem a autonomia um do outro.
+ */
+export function decidirAcaoNoPrOrfaoIntegrado(
+  deps: DecisaoDoVigiaDeps
+): Promise<Awaited<AcaoDoVigia>> {
+  return comProjetoDaGuarda(deps.projeto.id, () => decidirNoProjeto(deps))
+}
+
+async function decidirNoProjeto({
   runtimeConfig,
   agora,
   projeto,
@@ -228,10 +244,7 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
 
   if (origem !== 'dependabot') {
     try {
-      if (
-        !currentHeadSha &&
-        (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules')
-      ) {
+      if (!currentHeadSha && ehOrigemDoDevAssincronoOuLegada(origem)) {
         const prDetails = (await ghGet(
           `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
           token

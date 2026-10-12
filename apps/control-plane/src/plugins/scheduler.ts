@@ -419,6 +419,7 @@ import {
   guardaPorRepositorio,
   fetchSemPermissao,
 } from '../services/guarda-de-autonomia.js'
+import { nivelDoRepositorio } from '../services/nivel-do-repositorio.js'
 import { garantirSprintDosProjetos } from '../services/garantir-sprint-dos-projetos.js'
 import { garantirSprintNoQuadro, hojeNoFuso } from '../services/garantir-sprint.js'
 import {
@@ -3125,13 +3126,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    */
   const ghComGuarda = fetchComTeto(
     guardaPorRepositorio(fetch, {
-      nivelDoRepositorio: async (repo: string) => {
-        const linha = await app.prisma.project.findFirst({
-          where: { wingId: repo, isActive: true },
-          select: { autonomia: true },
-        })
-        return linha?.autonomia ?? null
-      },
+      nivelDoRepositorio: (repo: string, projectId?: string) =>
+        nivelDoRepositorio(app.prisma, repo, projectId),
       nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
     }),
     // Mesmo teto de `ghGet`/`ghSend` (a constante em si é declarada mais

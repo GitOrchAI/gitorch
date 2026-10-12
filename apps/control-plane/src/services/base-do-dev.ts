@@ -54,3 +54,24 @@ export async function branchPadraoDoRepositorio(
   }
   return baseDoDev()
 }
+
+/**
+ * A branch padrão REAL do repositório, ou `null` quando não deu para saber.
+ *
+ * Para quem NÃO pode supor a base (o merge sozinho do Dependabot): sem a leitura
+ * não há como provar que o PR mira a branch padrão, então o chamador recusa.
+ * `branchPadraoDoRepositorio` continua caindo na base do dev para os demais.
+ */
+export async function branchPadraoLidaDoRepositorio(
+  lerRepositorio: () => Promise<unknown>,
+  onWarn?: (mensagem: string) => void
+): Promise<string | null> {
+  try {
+    return campoTexto(await lerRepositorio(), 'default_branch')
+  } catch (err) {
+    onWarn?.(
+      `[base-do-dev] não deu para ler a branch padrão do repositório (${(err as Error).message})`
+    )
+    return null
+  }
+}

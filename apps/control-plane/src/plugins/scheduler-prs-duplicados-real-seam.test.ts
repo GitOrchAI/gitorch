@@ -53,12 +53,16 @@ function buildFakePrisma() {
       count: vi.fn(async () => 0),
     },
     project: {
-      findMany: vi.fn(async (args: { where?: { isActive?: boolean }; select?: unknown }) => {
-        if (args?.where?.isActive && ehSelectDaVarreduraDePrsDuplicados(args.select)) {
-          return [PROJETO]
+      findMany: vi.fn(
+        async (args: { where?: { isActive?: boolean; wingId?: string }; select?: unknown }) => {
+          // A guarda de autonomia descobre o nível do repositório por aqui.
+          if (args?.where?.wingId) return [PROJETO]
+          if (args?.where?.isActive && ehSelectDaVarreduraDePrsDuplicados(args.select)) {
+            return [PROJETO]
+          }
+          return []
         }
-        return []
-      }),
+      ),
       findUnique: vi.fn(async () => PROJETO),
       findFirst: vi.fn(async () => PROJETO),
     },

@@ -145,3 +145,15 @@ export function issueConfiavelDaFicha(ficha: {
 export function ehEntregaDoDevAssincrono(origem: string | null | undefined): boolean {
   return origem === 'jules_gitorch' || origem === 'jules_fora'
 }
+
+/**
+ * O nome antigo da origem do dev assíncrono, de antes de ela ser separada em
+ * `jules_gitorch` e `jules_fora`. Uma ficha velha ainda pode trazê-lo, e é
+ * também o nome do balde de `cuidaPorOrigem`.
+ */
+export const ORIGEM_LEGADA_DO_DEV_ASSINCRONO = 'jules'
+
+/** Origem do dev assíncrono, com o nome atual ou o antigo. Não é a régua do merge: ver `ehEntregaDoDevAssincrono`. */
+export function ehOrigemDoDevAssincronoOuLegada(origem: string | null | undefined): boolean {
+  return ehEntregaDoDevAssincrono(origem) || origem === ORIGEM_LEGADA_DO_DEV_ASSINCRONO
+}

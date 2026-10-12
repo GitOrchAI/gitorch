@@ -419,6 +419,23 @@ describe('buildJulesReworkComment', () => {
   })
 })
 
+/** A trava do parecer em memória, com a mesma semântica do banco: quem chega depois perde. */
+function travaEmMemoria() {
+  const tomadas = new Set<string>()
+  const chave = (a: { numeroDoPr: number; headSha: string }) => `${a.numeroDoPr}@${a.headSha}`
+  return {
+    adquirirTrava: async (a: { numeroDoPr: number; headSha: string }) => {
+      if (tomadas.has(chave(a))) return false
+      tomadas.add(chave(a))
+      return true
+    },
+    liberarTrava: async (a: { numeroDoPr: number; headSha: string }) => {
+      tomadas.delete(chave(a))
+    },
+    assentarTrava: async () => undefined,
+  }
+}
+
 describe('runQaMissionViaRails', () => {
   // L3-T8 — O LADO DE QUEM LÊ.
   //
@@ -2344,6 +2361,45 @@ describe('runQaMissionViaRails', () => {
       expect(registros).toHaveLength(0)
     })
 
+    it('laço de resgate: duas missões ao mesmo tempo sobre a mesma entrega travada -> UM aviso ao dono', async () => {
+      const sessao = linha({
+        issueNumber: 62,
+        pullRequestNumber: 8,
+        sessionName: 'sessions/8',
+        mergeFailures: MAX_TENTATIVAS_DE_MERGE,
+      })
+      const avisos: string[] = []
+      const trava = travaEmMemoria()
+      const rodar = () =>
+        runQaMissionViaRails({
+          prisma: {
+            repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          } as unknown as import('@prisma/client').PrismaClient,
+          projectId: 'proj',
+          repository: 'o/r',
+          githubToken: 't',
+          execute: async () => APPROVE,
+          sessoes: [sessao],
+          ...trava,
+          avisarDono: async (msg: string) => {
+            await new Promise((resolve) => setTimeout(resolve, 25))
+            avisos.push(msg)
+            return true
+          },
+          registrarConserto: async (args: { sessionName: string; chave: string }) => {
+            sessao.deployFixKey = args.chave
+          },
+          fetchImpl: fakeFetch([
+            { number: 8, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
+          ]),
+        })
+
+      await Promise.all([rodar(), rodar()])
+
+      expect(avisos).toHaveLength(1)
+      expect(sessao.deployFixKey).not.toBeNull()
+    })
+
     it('laço de resgate: avisarDono entrega -> marca, e a PRÓXIMA acordada não repete', async () => {
       const sessao = linha({
         issueNumber: 61,
@@ -2740,6 +2796,50 @@ describe('runQaMissionViaRails', () => {
       // está gravada desde o primeiro avistamento; regravar não é o papel
       // deste ramo.
       expect(registradas).toHaveLength(0)
+    })
+
+    it('duas missões ao mesmo tempo sobre o MESMO commit parado: o dono recebe UM aviso de demora', async () => {
+      const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
+      const sessao = linha({
+        issueNumber: 53,
+        pullRequestNumber: 12,
+        sessionName: 'sessions/pend-corrida',
+        pendingSince,
+        answeredHash: null,
+      })
+      const avisos: string[] = []
+      const trava = travaEmMemoria()
+      const rodar = () =>
+        runQaMissionViaRails({
+          prisma: {
+            repoItem: { upsert: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          } as unknown as import('@prisma/client').PrismaClient,
+          projectId: 'proj',
+          repository: 'o/r',
+          githubToken: 't',
+          execute: async () => {
+            throw new Error('não deveria julgar')
+          },
+          sessoes: [sessao],
+          ...trava,
+          // O aviso demora a chegar: é a janela em que a segunda missão já leu a marca vazia.
+          avisarDono: async (mensagem) => {
+            await new Promise((resolve) => setTimeout(resolve, 25))
+            avisos.push(mensagem)
+            return true
+          },
+          registrarAvisoDeDemora: async ({ hash }) => {
+            sessao.answeredHash = hash
+          },
+          fetchImpl: fakeFetch([{ number: 12, user: 'jules[bot]' }], undefined, undefined, {
+            checkRuns: [{ status: 'in_progress' }],
+            headSha: 'commit-parado',
+          }),
+        })
+
+      await Promise.all([rodar(), rodar()])
+
+      expect(avisos).toHaveLength(1)
     })
 
     // Achado 2 da revisão da Tarefa 7: sem idempotência, `avisar-demora`

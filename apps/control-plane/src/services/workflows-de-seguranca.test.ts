@@ -550,6 +550,21 @@ describe('analisarWorkflow: o que o leitor não lê não se prova CI puro', () =
       'quebra de linha e script do repositório',
       com(['- run: |', '    pnpm test', '    node scripts/publicar.js']),
     ],
+    [
+      'misto: passo legível seguido de - {run: ...}',
+      com(['- run: pnpm test', '- {run: "node scripts/publicar.js"}']),
+    ],
+    [
+      'misto: passo legível seguido de - "run": ...',
+      com(['- run: pnpm test', '- "run": node scripts/publicar.js']),
+    ],
+    [
+      'misto: passo legível seguido de - {uses: ...}',
+      com(['- run: pnpm test', '- {uses: algum/terceiro@v1}']),
+    ],
+    ['eval de variável', com(['- run: pnpm test', '- run: eval "$CMD"'])],
+    ['shell: python no passo', com(['- run: pnpm test', '- run: print("x")', '  shell: python'])],
+    ['gradlew publishToSonatype', com(['- run: ./gradlew publishToSonatype'])],
     ['workflow sem nenhum passo legível', com([])],
     ['âncora YAML', com(['- run: pnpm test', '- &passo', '  run: node scripts/x.js', '- *passo'])],
     [

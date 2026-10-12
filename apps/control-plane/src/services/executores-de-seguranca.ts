@@ -776,7 +776,9 @@ export async function executarPermissoesMinimas(
         'Sem `permissions`, o token do workflow vale o que estiver configurado no repositório, que pode incluir escrita. ' +
         'Os passos deste workflow só leem o código, então leitura basta e um passo comprometido não consegue escrever no repositório.',
       comoReverter:
-        'Se ainda não foi mesclado, basta fechar este pull request. Se já foi, reverta o merge ou apague as três linhas do bloco (o comentário, `permissions:` e `contents: read`).',
+        'Se ainda não foi mesclado, basta fechar este pull request. Se já foi, reverta o merge ou apague as três linhas do bloco (o comentário, `permissions:` e `contents: read`).\n\n' +
+        'Confira se esta automação publica alguma coisa (site, pacote, imagem). ' +
+        'Se publica, feche este PR sem mesclar: ela precisa da permissão de escrita.',
     }),
   })
 }

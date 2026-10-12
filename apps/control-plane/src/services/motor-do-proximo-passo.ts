@@ -19,6 +19,7 @@ import {
   type CausaDaParada,
 } from './vigia-do-pr.js'
 import type { CuidaPorOrigem } from './cuidado-por-origem.js'
+import { ehOrigemDoDevAssincronoOuLegada } from './origem-do-item.js'
 
 export type AcaoDoMotor =
   | { acao: 'so-acompanhar'; motivo: string }
@@ -76,7 +77,7 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
  *  'assistente' e 'pessoa' são os próprios nomes; 'dependabot' idem;
  *  'outro_bot' NUNCA é julgado — sempre só acompanha (Tarefa 3.9). */
 export function baldeDeCuidado(origem: string): keyof CuidaPorOrigem | null {
-  if (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules') return 'jules'
+  if (ehOrigemDoDevAssincronoOuLegada(origem)) return 'jules'
   if (origem === 'assistente' || origem === 'pessoa' || origem === 'dependabot') return origem
   if (origem === 'desconhecido') return 'jules'
   return null

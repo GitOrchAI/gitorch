@@ -132,16 +132,20 @@ function buildFakePrisma(p: ReturnType<typeof projeto>, opcoes: { candidatas?: b
     project: {
       findFirst: vi.fn(async () => p),
       findUnique: vi.fn(async () => p),
-      findMany: vi.fn(async (args?: { select?: Record<string, unknown> }) => {
-        // A varredura do retrato e o passe do custo da ordem; as demais etapas do tique ficam sem projeto.
-        if (
-          args?.select &&
-          ('encryptedClientToken' in args.select || 'runtimeConfig' in args.select)
-        ) {
-          return [p]
+      findMany: vi.fn(
+        async (args?: { where?: { wingId?: string }; select?: Record<string, unknown> }) => {
+          // A guarda de autonomia descobre o nível do repositório por aqui.
+          if (args?.where?.wingId) return [p]
+          // A varredura do retrato e o passe do custo da ordem; as demais etapas do tique ficam sem projeto.
+          if (
+            args?.select &&
+            ('encryptedClientToken' in args.select || 'runtimeConfig' in args.select)
+          ) {
+            return [p]
+          }
+          return []
         }
-        return []
-      }),
+      ),
       update: vi.fn(async () => ({})),
     },
     engineConnection: {

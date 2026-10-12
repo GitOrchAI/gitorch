@@ -42,6 +42,7 @@ function buildFakePrisma(opcoes: Array<{ label: string; value: string }>) {
       update: vi.fn(async () => ({})),
     },
     repoItem: {
+      findUnique: vi.fn(async () => null),
       upsert: vi.fn(async (args: { update: Record<string, unknown> }) => {
         upserts.push(args)
         return {}
