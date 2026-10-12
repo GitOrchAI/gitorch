@@ -41,6 +41,11 @@ import {
   type RespostaAoDevView,
 } from '../../components/painel/respostas-ao-dev'
 import { ROTAS, responderDecisao, corrigirRespostaAoDev } from '../../components/painel/painel-api'
+import {
+  buscarVersaoNoAr,
+  textoDaVersaoNoAr,
+  type VersaoNoAr,
+} from '../../components/painel/painel-versao'
 import { usePainelBusca } from '../../components/painel/usePainelBusca'
 import { Ad, AdMark } from '../../components/painel/PainelIcons'
 import type { DecisaoView } from '../../components/painel/PainelUI'
@@ -146,6 +151,17 @@ export default function PainelOwner() {
   const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
   const [sheet, setSheet] = useState(false)
   const [foco, setFoco] = useState<string | null>(null)
+
+  const [versaoNoAr, setVersaoNoAr] = useState<VersaoNoAr | null>(null)
+  useEffect(() => {
+    let vivo = true
+    buscarVersaoNoAr().then((v) => {
+      if (vivo) setVersaoNoAr(v)
+    })
+    return () => {
+      vivo = false
+    }
+  }, [])
 
   const [decisoes, setDecisoes] = useState<DecisaoView[]>([])
   const [avisoDecisao, setAvisoDecisao] = useState<string | null>(null)
@@ -356,6 +372,7 @@ export default function PainelOwner() {
               </div>
             ))}
           </nav>
+          <div className="pn-side-foot">{textoDaVersaoNoAr(versaoNoAr)}</div>
         </aside>
 
         <div className="pn-main">

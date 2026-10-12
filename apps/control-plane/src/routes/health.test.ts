@@ -37,6 +37,18 @@ describe('Health Routes', () => {
     expect(res.json()).toMatchObject({ status: 'ok' })
   })
 
+  test('GET /health inclui commit e noArDesde, mantendo timestamp e uptime', async () => {
+    const corpo = (await app.inject({ method: 'GET', url: '/health' })).json()
+    expect(corpo).toEqual({
+      status: 'ok',
+      timestamp: expect.any(String),
+      uptime: expect.any(Number),
+      commit: expect.any(String),
+      noArDesde: expect.any(String),
+    })
+    expect(Number.isNaN(Date.parse(corpo.noArDesde))).toBe(false)
+  })
+
   test('GET /ready returns ready when deps healthy', async () => {
     const res = await app.inject({ method: 'GET', url: '/ready' })
     expect(res.statusCode).toBe(200)

@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { HEALTH_CHECK_PATH, READINESS_PATH } from '../config/constants.js'
 import { PrismaClient } from '@prisma/client'
 import type { Redis as RedisType } from 'ioredis'
+import { lerVersaoNoAr } from '../services/commit-publicado.js'
 
 interface HealthCheckResult {
   status: 'ok' | 'not_ready'
@@ -29,6 +30,7 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    ...lerVersaoNoAr(),
   }))
 
   // GET /ready - Readiness probe (checks dependencies)

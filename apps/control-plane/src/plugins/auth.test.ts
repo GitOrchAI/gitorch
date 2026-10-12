@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
 import fastifyCookie from '@fastify/cookie'
 import jwt from 'jsonwebtoken'
-import { authPlugin } from './auth.js'
+import { authPlugin, CAMINHOS_PUBLICOS_DE_API } from './auth.js'
 import { prisma } from './prisma.js'
 import rateLimit from '@fastify/rate-limit'
 
@@ -25,6 +25,8 @@ describe('Auth Plugin', () => {
     app.get('/health', async () => ({ status: 'ok' }))
     app.get('/ready', async () => ({ status: 'ready' }))
     app.get('/metrics', async () => 'metrics')
+    app.get('/api/v1/version', async () => ({ commit: 'desconhecido' }))
+    app.get('/api/v1/status', async () => ({ status: 'operational' }))
     app.post('/api/webhooks/github', async () => ({ ok: true }))
     // Front estático servido pela MESMA origem: paths fora de /api são públicos.
     app.get('/setup', async () => 'wizard-html')
@@ -47,6 +49,28 @@ describe('Auth Plugin', () => {
     expect((await app.inject({ method: 'GET', url: '/_next/static/app.js' })).statusCode).toBe(200)
     // …mas a superfície de API sob /api continua protegida.
     expect((await app.inject({ method: 'GET', url: '/api/projects' })).statusCode).toBe(401)
+  })
+
+  it('a versão no ar é pública, mas o resto de /api/v1 continua protegido', async () => {
+    expect((await app.inject({ method: 'GET', url: '/api/v1/version' })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/status' })).statusCode).toBe(401)
+  })
+
+  it('a lista de caminhos públicos de /api é exatamente a conhecida: rota nova pública quebra aqui', () => {
+    expect([...CAMINHOS_PUBLICOS_DE_API]).toEqual([
+      '/health',
+      '/ready',
+      '/metrics',
+      '/api/v1/version',
+      '/api/webhooks/github',
+      '/api/v1/auth/github',
+      '/api/v1/auth/github/callback',
+      '/api/pricing',
+      '/api/waitlist',
+      '/api/billing/webhook',
+      '/api/v1/invitations/validate/',
+      '/api/v1/invites/claim/',
+    ])
   })
 
   it('skips auth for metrics endpoint', async () => {

@@ -29,6 +29,7 @@ export const ROTAS = {
   repos: '/api/projects', // existe
   eventos: '/api/events', // existe (SSE)
   status: '/api/v1/status', // existe
+  versao: '/api/v1/version', // existe — pública, commit e desde quando está no ar
   pulso: '/api/v1/painel/pulso', // NOVA nesta leva
   agentes: '/api/v1/painel/agentes', // NOVA nesta leva
   responder: (id: string): string => `/api/v1/painel/decisoes/${id}/responder`, // NOVA nesta leva
