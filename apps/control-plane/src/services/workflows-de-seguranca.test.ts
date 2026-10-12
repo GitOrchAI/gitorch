@@ -383,6 +383,116 @@ describe('analisarWorkflow: quando é seguro tirar a escrita do token', () => {
   })
 })
 
+// Falha para o lado seguro: só é "CI puro" (permissão mínima sem perguntar) o
+// workflow que se PROVA CI puro por lista branca. O que ninguém listou como
+// deploy mas também não se prova CI puro é tratado como deploy ou incerto.
+describe('analisarWorkflow: CI puro se prova por lista branca (falha fechada)', () => {
+  const CAMINHO = '.github/workflows/ci.yml'
+
+  function ci(passos: string[], gatilho = 'push:\n  branches: [main]'): string {
+    return [
+      'name: CI',
+      'on:',
+      ...gatilho.split('\n').map((l) => `  ${l}`),
+      '',
+      'jobs:',
+      '  build:',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      `      - uses: actions/checkout@${SHA}`,
+      ...passos.map((l) => `      ${l}`),
+      '',
+    ].join('\n')
+  }
+
+  it.each([
+    ['A) npm run deploy num job chamado build', ci(['- run: npm run deploy'])],
+    [
+      'B) docker buildx build com --push na linha de continuação',
+      ci([
+        '- run: |',
+        '    docker buildx build \\',
+        '      --push \\',
+        '      -t ghcr.io/acme/api:latest .',
+      ]),
+    ],
+    [
+      'C) action de imagem de terceiros com push: true',
+      ci([`- uses: crazy-max/ghaction-docker-buildx@${SHA}`, '  with:', '    push: true']),
+    ],
+    [
+      'C) docker/build-push-action com push: true',
+      ci([`- uses: docker/build-push-action@${SHA}`, '  with:', '    push: true']),
+    ],
+    ['D) script externo go-live.sh cujo conteúdo não é lido', ci(['- run: ./scripts/go-live.sh'])],
+    ['E) bash de script do repositório', ci(['- run: bash tools/enviar.sh'])],
+    ['F) make com alvo qualquer', ci(['- run: make entregar'])],
+    ['G) npm run com script desconhecido', ci(['- run: npm run subir'])],
+    [
+      'H) comando encadeado que esconde um push depois de testar',
+      ci(['- run: npm test && ./x.sh']),
+    ],
+    ['I) substituição de comando', ci(['- run: echo $(./segredo.sh)'])],
+    ['J) action local', ci(['- uses: ./.github/actions/entrega'])],
+    ['K) workflow reutilizável', ''],
+  ])('%s: não é CI puro, vira deploy/incerto', (_nome, texto) => {
+    const base =
+      texto === ''
+        ? [
+            'name: CI',
+            'on: push',
+            'jobs:',
+            '  b:',
+            '    uses: acme/infra/.github/workflows/x.yml@main',
+            '',
+          ].join('\n')
+        : texto
+    expect(analisarWorkflow(CAMINHO, base).ehDeploy).toBe(true)
+  })
+
+  it('YAML que não dá para analisar é incerto, nunca CI puro', () => {
+    expect(analisarWorkflow(CAMINHO, 'name: CI\non: push\n').ehDeploy).toBe(true)
+    expect(analisarWorkflow(CAMINHO, 'name: CI\njobs:\n\tb:\n\t\truns-on: x\n').ehDeploy).toBe(true)
+  })
+
+  it.each([
+    [
+      'node: checkout, setup-node, pnpm install e test',
+      ci([
+        `- uses: actions/setup-node@${SHA}`,
+        '- run: pnpm install --frozen-lockfile',
+        '- run: pnpm test',
+      ]),
+    ],
+    [
+      'npm ci, lint, typecheck e build em um bloco multilinha',
+      ci([
+        `- uses: actions/setup-node@${SHA}`,
+        '- run: |',
+        '    npm ci',
+        '    npm run lint',
+        '    npm run typecheck',
+        '    npm run build',
+      ]),
+    ],
+    [
+      'python: pip install e pytest, com upload de artefato',
+      ci([
+        `- uses: actions/setup-python@${SHA}`,
+        '- run: pip install -r requirements.txt && pytest -q',
+        `- uses: actions/upload-artifact@${SHA}`,
+        '  with:',
+        '    name: relatorio',
+        '    path: out/',
+      ]),
+    ],
+  ])('CI puro legítimo continua seguro: %s', (_nome, texto) => {
+    const analise = analisarWorkflow(CAMINHO, texto)
+    expect(analise.ehDeploy).toBe(false)
+    expect(analise.seguroParaPermissaoMinima).toBe(true)
+  })
+})
+
 describe('adicionarPermissoesMinimas / removerPermissoesMinimas', () => {
   it('insere o bloco antes de jobs e o resultado passa a declarar permissions', () => {
     const novo = adicionarPermissoesMinimas(SEGURO)
