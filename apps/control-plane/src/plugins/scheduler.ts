@@ -9452,8 +9452,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   /**
    * Encerra uma entrega com um veredito e um motivo DITOS POR EXTENSO.
    *
-   * Existe porque `fecharComTetoAbsoluto` embrulha tudo na frase "mesclamos e
-   * acompanhamos por Xh sem conseguir confirmar" e sempre marca o board como
+   * Existe porque `fecharComTetoAbsoluto` embrulha tudo na frase "o GitOrch
+   * acompanhou por Xh sem confirmação" e sempre marca o board como
    * NÃO entregue. Isso é certo quando o prazo estourou — e errado nos dois
    * desfechos novos dos cinco caminhos (D49):
    *

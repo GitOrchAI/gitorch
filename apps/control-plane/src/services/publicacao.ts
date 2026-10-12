@@ -234,8 +234,8 @@ export function fecharPorTetoAbsoluto(args: {
     etapas: [],
     enderecos: [],
     motivo:
-      `mesclamos e acompanhamos por ${horas}h sem conseguir confirmar que a publicação chegou ` +
-      `ao ar. Última coisa que vimos: ${args.ultimaObservacao}.`,
+      `o GitOrch acompanhou por ${horas}h sem confirmação de que a publicação chegou ao ar. ` +
+      `Última coisa que vimos: ${args.ultimaObservacao}.`,
     semEvidenciaDeTodoAmbiente: false,
   }
 }
@@ -433,8 +433,7 @@ async function acompanharPorWorkflow(
         etapas: [],
         enderecos: [],
         motivo:
-          `mesclamos, e não conseguimos confirmar a publicação deste commit: a execução mais ` +
-          `recente de "${mecanismo.nome}" continua sendo de outro commit ` +
+          `a execução mais recente de "${mecanismo.nome}" continua sendo de outro commit ` +
           `(${execucaoMaisRecente.head_sha})` +
           (minutosDeEspera !== null
             ? ` depois de ${minutosDeEspera} min de espera`
