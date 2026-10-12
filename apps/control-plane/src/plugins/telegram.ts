@@ -64,6 +64,13 @@ import {
 import { registrarNoPainelUmaVez } from '../services/registro-no-painel.js'
 import { parseDedupKeyDeVinculoDaTarefa } from '../services/perguntar-vinculo-da-tarefa.js'
 import { processarRespostaDoVinculoDaTarefa } from '../services/processar-resposta-vinculo-da-tarefa.js'
+import {
+  PREFIXO_DA_SUSPEITA,
+  encerrarTarefaEntregue,
+  gravarMemoriaDaSuspeita,
+  lerDedupKeyDaSuspeita,
+  processarRespostaDaSuspeita,
+} from '../services/suspeita-de-tarefa-resolvida.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { resolveQuadroDoProjeto } from '../routes/painel.js'
 import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
@@ -781,6 +788,81 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     )
   }
 
+  // A resposta do dono à pergunta "esta tarefa parece já resolvida — fecho ou
+  // sigo com ela?" (dedupKey `suspeita-resolvida:<repo>:<tarefa>:<instante>`,
+  // `resolverSuspeita`, services/suspeita-de-tarefa-resolvida.ts). Fechar
+  // escreve no repositório pela guarda de autonomia do projeto; seguir só
+  // devolve a tarefa à fila.
+  const aoResponderSuspeitaResolvida = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+    opcoes: Array<{ label: string; value: string }>
+  }): Promise<void> => {
+    const chave = lerDedupKeyDaSuspeita(args.dedupKey)
+    if (!chave) return
+    const projeto = await app.prisma.project.findUnique({
+      where: { id: args.projectId },
+      select: { wingId: true, userId: true, encryptedClientToken: true, autonomia: true },
+    })
+    if (!projeto) {
+      throw new Error(`aoResponderSuspeitaResolvida: projeto ${args.projectId} não encontrado`)
+    }
+    // A chave nasceu do repositório do projeto; se divergir, algo está corrompido
+    // e a tarefa de outro repositório não pode ser tocada por engano.
+    if (projeto.wingId !== chave.repositorio) {
+      throw new Error(
+        `aoResponderSuspeitaResolvida: a chave ${args.dedupKey} não é do repositório do projeto ${args.projectId}`
+      )
+    }
+    const prismaFicha = app.prisma as unknown as PrismaDaFichaDoItem
+    await processarRespostaDaSuspeita(
+      { dedupKey: args.dedupKey, resposta: args.resposta, opcoes: args.opcoes },
+      {
+        fecharTarefa: async (numero) => {
+          const token = await lerCredencialQueAlcancaOProjeto({
+            prisma: app.prisma,
+            projectId: args.projectId,
+            userId: projeto.userId,
+            engineConnections: app.engineConnections,
+            encryptedClientTokenJaLido: projeto.encryptedClientToken,
+          })
+          if (!token) throw new Error('sem credencial do GitHub para encerrar a tarefa')
+          await encerrarTarefaEntregue({
+            fetchImpl: fetchDoRepositorio({ nivel: () => projeto.autonomia }),
+            token,
+            repositorio: projeto.wingId,
+            numero,
+            pullRequest: null,
+          })
+          const atual = await lerFichaDoItem({
+            prisma: prismaFicha,
+            projectId: args.projectId,
+            tipo: 'issue',
+            numero,
+          })
+          await atualizarFichaDoItem({
+            prisma: prismaFicha,
+            projectId: args.projectId,
+            tipo: 'issue',
+            numero,
+            estado: { ...(atual?.estado ?? {}), status: 'closed' },
+          })
+        },
+        gravarMemoria: (numero, memoria) =>
+          gravarMemoriaDaSuspeita(prismaFicha, args.projectId, numero, memoria),
+        registrarNoPainel: (chaveDoRegistro, texto) =>
+          registrarNoPainelUmaVez({
+            prisma: app.prisma,
+            projectId: args.projectId,
+            chave: chaveDoRegistro,
+            texto,
+          }),
+        onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+      }
+    )
+  }
+
   // L4-T18 (item 2) — a resposta à pergunta de custo da ordem
   // (dedupKey `custo-da-ordem:<repo>:<pedido>`, `perguntarSobreCustoDaOrdem`
   // em plugins/scheduler.ts) vira ação de verdade.
@@ -1036,6 +1118,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       { prefixo: 'logica-alternativa:', executar: aoResponderLogicaAlternativaHandler },
       { prefixo: 'cuida-deste-pedido:', executar: aoResponderPrParado },
       { prefixo: 'vinculo-da-tarefa:', executar: aoResponderVinculoDaTarefa },
+      { prefixo: PREFIXO_DA_SUSPEITA, executar: aoResponderSuspeitaResolvida },
     ],
     // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
     // resposta — nunca `console.warn`, que some do monitoramento.

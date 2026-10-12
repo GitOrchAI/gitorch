@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runSmDelegation as runSmDelegationReal, extractBlockers } from './sm-delegation.js'
+import {
+  runSmDelegation as runSmDelegationReal,
+  extractBlockers,
+  TETO_DE_SUSPEITAS_POR_CICLO,
+} from './sm-delegation.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 
 // C8 (fix-up L4-T5, CSO): `onWarn` virou OBRIGATÓRIO em `SmDelegationOptions`
@@ -679,9 +683,9 @@ describe('runSmDelegation: D14 — "já resolvido" barra a delegação ANTES da 
   // /wishlist, já implementado 17 dias antes no commit d175cb70 — e mesmo
   // assim foi delegada, gastando uma sessão inteira do dev para descobrir o
   // óbvio e ainda acordando o dono à toa (D14, defeito de fundo).
-  it('issue marcada "ja_resolvido" pelo diagnóstico NÃO vira sessão — é sinalizada', async () => {
+  it('issue marcada "ja_resolvido" pelo diagnóstico NÃO vira sessão enquanto o produto não decide', async () => {
     const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/46' }))
-    const sinalizar = vi.fn(async () => undefined)
+    const decidir = vi.fn(async () => ({ desfecho: 'perguntada' as const, avaliou: true }))
     const diagnosticar = vi.fn(
       async () =>
         new Map([
@@ -712,7 +716,7 @@ describe('runSmDelegation: D14 — "já resolvido" barra a delegação ANTES da 
       criarSessaoDev: criar as never,
       aoCriarSessao: async () => undefined,
       diagnosticarJaResolvido: diagnosticar,
-      sinalizarPossivelmenteResolvida: sinalizar,
+      decidirSuspeitaDeJaResolvida: decidir,
       tetoConcorrentes: 15,
       tetoDiario: 100,
     })
@@ -720,13 +724,148 @@ describe('runSmDelegation: D14 — "já resolvido" barra a delegação ANTES da 
     // A PROVA central: nenhuma sessão nasceu para a #46.
     expect(criar).not.toHaveBeenCalled()
     expect(r.delegated).toEqual([])
-    // E ela foi sinalizada para revisão — nunca fechada sozinha (o
-    // diagnóstico sugere, tem 43% de erro medido).
-    expect(sinalizar).toHaveBeenCalledWith({
+    // E a decisão da suspeita foi entregue ao produto, com o achado e a tarefa.
+    expect(decidir).toHaveBeenCalledWith({
       issueNumber: 46,
+      titulo: 'Register /wishlist Telegram command',
+      criadaEm: '2026-08-07T00:00:00Z',
+      atualizadaEm: '2026-08-07T00:00:00Z',
       achado: expect.objectContaining({ categoria: 'ja_resolvido' }),
     })
     expect(r.sinalizadasComoResolvidas).toEqual([46])
+  })
+
+  const umaTarefaSuspeita = (number: number, body = '') => ({
+    number,
+    title: `Tarefa ${number}`,
+    labels: [{ name: 'gitorch:task' }],
+    body,
+    created_at: '2026-08-07T00:00:00Z',
+    updated_at: '2026-08-07T00:00:00Z',
+  })
+  const diagnosticarTodas = (...numeros: number[]) =>
+    vi.fn(
+      async () =>
+        new Map(
+          numeros.map((n) => [
+            n,
+            { issue: n, categoria: 'ja_resolvido' as const, motivo: 'o grafo sugere' },
+          ])
+        )
+    )
+
+  it('suspeita DESCARTADA pelo produto: a tarefa segue e é delegada na mesma passada', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/46' }))
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([umaTarefaSuspeita(46)]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticarTodas(46),
+      decidirSuspeitaDeJaResolvida: async () => ({ desfecho: 'descartada', avaliou: true }),
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([46])
+    expect(r.sinalizadasComoResolvidas).toEqual([])
+  })
+
+  it('suspeita decidida com FECHAMENTO: a tarefa não é delegada e aparece como fechada', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/46' }))
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([umaTarefaSuspeita(46)]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticarTodas(46),
+      decidirSuspeitaDeJaResolvida: async () => ({ desfecho: 'fechada', avaliou: true }),
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(criar).not.toHaveBeenCalled()
+    expect(r.fechadasPorEntrega).toEqual([46])
+    expect(r.noOp).toBe(false)
+  })
+
+  it('a suspeita de UMA tarefa não segura as outras', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/x' }))
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([umaTarefaSuspeita(46), umaTarefaSuspeita(47)]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticarTodas(46),
+      decidirSuspeitaDeJaResolvida: async () => ({ desfecho: 'perguntada', avaliou: true }),
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([47])
+    expect(r.sinalizadasComoResolvidas).toEqual([46])
+  })
+
+  it('o estoque entra com TETO por passada: as que passam do teto esperam a próxima', async () => {
+    const numeros = Array.from({ length: 12 }, (_, i) => 100 + i)
+    const decidir = vi.fn(async () => ({ desfecho: 'perguntada' as const, avaliou: true }))
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues(numeros.map((n) => umaTarefaSuspeita(n))),
+      criarSessaoDev: (async () => ({ situacao: 'criada' as const, sessionName: 's' })) as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticarTodas(...numeros),
+      decidirSuspeitaDeJaResolvida: decidir,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(decidir).toHaveBeenCalledTimes(TETO_DE_SUSPEITAS_POR_CICLO)
+    expect(r.delegated).toEqual([])
+    expect(r.sinalizadasComoResolvidas).toHaveLength(12)
+  })
+
+  it('o que vem da memória (sem custo) não gasta o teto', async () => {
+    const numeros = Array.from({ length: 12 }, (_, i) => 100 + i)
+    const decidir = vi.fn(async () => ({ desfecho: 'perguntada' as const, avaliou: false }))
+    await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues(numeros.map((n) => umaTarefaSuspeita(n))),
+      criarSessaoDev: (async () => ({ situacao: 'criada' as const, sessionName: 's' })) as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticarTodas(...numeros),
+      decidirSuspeitaDeJaResolvida: decidir,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(decidir).toHaveBeenCalledTimes(12)
+  })
+
+  it('"Blocked by" continua valendo: tarefa descartada da suspeita mas bloqueada não é delegada', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/60' }))
+    const fetchComBloqueador = (async (url: string | URL) => {
+      const u = String(url)
+      if (u.includes('/issues/59')) {
+        return new Response(JSON.stringify({ state: 'open' }), { status: 200 })
+      }
+      return new Response(JSON.stringify([umaTarefaSuspeita(60, 'Blocked by #59')]), {
+        status: 200,
+      })
+    }) as unknown as typeof fetch
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchComBloqueador,
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticarTodas(60),
+      decidirSuspeitaDeJaResolvida: async () => ({ desfecho: 'descartada', avaliou: true }),
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(criar).not.toHaveBeenCalled()
+    expect(r.delegated).toEqual([])
   })
 
   it('issue SEM achado "ja_resolvido" é delegada normalmente — o gate não é indiscriminado', async () => {
@@ -894,7 +1033,7 @@ describe('runSmDelegation: issue com PR aberto do dev não volta para a fila (L4
 })
 
 // C8 (fix-up L4-T5, CSO): os quatro pontos que a revisão apontou
-// (`comentarCoberturaDeIncidente` falhando, `sinalizarPossivelmenteResolvida`
+// (`comentarCoberturaDeIncidente` falhando, `decidirSuspeitaDeJaResolvida`
 // falhando, `issuesComPrAbertoDoDev` falhando, e o aviso informativo de
 // quantas issues ficaram esperando retomada) tinham `options.onWarn ??
 // console.warn` — nenhum destes quatro caminhos tinha teste provando que o
@@ -922,7 +1061,7 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
     expect(console.warn).not.toHaveBeenCalled()
   })
 
-  it('sinalizarPossivelmenteResolvida falha → avisa por onWarn, nunca console.warn', async () => {
+  it('decidirSuspeitaDeJaResolvida falha → avisa por onWarn, nunca console.warn', async () => {
     ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
     const impl = fakeFetch([{ number: 46, labels: ['gitorch:task'], body: '' }])
     const avisos: string[] = []
@@ -936,8 +1075,8 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
         new Map([
           [46, { issue: 46, categoria: 'ja_resolvido' as const, motivo: 'já implementado' }],
         ]),
-      sinalizarPossivelmenteResolvida: async () => {
-        throw new Error('sinalização falhou')
+      decidirSuspeitaDeJaResolvida: async () => {
+        throw new Error('decisão falhou')
       },
       onWarn: (m) => avisos.push(m),
     })
