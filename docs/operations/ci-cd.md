@@ -67,6 +67,16 @@ O `ci.yml` tem três trabalhos: `zero-tolerance` (a tabela abaixo), `e2e-funil-f
 | 14 | Audit summary | `pnpm exec tsx scripts/ci/audit-summary.ts` |
 | 15 | Upload CI audit | `.github/actions/upload-ci-audit` |
 
+## Staging do pull request (job `e2e-funil-fake`)
+
+O job roda em runner ARM e monta o ambiente do mesmo modo que a produção o recebe:
+
+- **Banco como a main:** `scripts/ci/montar-banco-como-a-main.sh` parte de um banco vazio, aplica as migrações COMO A BASE as aplica (checkout temporário da base com o `db-migrate.sh` dela) e depois as do commit por cima, com o mesmo `db-migrate.sh` da produção. Migração que só funciona em banco vazio, ou que quebra sobre as tabelas e os planos que a base já criou, reprova o PR. Em push na main a base é o próprio commit.
+- **Funil fake** em `development`: o E2E do wizard continua com motores e prova de posse fakes, que a produção recusa.
+- **Fumaça em modo produção:** depois do E2E, `scripts/ci/fumaca-de-producao.sh` derruba o serviço de desenvolvimento e sobe o mesmo build com `NODE_ENV=production`, sem flags fake, sobre uma cópia do banco migrado. Confere `/health` e `/ready`, que `/setup` é o front recém-construído (md5), que `/api/v1/version` responde, e que o log não tem linha de nível erro.
+
+Não existe mais o job de "CD" que só imprimia uma mensagem de sucesso: ele não publicava nada. A publicação depois do merge não é feita pelo CI deste repositório.
+
 ## Testes dos scripts de automação
 
 Os scripts que governam as automações do repositório vivem em `.github/scripts`, que fica **fora dos workspaces do pnpm**. Nenhum job alcançava esse diretório, então os testes que existiam ali nunca rodaram em PR nenhum.

@@ -147,8 +147,8 @@ jobs:
   # GitHub e sujeito a rate-limit da API deles — o oposto do que este job
   # busca).
   e2e-funil-fake:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -223,15 +223,26 @@ jobs:
           echo "GITORCH_CREDENTIAL_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           echo "GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
-      - name: Apply schema (db push, banco efêmero do CI)
-        working-directory: apps/control-plane
-        run: npx prisma db push --skip-generate
       - name: Prisma generate
         working-directory: apps/control-plane
         run: npx prisma generate
-      - name: Seed plans
-        working-directory: apps/control-plane
-        run: npx tsx prisma/seed.ts
+      - name: Garantir cliente psql
+        run: command -v psql >/dev/null || sudo apt-get install -y --no-install-recommends postgresql-client
+      # Banco montado como a produção o recebe: primeiro as migrações COMO A
+      # BASE as aplica (db-migrate.sh dela, banco vazio), depois as deste
+      # commit por cima (o mesmo db-migrate.sh que a produção roda, que também
+      # semeia os planos). `db push` num banco vazio nunca pegaria migração que
+      # só funciona em banco vazio. Em PR a base é a branch de destino; em push
+      # é o próprio commit.
+      - name: Montar o banco como a main (base e depois as migrações do PR)
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.sha }}
+        run: scripts/ci/montar-banco-como-a-main.sh "$BASE_REF"
+      # Cópia do banco já migrado para a fumaça de produção, tirada ANTES de o
+      # serviço de desenvolvimento abrir conexão (cópia por template exige o
+      # banco de origem sem conexões).
+      - name: Copiar o banco migrado para a fumaça de produção
+        run: psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE gitorch_fumaca TEMPLATE gitorch_e2e_funil_fake'
 
       - name: Build web (export estático)
         run: pnpm --filter web build
@@ -250,7 +261,9 @@ jobs:
           GITORCH_WORKSPACES_DIR: ${{ runner.temp }}/gitorch-workspaces
           GITORCH_CORTEX_DB: ${{ runner.temp }}/gitorch-cortex.sqlite
           GITORCH_ENVIRONMENTS_DIR: ${{ runner.temp }}/gitorch-environments
-        run: nohup node dist/index.js > /tmp/control-plane.log 2>&1 &
+        run: |
+          nohup node dist/index.js > /tmp/control-plane.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/control-plane.pid"
       - name: Wait for health
         run: |
           for i in $(seq 1 30); do
@@ -271,9 +284,30 @@ jobs:
         env:
           GITORCH_API_URL: http://127.0.0.1:4012
 
+      # O serviço de desenvolvimento do funil fake sai de cena e o MESMO build
+      # sobe em modo produção (sem as flags fake, que a produção recusa), contra
+      # o banco migrado pelo script, conferindo saúde, front servido, versão e
+      # log sem erro.
+      - name: Fumaça em modo produção
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gitorch_fumaca
+          REDIS_URL: redis://localhost:6379/1
+        run: |
+          kill "$(cat "$RUNNER_TEMP/control-plane.pid")"
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:4012/health > /dev/null || break
+            sleep 1
+          done
+          scripts/ci/fumaca-de-producao.sh
+
       - name: Server logs (on failure)
         if: failure()
-        run: cat /tmp/control-plane.log || true
+        run: |
+          if [ -f /tmp/control-plane.log ]; then
+            cat /tmp/control-plane.log
+          else
+            echo "sem log do control-plane: o serviço não chegou a subir"
+          fi
       # ATENCAO ao "atualizar" isto para v5: NAO resolve. A release v5.0.0 anuncia
       # "BREAKING CHANGE: this update supports Node v24.x", mas o manifesto de @v5
       # ainda declara `using: node20` — as proprias notas do v6 admitem que "v5 had
@@ -308,21 +342,3 @@ jobs:
       - name: Test
         working-directory: .github/scripts
         run: pnpm test
-
-  # CD automatizado para o ambiente persistente de Development (VM ARM)
-  # Executado exclusivamente apos merge verde na branch main.
-  cd-development-arm:
-    name: CD Development (VM ARM)
-    runs-on: ubuntu-latest
-    needs: [zero-tolerance, e2e-funil-fake, scripts-de-automacao]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Deploy to ARM Persistent Dev Environment
-        env:
-          ARM_HOST: ${{ secrets.ARM_DEV_HOST || 'arm-dev' }}
-        run: |
-          echo "Promovendo artefato aprovado para o ambiente persistente de Development (VM ARM: $ARM_HOST)..."
-          echo "Commit SHA: ${{ github.sha }}"
-          echo "Status: Promovido com sucesso apos aprovacao no Fast CI e Staging efemero."
