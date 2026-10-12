@@ -1,3 +1,3 @@
-ALTER TABLE "wishlist_items" ADD COLUMN "status" TEXT NOT NULL DEFAULT 'pending';
-ALTER TABLE "wishlist_items" ADD COLUMN "title" TEXT;
-ALTER TABLE "wishlist_items" ADD COLUMN "price" DOUBLE PRECISION;
+ALTER TABLE "wishlist_items" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE "wishlist_items" ADD COLUMN IF NOT EXISTS "title" TEXT;
+ALTER TABLE "wishlist_items" ADD COLUMN IF NOT EXISTS "price" DOUBLE PRECISION;
