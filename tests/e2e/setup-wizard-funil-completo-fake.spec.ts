@@ -176,11 +176,28 @@ test('funil completo do setup wizard: login → termos → repo → diagnóstico
     const repoButton = page.locator(`button:has-text("${FIXTURE_REPO}")`)
     await expect(repoButton).toBeVisible({ timeout: 10000 })
     await repoButton.click()
+    // O wizard só avança para o diagnóstico DEPOIS que o POST /setup/clone
+    // responde, e o clone é um `git clone` de verdade pela rede: a duração
+    // depende do GitHub e do runner. Esperar a resposta da rota (condição
+    // real) em vez de contar com a tela do passo seguinte aparecer em 5 s.
+    const cloneResponsePromise = page.waitForResponse(
+      (resp) =>
+        resp.request().method() === 'POST' &&
+        new URL(resp.url()).pathname === '/api/v1/setup/clone',
+      { timeout: 90_000 }
+    )
     await primaryButton(page).click() // dispara POST /setup/clone (real, repo público)
+    const cloneResponse = await cloneResponsePromise
+    expect(cloneResponse.status(), 'POST /setup/clone não respondeu 200').toBe(200)
   })
 
   await test.step('passo 5: diagnóstico real (clone reaproveitado) + grafo 3D (rota 200 + canvas monta)', async () => {
-    await expect(page.getByText(/reading your repository|lendo o seu reposit/i)).toBeVisible()
+    // O título do passo fica na tela durante todo o diagnóstico (carregando e
+    // concluído), então não é um estado passageiro; só depende de o clone da
+    // etapa anterior já ter respondido, o que o passo acima garante.
+    await expect(page.getByText(/reading your repository|lendo o seu reposit/i)).toBeVisible({
+      timeout: 15_000,
+    })
 
     const graphResponsePromise = page.waitForResponse(
       (resp) => /\/api\/v1\/diagnose\/[^/]+\/graph$/.test(new URL(resp.url()).pathname),
