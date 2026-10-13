@@ -58,6 +58,11 @@ jobs:
       # qualquer passo abaixo usar esses scripts pra decidir algo.
       - name: Testes dos scripts que governam o CI (fora dos workspaces)
         run: pnpm run test:scripts
+      # Pacote importado sem estar no package.json de quem o importa funciona
+      # no checkout (o pacote da raiz vaza por icamento) e faz o servico morrer
+      # ao subir dentro do pacote da versao. Barra a divida nova ja no PR.
+      - name: Dependencias importadas pelo servico estao declaradas
+        run: node scripts/ci/conferir-importacoes.mjs --transitivo apps/control-plane
       # Rascunho de automacao na raiz (check-actions.mjs, patch.diff,
       # fix_*.js do PR #336...) reincide a cada faxina. Este portao barra o
       # arquivo NOVO e diz para onde mover. Escotilha: RAIZ_PERMITIDA, dentro
