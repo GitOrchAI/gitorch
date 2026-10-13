@@ -128,8 +128,8 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
     return politica === 'perguntar'
       ? { acao: 'perguntar-se-cuida', motivo: `#${deps.numero}: sem tarefa de origem registrada` }
       : {
-          acao: 'escalar',
-          motivo: `#${deps.numero}: sem tarefa de origem registrada, e a configuração manda cuidar sozinho`,
+          acao: 'pedir-julgamento',
+          motivo: `#${deps.numero}: sem tarefa de origem registrada, mas o QA tentará julgar autônomo pelo diff/GraphQL`,
         }
   }
   if (!deps.issueAberta) {

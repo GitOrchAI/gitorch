@@ -488,6 +488,7 @@ describe('runQaMissionViaRails', () => {
         return APPROVE
       },
       fetchImpl: f,
+      closingIssues: async () => [],
     })
 
     expect(r.noOp).toBeUndefined()
@@ -513,6 +514,7 @@ describe('runQaMissionViaRails', () => {
       githubToken: 't',
       execute: async () => APPROVE,
       fetchImpl: f,
+      closingIssues: async () => [],
     })
     expect(r.noOp).toBe(true)
   })
@@ -533,6 +535,7 @@ describe('runQaMissionViaRails', () => {
       githubToken: 't',
       execute: async () => APPROVE,
       fetchImpl: f,
+      closingIssues: async () => [],
     })
     expect(r.exitCode).toBe(0)
     expect(posted.reviews[0]!.event).toBe('APPROVE')
@@ -595,6 +598,7 @@ describe('runQaMissionViaRails', () => {
       githubToken: 't',
       execute: async () => APPROVE,
       fetchImpl: f,
+      closingIssues: async () => [],
     })
     expect(r.exitCode).toBe(0)
     expect(posted.reviews[0]!.event).toBe('APPROVE')
@@ -5819,6 +5823,7 @@ describe('PR de participante do repositório', () => {
       githubToken: 't',
       execute: async () => veredito,
       fetchImpl: f,
+      closingIssues: async () => [],
       ...extra,
     })
     return { r, posted }
@@ -6289,6 +6294,7 @@ describe('PR de participante que é administrador do repositório', () => {
       execute: async () => veredito,
       fetchImpl: f,
       sessoes: [],
+      closingIssues: async () => [],
       ...extra,
     })
     return { r, posted }

@@ -5145,6 +5145,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       // único jeito de o QA rodar, já que o projeto não tem
                       // agenda de QA própria em project_schedules.
                       ...(isOnboarding ? { mode: 'recon' as const } : {}),
+                      // Issue #737: injetar a consulta formal do GraphQL para fechar a brecha de PR sem linha de sessão
+                      closingIssues: async (numeroDoPr) =>
+                        new ProjectV2Client({
+                          token: railsToken as string,
+                          fetchImpl: fetchDoQuadro(project),
+                        }).closingIssuesDoPr({
+                          owner: project.wingId.split('/')[0]!,
+                          repo: project.wingId.split('/')[1]!,
+                          prNumber: numeroDoPr,
+                        }),
                       // O QA move o card da issue conforme o veredito (se há board).
                       ...(railsBoard
                         ? {

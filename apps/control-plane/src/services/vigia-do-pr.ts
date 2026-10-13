@@ -501,10 +501,8 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
   // cegas). Quando o produto não sabe, quem decide é gente.
   if (pr.issueNumber === null) {
     return {
-      acao: 'escalar',
-      motivo:
-        `O pull request #${pr.numero} é do dev assíncrono, está parado e não tenho tarefa de origem ` +
-        'registrada para ele. Não dá para retomar nem para dizer por que fechar.',
+      acao: 'pedir-julgamento',
+      motivo: `O pull request #${pr.numero} é do dev assíncrono, está parado e não tenho tarefa de origem registrada, julgando via diff/GraphQL.`,
     }
   }
 

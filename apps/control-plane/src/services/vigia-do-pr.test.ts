@@ -319,8 +319,8 @@ describe('o que o vigia decide para o PR órfão', () => {
 
   it('sem tarefa de origem registrada não fecha nem retoma — escala', () => {
     const d = decidirAcaoNoPrOrfao(situacao({ issueNumber: null, mergeable: false }))
-    expect(d.acao).toBe('escalar')
-    expect(d.motivo).toContain('tarefa de origem')
+    expect(d.acao).toBe('pedir-julgamento')
+    expect(d.motivo).toContain('julgando via diff/GraphQL')
   })
 
   it('mergeable ainda indefinido: o GitHub não terminou de calcular — não age', () => {
@@ -356,6 +356,8 @@ describe('o teto DIZ quando morde', () => {
         tarefaJaDevolvidaAFila: true,
       })
     )
+    // Se a tarefa de origem está presente (329), ao esgotar limite a ação vira 'escalar'.
+    // Mas no `situacao` padrão o PR tem issueNumber: 329.
     expect(d.acao).toBe('escalar')
     expect(d.motivo).toContain(String(MAX_ACOES_DO_VIGIA))
     expect(d.motivo).toContain('#356')
@@ -376,6 +378,7 @@ describe('o teto DIZ quando morde', () => {
       issueDoPr: () => 329,
       acoesAnteriores: async () => MAX_ACOES_DO_VIGIA,
       tarefaJaDevolvidaAFila: async () => true,
+      pedirJulgamento: async () => {},
       avisarDono: async (t) => {
         avisos.push(t)
         return true
@@ -691,6 +694,7 @@ async function rodar(over: {
   acoesAnteriores?: (n: number) => Promise<number>
   tarefaJaDevolvidaAFila?: (issueNumber: number) => Promise<boolean>
   vagasLivres?: number
+  pedirJulgamento?: VigiaDoPrDeps['pedirJulgamento']
   abrirSessaoDeConserto?: VigiaDoPrDeps['abrirSessaoDeConserto']
   fecharPr?: VigiaDoPrDeps['fecharPr']
   avisarDono?: VigiaDoPrDeps['avisarDono']
@@ -709,7 +713,7 @@ async function rodar(over: {
     acoesAnteriores: over.acoesAnteriores ?? (async () => 0),
     tarefaJaDevolvidaAFila: over.tarefaJaDevolvidaAFila ?? (async () => false),
     vagasLivres: over.vagasLivres ?? 15,
-    pedirJulgamento: async () => {},
+    pedirJulgamento: over.pedirJulgamento ?? (async () => {}),
     abrirSessaoDeConserto: over.abrirSessaoDeConserto ?? (async () => true),
     fecharPr: over.fecharPr ?? (async () => true),
     avisarDono: over.avisarDono ?? (async () => true),
@@ -1005,6 +1009,9 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
       prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
+      pedirJulgamento: async () => {
+        avisos.push('pediu')
+      },
       issueDoPr: () => null,
       avisarDono: async (t) => {
         avisos.push(t)
