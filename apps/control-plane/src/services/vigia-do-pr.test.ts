@@ -1419,11 +1419,13 @@ describe('ACHADO 4 + ACHADO 5 juntos — o pior caso que os dois defeitos formav
 describe('lerVerificacao do vigia usa a régua única do estado do CI', () => {
   function gh(
     checkRuns: Array<{ status?: string; conclusion?: string }>,
-    workflowRuns: Array<{ status?: string }> = []
+    workflowRuns: Array<{ status?: string }> = [],
+    workflows: Array<{ path: string; state: string }> = []
   ) {
     return async (caminho: string): Promise<unknown> => {
       if (caminho.includes('/check-runs')) return { check_runs: checkRuns }
       if (caminho.includes('/actions/runs?')) return { workflow_runs: workflowRuns }
+      if (caminho.includes('/actions/workflows')) return { workflows }
       if (caminho.includes('/actions/jobs/')) return { steps: [] }
       throw new Error(`caminho inesperado: ${caminho}`)
     }
@@ -1459,5 +1461,12 @@ describe('lerVerificacao do vigia usa a régua única do estado do CI', () => {
   it('falha real: "vermelha"; sem check nenhum: "ausente"', async () => {
     expect(await ler(gh([{ status: 'completed', conclusion: 'failure' }]))).toBe('vermelha')
     expect(await ler(gh([]))).toBe('ausente')
+  })
+
+  // O repositório TEM workflow, mas este commit não gerou execução: não é
+  // "sem verificação", é verificação que não aconteceu — o vigia espera.
+  it('sem check nenhum mas com workflow no repositório: "pendente", não "ausente"', async () => {
+    const comWorkflow = [{ path: '.github/workflows/ci.yml', state: 'active' }]
+    expect(await ler(gh([], [], comWorkflow))).toBe('pendente')
   })
 })

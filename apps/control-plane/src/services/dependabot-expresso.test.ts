@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { PrismaClient } from '@prisma/client'
 import {
   GRUPOS_DE_IRMAOS,
@@ -10,6 +10,7 @@ import {
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { vigiarPrsOrfaos, type PrAberto, type VigiaDoPrDeps } from './vigia-do-pr.js'
 import { guardaPorRepositorio } from './guarda-de-autonomia.js'
+import { esquecerPedidosDeNovaExecucao } from './nova-execucao-do-ci.js'
 
 const CI_VERDE = { check_runs: [{ status: 'completed', conclusion: 'success' }] }
 const SEM_WORKFLOW_RODANDO = { workflow_runs: [{ status: 'completed', conclusion: 'success' }] }
@@ -489,6 +490,92 @@ describe('decidirDependabotDoVigia: lê o estado fresco (a listagem não enrique
     expect(puts(gh.ghSend)).toHaveLength(0)
     expect(r.motivo).toContain('GitHub fora do ar')
     expect(registrarNoPainel).toHaveBeenCalled()
+  })
+})
+
+describe('decidirDependabotDoVigia: falha de infraestrutura e execução cancelada pedem UMA nova execução', () => {
+  function depsDoVigia(c: Cenario = {}, over: Record<string, unknown> = {}) {
+    const { deps, gh, registrarNoPainel } = depsDoCore(c, over)
+    const { verificacao: _v, mergeable: _m, paradoHaMs: _p, ...resto } = deps
+    return { deps: resto, gh, registrarNoPainel }
+  }
+  const falhaDoJob = {
+    check_runs: [{ id: 1, name: 'Build', status: 'completed', conclusion: 'failure' }],
+  }
+  const execucaoFalha = (tentativa = 1) => ({
+    workflow_runs: [
+      { id: 321, status: 'completed', conclusion: 'failure', run_attempt: tentativa },
+    ],
+  })
+  const posts = (ghSend: ReturnType<typeof github>['ghSend']) =>
+    ghSend.mock.calls.filter((c) => c[0] === 'POST').map((c) => c[1])
+
+  beforeEach(() => esquecerPedidosDeNovaExecucao())
+
+  it('Dependabot + vermelho: pede nova execução dos jobs que falharam, uma vez, e registra no painel', async () => {
+    const { gh, deps, registrarNoPainel } = depsDoVigia({
+      checkRuns: falhaDoJob,
+      workflows: execucaoFalha(),
+    })
+    const r = await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    expect(r.mesclou).toBe(false)
+    expect(posts(gh.ghSend)).toEqual(['/repos/org/repo/actions/runs/321/rerun-failed-jobs'])
+    expect(registrarNoPainel).toHaveBeenCalledWith(
+      'proj-1',
+      expect.stringContaining('reexecucao'),
+      expect.stringMatching(/nova execução/)
+    )
+  })
+
+  it('segunda passada no mesmo commit: não repete o pedido', async () => {
+    const { gh, deps } = depsDoVigia({ checkRuns: falhaDoJob, workflows: execucaoFalha() })
+    await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    expect(posts(gh.ghSend)).toHaveLength(1)
+  })
+
+  it('execução que já está na segunda tentativa: o teto do GitHub segura, nenhum pedido', async () => {
+    const { gh, deps } = depsDoVigia({ checkRuns: falhaDoJob, workflows: execucaoFalha(2) })
+    await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    expect(posts(gh.ghSend)).toHaveLength(0)
+  })
+
+  it('execução cancelada (sem resultado): pede a execução inteira de novo', async () => {
+    const { gh, deps } = depsDoVigia({
+      checkRuns: {
+        check_runs: [{ id: 1, name: 'Build', status: 'completed', conclusion: 'cancelled' }],
+      },
+      workflows: {
+        workflow_runs: [{ id: 654, status: 'completed', conclusion: 'cancelled', run_attempt: 1 }],
+      },
+    })
+    await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    expect(posts(gh.ghSend)).toEqual(['/repos/org/repo/actions/runs/654/rerun'])
+  })
+
+  it('verde: nada a repetir', async () => {
+    const { gh, deps } = depsDoVigia({})
+    await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    expect(posts(gh.ghSend)).toHaveLength(0)
+  })
+
+  it('PR de gente, não do Dependabot: o caminho expresso não mexe na verificação dele', async () => {
+    const { gh, deps } = depsDoVigia({
+      autor: 'alguem',
+      checkRuns: falhaDoJob,
+      workflows: execucaoFalha(),
+    })
+    await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    expect(posts(gh.ghSend)).toHaveLength(0)
+  })
+
+  it('política do projeto diferente de "sim": não toca na verificação do cliente', async () => {
+    const { gh, deps } = depsDoVigia(
+      { checkRuns: falhaDoJob, workflows: execucaoFalha() },
+      { runtimeConfig: { cuidaPorOrigem: { dependabot: 'perguntar' } } }
+    )
+    await decidirDependabotDoVigia({ ...deps, numero: 42 })
+    expect(posts(gh.ghSend)).toHaveLength(0)
   })
 })
 

@@ -218,6 +218,18 @@ export function frasarCausaDoCancelamento(culpado: CulpadoEncontrado): string {
   )
 }
 
+/**
+ * A frase do parecer quando a verificação reprovou por job(s) que falharam
+ * de verdade e nenhum passo escondido foi investigado: cita o NOME do job, que
+ * é o que o dev precisa para achar o defeito. Nomes sempre sanitizados.
+ */
+export function frasarJobsComFalha(jobs: readonly string[]): string {
+  const lista = jobs.map(nomeSeguroParaComentario).join(', ')
+  return jobs.length === 1
+    ? `A verificação automática reprovou no job ${lista}.`
+    : `A verificação automática reprovou nos jobs ${lista}.`
+}
+
 /** L4-T17 (achado 5): uma chamada de rede por job não-passante, todas ao
  *  mesmo tempo, vira uma rajada de dezenas de chamadas simultâneas contra o
  *  MESMO token do GitHub quando o workflow do cliente usa matriz ou muitos

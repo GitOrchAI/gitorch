@@ -67,24 +67,34 @@ describe('decidirSobreVerificacao', () => {
   })
 
   // L4-T17 (item 4): cancelamento SEM culpa (`estadoDoCi` devolve
-  // 'cancelado' quando tudo cancelou e nada falhou de verdade) nunca vira
+  // 'sem-resultado' quando tudo cancelou e nada falhou de verdade) nunca vira
   // veredito — segue a MESMA régua de pending/unknown: espera, e só depois
   // do teto avisa o dono. Este é "o caminho da base continua existindo":
   // deixa de ser a explicação PADRÃO (só entra quando não há culpado real),
   // mas continua coberto por teste, igual sempre foi.
-  it('cancelado sem culpa: espera, nunca vira veredito — mesma régua de pending', () => {
+  it('sem resultado: espera, nunca vira veredito — mesma régua de pending', () => {
     const d = decidirSobreVerificacao({
-      estado: 'cancelado',
+      estado: 'sem-resultado',
       primeiraVezVistoPendenteEm: null,
       agora,
     })
     expect(d.acao).toBe('esperar')
-    expect(d.motivo).toMatch(/cancelado/i)
+    expect(d.motivo).toMatch(/sem resultado de verificação/i)
   })
 
-  it('cancelado sem culpa além do teto: avisa o dono — o mesmo aviso de sempre, não um veredito', () => {
+  it('sem resultado com detalhe: o motivo carrega o que o GitHub deixou de entregar', () => {
     const d = decidirSobreVerificacao({
-      estado: 'cancelado',
+      estado: 'sem-resultado',
+      primeiraVezVistoPendenteEm: null,
+      agora,
+      detalhe: 'o PR tem conflito com a base e o GitHub não roda a verificação assim',
+    })
+    expect(d.motivo).toContain('o PR tem conflito com a base')
+  })
+
+  it('sem resultado além do teto: avisa o dono — o mesmo aviso de sempre, não um veredito', () => {
+    const d = decidirSobreVerificacao({
+      estado: 'sem-resultado',
       primeiraVezVistoPendenteEm: new Date(agora.getTime() - TETO_DE_ESPERA_MS - 1),
       agora,
     })

@@ -1024,7 +1024,7 @@ export const MAX_PAGINAS_DE_PR = 20
  * O que a verificação automática daquele commit está dizendo AGORA.
  *
  * Só traduz o estado da leitura única (`lerEstadoDoCiDoHead`): a régua de
- * verde é a mesma do QA. `cancelado` não é veredito, então vira `pendente`.
+ * verde é a mesma do QA. `sem-resultado` não é veredito, então vira `pendente`.
  */
 export async function lerVerificacao(args: {
   repo: string
@@ -1036,11 +1036,16 @@ export async function lerVerificacao(args: {
     sha: args.sha,
     ghGet: args.ghGet,
   })
+  return traduzirEstadoDoCi(estado)
+}
+
+/** O estado da leitura única do CI, na língua do vigia. */
+export function traduzirEstadoDoCi(estado: EstadoDoCi): EstadoDaVerificacao {
   const traducao: Record<EstadoDoCi, EstadoDaVerificacao> = {
     green: 'verde',
     red: 'vermelha',
     pending: 'pendente',
-    cancelado: 'pendente',
+    'sem-resultado': 'pendente',
     'no checks': 'ausente',
   }
   return traducao[estado]

@@ -25,7 +25,11 @@ import { lerCuidaPorOrigem } from './cuidado-por-origem.js'
 import { comProjetoDaGuarda } from './guarda-de-autonomia.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
-import { lerEstadoDoCiDoHead } from './estado-da-verificacao-do-github.js'
+import {
+  lerEstadoDoCiDoHead,
+  type EstadoDoCiInvestigado,
+} from './estado-da-verificacao-do-github.js'
+import { pedirNovaExecucaoDoCi } from './nova-execucao-do-ci.js'
 import { baseDoPrDe, branchPadraoLidaDoRepositorio } from './base-do-dev.js'
 import { contextoExecutivoVazio } from './contexto-executivo-da-pergunta.js'
 import {
@@ -37,7 +41,7 @@ import {
   AUTORES_QUE_O_VIGIA_NAO_CONSERTA,
   MAX_PAGINAS_DE_PR,
   descreverTempoParado,
-  lerVerificacao,
+  traduzirEstadoDoCi,
   type EstadoDaVerificacao,
 } from './vigia-do-pr.js'
 import type { StepExecutor } from './role-rails.js'
@@ -452,19 +456,23 @@ export async function decidirDependabotDoVigia(
   let verificacao: EstadoDaVerificacao
   let mergeable: boolean | null
   let sha: string | null = null
+  let autor: string | null = null
+  let leitura: EstadoDoCiInvestigado | null = null
   try {
     const pr = lerPrCru(
       await deps.ghGet(`/repos/${deps.projeto.wingId}/pulls/${deps.numero}`, deps.token)
     )
     sha = pr.sha
+    autor = pr.autor
     mergeable = pr.mergeable
-    verificacao = sha
-      ? await lerVerificacao({
-          repo: deps.projeto.wingId,
-          sha,
-          ghGet: (caminho) => deps.ghGet(caminho, deps.token),
-        })
-      : 'ausente'
+    if (sha) {
+      leitura = await lerEstadoDoCiDoHead({
+        repositorio: deps.projeto.wingId,
+        sha,
+        ghGet: (caminho) => deps.ghGet(caminho, deps.token),
+      })
+    }
+    verificacao = leitura ? traduzirEstadoDoCi(leitura.estado) : 'ausente'
   } catch (err) {
     return recusar(
       { ...deps, verificacao: 'pendente', mergeable: null },
@@ -472,5 +480,64 @@ export async function decidirDependabotDoVigia(
       `não deu para ler o estado do PR (${(err as Error).message})`
     )
   }
+  if (sha && leitura && AUTORES_QUE_O_VIGIA_NAO_CONSERTA.includes(autor ?? '')) {
+    await repetirVerificacaoSePreciso({ ...deps, verificacao, mergeable }, sha, leitura)
+  }
   return decidirDependabotExpresso({ ...deps, verificacao, mergeable })
+}
+
+/**
+ * A verificação do PR do Dependabot não deu resultado (execução cancelada) ou
+ * falhou: pede UMA nova execução por commit antes de tratar como definitivo.
+ *
+ * O critério é conservador de propósito. A API de check-runs não entrega base
+ * segura para separar "o download deu 502" de "a dependência nova quebrou o
+ * build" (nome de passo e anotação mudam de um workflow para outro, e uma
+ * instalação que falha pode ser justamente o defeito da atualização). Então
+ * vale a regra mais simples: PR do Dependabot + vermelho (ou sem resultado) =
+ * uma repetição. Se a segunda tentativa falhar também, o vermelho é de
+ * verdade e segue como sempre foi. O teto é por commit (ver
+ * `nova-execucao-do-ci.ts`).
+ *
+ * Só quando a política do projeto manda cuidar (`sim`): repetir a execução
+ * gasta a cota de CI do cliente, e quem disse "não" ou "pergunte" não pediu
+ * isso. A escrita passa pela guarda de autonomia do projeto.
+ */
+async function repetirVerificacaoSePreciso(
+  deps: DepsDoDependabotExpresso,
+  sha: string,
+  leitura: EstadoDoCiInvestigado
+): Promise<void> {
+  if (lerCuidaPorOrigem(deps.runtimeConfig, false).dependabot !== 'sim') return
+  const motivo =
+    leitura.estado === 'red'
+      ? 'falha-de-infraestrutura'
+      : leitura.estado === 'sem-resultado'
+        ? 'sem-resultado'
+        : null
+  if (motivo === null) return
+  try {
+    const pedido = await comProjetoDaGuarda(deps.projeto.id, () =>
+      pedirNovaExecucaoDoCi({
+        repositorio: deps.projeto.wingId,
+        sha,
+        motivo,
+        execucoes: leitura.execucoes,
+        ghGet: (caminho) => deps.ghGet(caminho, deps.token),
+        ghEnviar: (metodo, caminho) => deps.ghSend(metodo, caminho, deps.token, undefined),
+      })
+    )
+    if (pedido.primeiraVez) {
+      await registrar(
+        deps,
+        `dependabot-reexecucao:${deps.projeto.wingId}:${deps.numero}:${sha}`,
+        `GitOrch: a verificação do PR #${deps.numero} do Dependabot ` +
+          `${motivo === 'sem-resultado' ? 'ficou sem resultado' : 'falhou'}: ${pedido.texto}.`
+      )
+    }
+  } catch (err) {
+    deps.onWarn(
+      `dependabot-expresso: não consegui repetir a verificação do PR #${deps.numero}: ${(err as Error).message}`
+    )
+  }
 }
