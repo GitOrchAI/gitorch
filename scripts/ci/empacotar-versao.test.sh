@@ -148,6 +148,13 @@ confere "manifesto com a arquitetura desta máquina" node -e '
 confere "manifesto com node, sistema e data UTC" node -e '
   const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   if (!/^v\d+\./.test(m.node) || !m.sistema || !/Z$/.test(m.geradoEm)) process.exit(1);' "$MAN"
+confere "manifesto declara nodeMajor igual ao major do node desta máquina" node -e '
+  const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const major = Number(process.versions.node.split(".")[0]);
+  if (!Number.isInteger(m.nodeMajor) || m.nodeMajor !== major) process.exit(1);
+  if (!m.node.startsWith("v" + m.nodeMajor + ".")) process.exit(1);' "$MAN"
+confere_nao "manifesto não tem endereço (nenhuma URL em campo algum)" grep -qiE 'https?://|API_URL' "$MAN"
+confere_nao "manifesto do tar também não tem endereço" bash -c "tar -xzOf '$TAR' ./MANIFESTO.json 2>/dev/null | grep -qiE 'https?://|API_URL' || tar -xzOf '$TAR' MANIFESTO.json 2>/dev/null | grep -qiE 'https?://|API_URL'"
 confere "manifesto lista componentes com tamanho" node -e '
   const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   const nomes = m.componentes.map((c) => c.nome);

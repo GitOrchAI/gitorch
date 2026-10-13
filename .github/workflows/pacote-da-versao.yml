@@ -12,8 +12,13 @@ name: Pacote da versão
 # Dispara quando o workflow `CI` termina com sucesso num push da main, e
 # também à mão (workflow_dispatch) para reempacotar um commit da main.
 #
-# Exige a variável de repositório GITORCH_PUBLIC_API_URL (endereço público da
-# API, embutido no front estático na hora do build). Sem ela o job falha.
+# Exige o SEGREDO de repositório GITORCH_PUBLIC_API_URL (endereço público da
+# API, embutido no front estático na hora do build). Segredo e não variável
+# porque o registro do CI é público: o segredo é mascarado, a variável não.
+# Sem ele o job falha logo no início, sem mostrar o valor.
+#
+# O Node do job é o mesmo que o pacote exige da máquina de destino (o pacote
+# leva módulos nativos compilados); o major vai no MANIFESTO.json (nodeMajor).
 on:
   workflow_run:
     workflows: [CI]
@@ -71,11 +76,14 @@ jobs:
     env:
       # O commit que o CI aprovou (ou o pedido à mão); nunca a ponta da main de agora.
       COMMIT: ${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
-      PUBLIC_API_URL: ${{ vars.GITORCH_PUBLIC_API_URL }}
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gitorch_pacote
       REDIS_URL: redis://localhost:6379/1
     steps:
-      - name: Conferir o commit e a variável do endereço da API
+      - name: Conferir o commit e o segredo do endereço da API
+        # O valor chega só por esta variável de ambiente (mascarada por ser
+        # segredo) e nunca é impresso: as mensagens citam apenas o nome.
+        env:
+          PUBLIC_API_URL: ${{ secrets.GITORCH_PUBLIC_API_URL }}
         run: |
           echo "SAIDA=$RUNNER_TEMP/pacote-saida" >> "$GITHUB_ENV"
           if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
@@ -83,7 +91,11 @@ jobs:
             exit 1
           fi
           if [ -z "$PUBLIC_API_URL" ]; then
-            echo "::error::a variável de repositório GITORCH_PUBLIC_API_URL não está configurada: ela é o endereço público da API embutido no front. Configure em Settings > Secrets and variables > Actions > Variables."
+            echo "::error::o segredo GITORCH_PUBLIC_API_URL não está configurado: ele é o endereço público da API embutido no front. Configure o segredo GITORCH_PUBLIC_API_URL em Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          if ! [[ "$PUBLIC_API_URL" =~ ^https:// ]]; then
+            echo "::error::o segredo GITORCH_PUBLIC_API_URL precisa começar com https:// (o valor não é mostrado aqui)"
             exit 1
           fi
 
@@ -124,7 +136,7 @@ jobs:
       - name: Build web (export estático)
         run: pnpm --filter web build
         env:
-          NEXT_PUBLIC_API_URL: ${{ vars.GITORCH_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.GITORCH_PUBLIC_API_URL }}
       - name: Build control-plane + deps
         run: npx turbo run build --filter=@gitorch/control-plane...
 
@@ -168,6 +180,7 @@ jobs:
             echo "### Pacote da versão"
             echo
             echo "- commit: \`$COMMIT\`"
+            echo "- Node do pacote (a máquina de destino precisa do mesmo major): $(node -p 'process.versions.node.split(".")[0]')"
             echo "- tamanho do tar: $(du -h "$SAIDA/gitorch-$COMMIT.tar.gz" | cut -f1)"
             echo "- soma sha256: \`$(cut -d' ' -f1 "$SAIDA/gitorch-$COMMIT.tar.gz.sha256")\`"
           } >> "$GITHUB_STEP_SUMMARY"
