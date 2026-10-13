@@ -67,6 +67,17 @@ export interface PullFalso {
   base: string
   /** Quem abriu: o App do produto, por padrão. */
   autor: { login: string; type: string }
+  /** Commit da ponta do ramo do PR; muda quando alguém empurra commit novo. */
+  sha: string
+  /** `null` = o GitHub ainda não calculou. */
+  mergeable: boolean | null
+}
+
+/** Uma verificação (check-run) de um commit. */
+export interface CheckFalso {
+  name: string
+  status: 'queued' | 'in_progress' | 'completed'
+  conclusion?: 'success' | 'failure' | 'neutral' | 'skipped' | 'cancelled' | 'timed_out'
 }
 
 export function shaDoTexto(texto: string): string {
@@ -93,6 +104,7 @@ const naoEncontrado = (mensagem = 'Not Found'): Resposta =>
 export class GitHubDeMelhoriasFalso {
   readonly registro: RequisicaoRegistrada[] = []
   readonly pulls: PullFalso[] = []
+  private readonly checksPorSha = new Map<string, CheckFalso[]>()
   private readonly ramos = new Map<string, Ramo>()
   private relogio: () => number = () => Date.now()
 
@@ -151,6 +163,49 @@ export class GitHubDeMelhoriasFalso {
     padrao.arquivos = { ...ramo.arquivos }
     pull.state = 'closed'
     pull.merged = true
+  }
+
+  /** Abre um pull request de segurança de teste: ramo a partir da padrão e o PR do App. */
+  abrirPullDeTeste(ramo = 'gitorch/seguranca/permissoes-minimas-ci-yml'): number {
+    const padrao = this.ramos.get(this.branchPadrao)
+    if (!padrao) throw new Error('branch padrão ausente')
+    this.ramos.set(ramo, { sha: padrao.sha, arquivos: { ...padrao.arquivos } })
+    const numero = this.pulls.length + 1
+    this.pulls.push({
+      number: numero,
+      state: 'open',
+      merged: false,
+      title: 'Segurança: teste',
+      body: '<!-- gitorch:seguranca -->\n\n## O que muda',
+      head: ramo,
+      base: this.branchPadrao,
+      autor: { login: 'gitorch-ai[bot]', type: 'Bot' },
+      sha: shaDoTexto(`${padrao.sha}@pr`),
+      mergeable: true,
+    })
+    return numero
+  }
+
+  /** Define as verificações do commit atual do PR. */
+  definirChecks(numero: number, checks: CheckFalso[]): void {
+    this.checksPorSha.set(this.pull(numero).sha, checks)
+  }
+
+  definirMergeable(numero: number, mergeable: boolean | null): void {
+    this.pull(numero).mergeable = mergeable
+  }
+
+  /** Alguém empurra um commit novo no ramo do PR: sha novo, sem verificações ainda. */
+  empurrarCommit(numero: number): string {
+    const pull = this.pull(numero)
+    pull.sha = shaDoTexto(`${pull.sha}+novo`)
+    return pull.sha
+  }
+
+  private pull(numero: number): PullFalso {
+    const pull = this.pulls.find((p) => p.number === numero)
+    if (!pull) throw new Error(`PR ${numero} não existe`)
+    return pull
   }
 
   fecharPullSemMesclar(numero: number): void {
@@ -445,9 +500,52 @@ export class GitHubDeMelhoriasFalso {
         head: dados.head,
         base: dados.base,
         autor: { login: 'gitorch-ai[bot]', type: 'Bot' },
+        sha: shaDoTexto(`${this.ramos.get(dados.head)?.sha ?? ''}@pr`),
+        mergeable: true,
       }
       this.pulls.push(pull)
       return json(201, this.corpoDoPull(pull))
+    }
+    const verificacoes = /^\/commits\/([0-9a-f]+)\/check-runs$/.exec(rota)
+    if (verificacoes && metodo === 'GET') {
+      const lista = this.checksPorSha.get(verificacoes[1] ?? '') ?? []
+      return json(200, {
+        total_count: lista.length,
+        check_runs: lista.map((c, i) => ({
+          id: i + 1,
+          name: c.name,
+          status: c.status,
+          conclusion: c.conclusion ?? null,
+          html_url: `https://github.com/${this.repositorio}/runs/${i + 1}`,
+        })),
+      })
+    }
+    if (rota === '/actions/runs' && metodo === 'GET') {
+      return json(200, { total_count: 0, workflow_runs: [] })
+    }
+    const juntar = /^\/pulls\/(\d+)\/merge$/.exec(rota)
+    if (juntar && metodo === 'PUT') {
+      const pull = this.pulls.find((p) => p.number === Number(juntar[1]))
+      if (!pull) return naoEncontrado()
+      const dados = corpo as { sha?: string } | null
+      if (pull.state !== 'open') {
+        return json(405, { message: 'Pull Request is not mergeable', status: '405' })
+      }
+      if (pull.mergeable === false) {
+        return json(405, { message: 'Pull Request is not mergeable', status: '405' })
+      }
+      if (dados?.sha !== pull.sha) {
+        return json(409, { message: 'Head branch was modified. Review and try the merge again.' })
+      }
+      this.mesclarPull(pull.number)
+      return json(200, { sha: shaDoTexto(`${pull.sha}@merge`), merged: true, message: 'ok' })
+    }
+    const comentario = /^\/issues\/(\d+)\/comments$/.exec(rota)
+    if (comentario && metodo === 'POST') {
+      return json(201, {
+        id: this.registro.length,
+        body: (corpo as { body?: string } | null)?.body,
+      })
     }
     const umPull = /^\/pulls\/(\d+)$/.exec(rota)
     if (umPull) {
@@ -472,7 +570,9 @@ export class GitHubDeMelhoriasFalso {
       title: p.title,
       body: p.body,
       html_url: `https://github.com/${this.repositorio}/pull/${p.number}`,
-      head: { ref: p.head },
+      merged_at: p.merged ? new Date(this.relogio()).toISOString() : null,
+      mergeable: p.state === 'open' ? p.mergeable : null,
+      head: { ref: p.head, sha: p.sha },
       base: { ref: p.base },
       user: { login: p.autor.login, type: p.autor.type },
     }

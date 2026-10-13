@@ -89,6 +89,18 @@ export interface RegistroDaMelhoria {
   pr?: RegistroDoPr
   /** O texto do "como desfazer" mostrado no painel. */
   desfazer: string
+  /** A última vez que o produto olhou este pull request para mesclar e não mesclou. */
+  mescla?: TentativaDeMescla
+}
+
+/** O que a mescla automática lembra entre uma passada e outra depois de o GitHub recusar o merge (sem isso viraria laço). */
+export interface TentativaDeMescla {
+  /** Commit do pull request na última tentativa que não terminou em merge. */
+  sha: string | null
+  /** O que impediu, em português simples. */
+  motivo: string
+  /** Quantas vezes o GitHub recusou o merge ao todo; passou do teto, o produto desiste. */
+  recusas: number
 }
 
 export interface ResultadoDaAplicacao {
@@ -180,6 +192,8 @@ const ACOES_DE_PULL_REQUEST: ReadonlySet<AcaoDeSeguranca> = new Set<AcaoDeSegura
   'apagar-arquivo-no-ramo',
   'abrir-pr-de-seguranca',
   'fechar-pr-de-seguranca',
+  'comentar-pr-de-seguranca',
+  'mesclar-pr-de-seguranca',
   'apagar-ramo-de-seguranca',
 ])
 
@@ -789,7 +803,7 @@ export async function executarPermissoesMinimas(
  * o ramo registrado (com o prefixo do GitOrch) aberto por uma conta de aplicativo.
  * `null` = confere.
  */
-function motivoDoPrNaoSerDoAplicador(corpo: unknown, pr: RegistroDoPr): string | null {
+export function motivoDoPrNaoSerDoAplicador(corpo: unknown, pr: RegistroDoPr): string | null {
   const ramo = campoDe(corpo, 'head', 'ref')
   if (ramo !== pr.ramo || !pr.ramo.startsWith(PREFIXO_DOS_RAMOS_DE_SEGURANCA)) {
     return `o pull request #${pr.numero} não está no ramo que o aplicador abriu; não mexo nele`
@@ -808,6 +822,8 @@ export async function acompanharPrDeSeguranca(
 ): Promise<{
   estado: 'aguardando-revisao' | 'aplicado' | 'dispensado' | 'incerto'
   motivo: string
+  /** O pull request como o GitHub devolveu; só quando ele segue aberto e é do aplicador. */
+  corpo?: unknown
 }> {
   const pr = registro.pr
   if (!pr) return { estado: 'incerto', motivo: 'o registro não tem o número do pull request' }
@@ -822,7 +838,11 @@ export async function acompanharPrDeSeguranca(
   if (campoDe(r.corpo, 'state') === 'closed') {
     return { estado: 'dispensado', motivo: `o pull request #${pr.numero} foi fechado sem mesclar` }
   }
-  return { estado: 'aguardando-revisao', motivo: `o pull request #${pr.numero} segue aberto` }
+  return {
+    estado: 'aguardando-revisao',
+    motivo: `o pull request #${pr.numero} segue aberto`,
+    corpo: r.corpo,
+  }
 }
 
 // ------------------------------------------------------------------ como desfazer

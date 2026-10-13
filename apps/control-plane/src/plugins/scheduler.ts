@@ -8534,6 +8534,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         fetchDeLeitura: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
         // Toda escrita passa pela guarda de autonomia do projeto.
         fetchDeEscrita: (projeto) => fetchDoRepositorio({ nivel: () => projeto.autonomia }),
+        // Só o "sim"/"não" explícito do dono, num projeto em "sugerir", usa este: a
+        // autorização é daquele pull request, não do projeto inteiro.
+        fetchDeEscritaComAprovacaoDoDono: () => fetchDoRepositorio({ nivel: () => 'cuidar' }),
+        // O aviso depois de mesclar e o alerta de segredo exposto vão para o Telegram do dono.
+        avisarDono: (projeto, texto) =>
+          avisarDonoDoProjeto(
+            { id: projeto.id, wingId: projeto.wingId, userId: projeto.userId },
+            texto
+          ),
         ritmo: ritmoDeEscritaDaSeguranca,
         agentQuestion:
           (app as unknown as { agentQuestionService?: AgentQuestionAskerDeSeguranca })

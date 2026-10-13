@@ -196,6 +196,8 @@ describe.skipIf(!reachable)('aplicação das melhorias de segurança (integratio
       perguntas?: AgentQuestionService | null
       avisos?: string[]
       infos?: string[]
+      /** O que o dono receberia no Telegram (a borda externa é de mentira). */
+      telegram?: string[]
     } = {}
   ) {
     return aplicarMelhoriasDeSegurancaDosProjetos({
@@ -211,6 +213,12 @@ describe.skipIf(!reachable)('aplicação das melhorias de segurança (integratio
       fetchDeEscrita: (p) =>
         fetchDoRepositorio({ nivel: () => p.autonomia, fetchImpl: mundo.fetchLocal }),
       ritmo: mundo.ritmo,
+      fetchDeEscritaComAprovacaoDoDono: () =>
+        fetchDoRepositorio({ nivel: () => 'cuidar', fetchImpl: mundo.fetchLocal }),
+      avisarDono: async (_p, texto) => {
+        extra.telegram?.push(texto)
+        return true
+      },
       agentQuestion: extra.perguntas === undefined ? null : extra.perguntas,
       env: extra.env ?? {},
       intervaloMs: INTERVALO,
@@ -502,5 +510,238 @@ describe.skipIf(!reachable)('aplicação das melhorias de segurança (integratio
     )
     await passadas(mundo, projeto, 3)
     expect(mundo.github.config.alertasDeDependencias).toBe(false)
+  })
+
+  // ---------------------------------------------------------------- mescla das melhorias
+
+  /** Tudo que o GitHub oferece já está ligado: a única melhoria que sobra é o PR de permissões. */
+  const TUDO_LIGADO: ConfiguracaoDoRepositorioFalso = {
+    alertasDeDependencias: true,
+    atualizacoesDeSeguranca: true,
+    segredos: 'enabled',
+    bloqueioDePush: 'enabled',
+    varreduraDeCodigo: 'configured',
+    permissaoDoWorkflow: 'read',
+  }
+  const ID_DO_PR = 'permissoes-minimas-dos-workflows:.github/workflows/ci.yml'
+  const VERDE = [{ name: 'test', status: 'completed', conclusion: 'success' }] as const
+
+  async function comPrAberto(rotulo: string) {
+    const projeto = await novoProjeto(rotulo)
+    const mundo = await iniciarGitHub(projeto.wingId, TUDO_LIGADO)
+    await passada(mundo, projeto)
+    mundo.avancar(INTERVALO + 1000)
+    expect(mundo.github.pulls).toHaveLength(1)
+    return { projeto, mundo }
+  }
+
+  const mesclagens = (m: Mundo) =>
+    m.github.escritas().filter((e) => e.metodo === 'PUT' && e.caminho.endsWith('/merge'))
+
+  const registroDaMelhoria = (projectId: string, id = ID_DO_PR) =>
+    (
+      ficha(projectId, 'melhorias') as {
+        melhorias: Record<string, { estado: string; motivo: string; desfazer: string }>
+      }
+    ).melhorias[id]
+
+  const perguntasDoProjeto = (projectId: string) =>
+    JSON.parse(
+      psql(
+        dbUrl,
+        `SELECT coalesce(json_agg(q ORDER BY created_at), '[]') FROM agent_questions q WHERE project_id = '${projectId}'`
+      )
+    ) as Array<{ id: string; status: string; dedup_key: string; text: string }>
+
+  it('cuidar + verde: o produto mescla UMA vez, registra "como desfazer" e avisa UMA vez', async () => {
+    const { projeto, mundo } = await comPrAberto('mescla-verde')
+    const telegram: string[] = []
+    mundo.github.definirChecks(1, [...VERDE])
+    await passadas(mundo, projeto, 4, { telegram })
+
+    expect(mesclagens(mundo)).toHaveLength(1)
+    expect(mundo.github.pulls[0]).toMatchObject({ state: 'closed', merged: true })
+    const registro = registroDaMelhoria(projeto.id)
+    expect(registro?.estado).toBe('aplicado')
+    expect(registro?.motivo).toContain('mesclada pelo produto')
+    expect(registro?.motivo).toContain('#1')
+    expect(registro?.desfazer).toMatch(/reverta/)
+    expect(telegram).toHaveLength(1)
+    expect(telegram[0]).toContain(projeto.wingId)
+    expect(telegram[0]).toMatch(/revert/i)
+    expect(chavesDeEventos(projeto.id)).toContain(
+      `melhoria-de-seguranca:${projeto.wingId}:${ID_DO_PR}:aplicado`
+    )
+  })
+
+  it('cuidar + verificação pendente ou sem verificação: nada é mesclado, nada é avisado', async () => {
+    const { projeto, mundo } = await comPrAberto('mescla-pendente')
+    const telegram: string[] = []
+    mundo.github.definirChecks(1, [{ name: 'test', status: 'in_progress' }])
+    await passadas(mundo, projeto, 3, { telegram })
+    expect(mesclagens(mundo)).toHaveLength(0)
+    expect(telegram).toEqual([])
+    expect(registroDaMelhoria(projeto.id)?.estado).toBe('aguardando-revisao')
+
+    mundo.github.definirChecks(1, [])
+    await passadas(mundo, projeto, 2, { telegram })
+    expect(mesclagens(mundo)).toHaveLength(0)
+  })
+
+  it('cuidar + gitleaks vermelho: não mescla, alerta UMA vez por commit, sem mostrar valor', async () => {
+    const { projeto, mundo } = await comPrAberto('mescla-segredo')
+    const telegram: string[] = []
+    mundo.github.definirChecks(1, [
+      { name: 'test', status: 'completed', conclusion: 'success' },
+      { name: 'gitleaks', status: 'completed', conclusion: 'failure' },
+    ])
+    await passadas(mundo, projeto, 4, { telegram })
+
+    expect(mesclagens(mundo)).toHaveLength(0)
+    expect(telegram).toHaveLength(1)
+    expect(telegram[0]).toContain(projeto.wingId)
+    expect(telegram[0]).toMatch(/segredo/i)
+    expect(telegram[0]).toMatch(/troque|trocar/i)
+    const link = /https:\/\/\S+/.exec(telegram[0] ?? '')?.[0]
+    expect(new URL(link ?? 'x:').hostname).toBe('github.com')
+    expect(registroDaMelhoria(projeto.id)?.estado).toBe('aguardando-revisao')
+
+    // commit novo, de novo vermelho: novo alerta (a chave é PR + commit)
+    mundo.github.empurrarCommit(1)
+    mundo.github.definirChecks(1, [
+      { name: 'gitleaks', status: 'completed', conclusion: 'failure' },
+    ])
+    await passadas(mundo, projeto, 3, { telegram })
+    expect(telegram).toHaveLength(2)
+    expect(mesclagens(mundo)).toHaveLength(0)
+  })
+
+  it('cuidar + outro vermelho: registra o motivo uma vez, não alerta de segredo e espera', async () => {
+    const { projeto, mundo } = await comPrAberto('mescla-vermelho')
+    const telegram: string[] = []
+    mundo.github.definirChecks(1, [{ name: 'lint', status: 'completed', conclusion: 'failure' }])
+    await passadas(mundo, projeto, 4, { telegram })
+    expect(mesclagens(mundo)).toHaveLength(0)
+    expect(telegram).toEqual([])
+    const motivos = chavesDeEventos(projeto.id).filter((c) => c.includes(':mescla:'))
+    expect(motivos).toHaveLength(1)
+  })
+
+  it('cuidar + conflito: não mescla, registra uma vez e só tenta de novo com commit novo', async () => {
+    const { projeto, mundo } = await comPrAberto('mescla-conflito')
+    mundo.github.definirChecks(1, [...VERDE])
+    mundo.github.definirMergeable(1, false)
+    await passadas(mundo, projeto, 3)
+    expect(mesclagens(mundo)).toHaveLength(0)
+    expect(chavesDeEventos(projeto.id).filter((c) => c.includes(':mescla:'))).toHaveLength(1)
+
+    mundo.github.empurrarCommit(1)
+    mundo.github.definirMergeable(1, true)
+    mundo.github.definirChecks(1, [...VERDE])
+    await passadas(mundo, projeto, 2)
+    expect(mesclagens(mundo)).toHaveLength(1)
+    expect(registroDaMelhoria(projeto.id)?.estado).toBe('aplicado')
+  })
+
+  it('cuidar + o GitHub recusa o merge (405): não vira laço, tem teto e só repete com commit novo', async () => {
+    const { projeto, mundo } = await comPrAberto('mescla-recusa')
+    mundo.github.config.forcar = {
+      'PUT /pulls/1/merge': { status: 405, mensagem: 'Merge commits are not allowed' },
+    }
+    mundo.github.definirChecks(1, [...VERDE])
+    await passadas(mundo, projeto, 5)
+    expect(mesclagens(mundo)).toHaveLength(1)
+    expect(registroDaMelhoria(projeto.id)?.estado).toBe('aguardando-revisao')
+    expect(registroDaMelhoria(projeto.id)?.motivo).toContain('405')
+
+    for (let i = 0; i < 6; i += 1) {
+      mundo.github.empurrarCommit(1)
+      mundo.github.definirChecks(1, [...VERDE])
+      await passadas(mundo, projeto, 1)
+    }
+    // teto: não passa de 3 recusas no total, por mais commits que cheguem
+    expect(mesclagens(mundo).length).toBeLessThanOrEqual(3)
+  })
+
+  it('sugerir + verde: pergunta UMA vez (painel e Telegram) e não mescla sem resposta', async () => {
+    const { projeto, mundo } = await comPrAberto('sugere-verde')
+    const sugerir = { ...projeto, autonomia: 'sugerir', autonomiaDeSeguranca: 'sugerir' }
+    const perguntas = new AgentQuestionService(prisma)
+    mundo.github.definirChecks(1, [...VERDE])
+    await passadas(mundo, sugerir, 4, { perguntas })
+
+    expect(mesclagens(mundo)).toHaveLength(0)
+    const feitas = perguntasDoProjeto(projeto.id)
+    expect(feitas).toHaveLength(1)
+    expect(feitas[0]?.dedup_key).toContain('seguranca-mescla:')
+    expect(feitas[0]?.text).toMatch(/desfazer/i)
+    expect(feitas[0]?.text).toMatch(/risco/i)
+    expect(registroDaMelhoria(projeto.id)?.estado).toBe('aguardando-revisao')
+  })
+
+  it('sugerir + resposta Sim: mescla pelos mesmos porteiros, uma vez', async () => {
+    const { projeto, mundo } = await comPrAberto('sugere-sim')
+    const sugerir = { ...projeto, autonomia: 'sugerir', autonomiaDeSeguranca: 'sugerir' }
+    const perguntas = new AgentQuestionService(prisma)
+    const telegram: string[] = []
+    mundo.github.definirChecks(1, [...VERDE])
+    await passadas(mundo, sugerir, 2, { perguntas })
+    psql(
+      dbUrl,
+      `UPDATE agent_questions SET status = 'answered', answer = 'mesclar-melhoria-sim' WHERE project_id = '${projeto.id}'`
+    )
+    await passadas(mundo, sugerir, 3, { perguntas, telegram })
+    expect(mesclagens(mundo)).toHaveLength(1)
+    expect(registroDaMelhoria(projeto.id)?.estado).toBe('aplicado')
+    expect(perguntasDoProjeto(projeto.id)).toHaveLength(1)
+  })
+
+  it('sugerir + Sim com segredo vermelho: os porteiros ainda barram', async () => {
+    const { projeto, mundo } = await comPrAberto('sugere-sim-vermelho')
+    const sugerir = { ...projeto, autonomia: 'sugerir', autonomiaDeSeguranca: 'sugerir' }
+    const perguntas = new AgentQuestionService(prisma)
+    mundo.github.definirChecks(1, [...VERDE])
+    await passadas(mundo, sugerir, 2, { perguntas })
+    psql(
+      dbUrl,
+      `UPDATE agent_questions SET status = 'answered', answer = 'mesclar-melhoria-sim' WHERE project_id = '${projeto.id}'`
+    )
+    mundo.github.definirChecks(1, [
+      { name: 'gitleaks', status: 'completed', conclusion: 'failure' },
+    ])
+    await passadas(mundo, sugerir, 3, { perguntas })
+    expect(mesclagens(mundo)).toHaveLength(0)
+  })
+
+  it('sugerir + resposta Não: fecha o PR com um comentário curto e não mescla', async () => {
+    const { projeto, mundo } = await comPrAberto('sugere-nao')
+    const sugerir = { ...projeto, autonomia: 'sugerir', autonomiaDeSeguranca: 'sugerir' }
+    const perguntas = new AgentQuestionService(prisma)
+    mundo.github.definirChecks(1, [...VERDE])
+    await passadas(mundo, sugerir, 2, { perguntas })
+    psql(
+      dbUrl,
+      `UPDATE agent_questions SET status = 'answered', answer = 'mesclar-melhoria-nao' WHERE project_id = '${projeto.id}'`
+    )
+    await passadas(mundo, sugerir, 3, { perguntas })
+    expect(mesclagens(mundo)).toHaveLength(0)
+    expect(mundo.github.pulls[0]).toMatchObject({ state: 'closed', merged: false })
+    const comentarios = mundo.github
+      .escritas()
+      .filter((e) => e.metodo === 'POST' && e.caminho.endsWith('/issues/1/comments'))
+    expect(comentarios).toHaveLength(1)
+    expect(registroDaMelhoria(projeto.id)?.estado).toBe('dispensado')
+  })
+
+  it('so_olhar: o PR aberto não é lido, perguntado nem mesclado', async () => {
+    const { projeto, mundo } = await comPrAberto('olha-so')
+    const olhar = { ...projeto, autonomia: 'so_olhar', autonomiaDeSeguranca: 'so_olhar' }
+    const telegram: string[] = []
+    mundo.github.definirChecks(1, [...VERDE])
+    const antes = mundo.github.registro.length
+    await passadas(mundo, olhar, 3, { telegram, perguntas: new AgentQuestionService(prisma) })
+    expect(mundo.github.registro.length).toBe(antes)
+    expect(perguntasDoProjeto(projeto.id)).toEqual([])
+    expect(telegram).toEqual([])
   })
 })

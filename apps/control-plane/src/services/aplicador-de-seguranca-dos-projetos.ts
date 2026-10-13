@@ -64,11 +64,24 @@ import { criarLeitorDeSeguranca, campoDe, erroDeRedeSeguro } from './leitor-de-s
 import {
   chaveDoEventoDaMelhoria,
   idDasPermissoesMinimas,
+  nomeDaMelhoriaPorId,
   planejarMelhorias,
   proximaTentativaApos,
   textoDoEventoDaMelhoria,
   type Candidata,
 } from './melhorias-de-seguranca.js'
+import {
+  avaliarPrAbertoDaMelhoria,
+  fecharPrRecusadoPeloDono,
+  lerTentativaDeMescla,
+  mesclarPrDaMelhoria,
+  modoDaSeguranca,
+  TETO_DE_RECUSAS_DO_MERGE,
+  textoDoAlertaDeSegredo,
+  textoDoAvisoDeMesclada,
+  textoDaPerguntaDeMescla,
+  type DesfechoDoMerge,
+} from './mescla-da-melhoria-de-seguranca.js'
 import { registrarNoPainelSeForNovo } from './registro-no-painel.js'
 import {
   gravarSondagem,
@@ -77,6 +90,8 @@ import {
   type CredencialDaSondagem,
   type SondagemDoRepositorio,
 } from './sondagem-de-seguranca.js'
+import { createHash } from 'node:crypto'
+import { buildFreeTextOption as opcaoDeTextoLivre } from './telegram-bot.js'
 import { limparSurrogatesEmJson, mascararCredenciais, mensagemDoErro } from './texto-seguro.js'
 import { repositorioValido } from './nota-de-seguranca.js'
 import { podeEscrever } from '@gitorch/cadence'
@@ -100,10 +115,26 @@ const projetosEmPassada = new Set<string>()
 const MAX_ACOMPANHAMENTOS_POR_PASSADA = 3
 const MAX_PERGUNTAS_POR_PASSADA = 2
 
+/** Identidade curta de um motivo, para o painel não repetir a mesma linha. */
+const resumoDe = (motivo: string): string =>
+  createHash('sha1').update(motivo).digest('hex').slice(0, 8)
+
 export const PREFIXO_DA_PERGUNTA_DE_PERMISSOES = 'seguranca-permissoes:'
 export const RESPOSTA_PODE_APLICAR_NO_DEPLOY = 'permissoes-deploy-aplicar'
 export const RESPOSTA_MANTER_O_DEPLOY = 'permissoes-deploy-manter'
 export const RESPOSTA_EXPLICAR_O_DEPLOY = 'permissoes-deploy-explicar'
+
+export const PREFIXO_DA_PERGUNTA_DE_MESCLA = 'seguranca-mescla:'
+export const RESPOSTA_PODE_MESCLAR_A_MELHORIA = 'mesclar-melhoria-sim'
+export const RESPOSTA_NAO_MESCLAR_A_MELHORIA = 'mesclar-melhoria-nao'
+
+export function dedupKeyDaPerguntaDeMescla(
+  repositorio: string,
+  numero: number,
+  sha: string
+): string {
+  return `${PREFIXO_DA_PERGUNTA_DE_MESCLA}${repositorio}:${numero}:${sha.slice(0, 7)}`
+}
 
 export interface ProjetoParaAplicar {
   id: string
@@ -230,6 +261,27 @@ export function projetoPodeReceberMelhorias(projeto: ProjetoParaAplicar, env: Am
   )
 }
 
+/**
+ * Projeto em "sugerir" não recebe melhoria nova, mas o pull request que o
+ * produto já abriu ainda precisa da pergunta ao dono. Mesmas travas, nível
+ * mais baixo; quem decide se há pull request aberto é a ficha.
+ */
+export function projetoPodeAcompanharMelhorias(
+  projeto: ProjetoParaAplicar,
+  env: Ambiente
+): boolean {
+  return (
+    repositorioValido(projeto.wingId) &&
+    aplicacaoDeSegurancaLigada(env) &&
+    projetoNaAllowlistDaSeguranca(projeto, env) &&
+    modoDaSeguranca(projeto) === 'sugerir'
+  )
+}
+
+function temPrAbertoNaFicha(ficha: FichaDeMelhorias): boolean {
+  return Object.values(ficha.melhorias).some((r) => r.estado === 'aguardando-revisao' && r.pr)
+}
+
 // ------------------------------------------------------------------ a passada
 
 export interface DepsDoAplicador {
@@ -255,6 +307,21 @@ export interface DepsDoAplicador {
   /** O ritmo de escrita do processo (pausa mínima entre escritas). */
   ritmo: RitmoDeEscrita
   agentQuestion: AgentQuestionAskerDeSeguranca | null
+  /**
+   * Avisa o dono do projeto por mensagem (Telegram). Sem isto o aviso fica só
+   * no painel. Devolve se a mensagem saiu.
+   */
+  avisarDono?: (
+    projeto: Pick<ProjetoParaAplicar, 'id' | 'wingId' | 'userId'>,
+    texto: string
+  ) => Promise<boolean>
+  /**
+   * O `fetch` de escrita para a resposta EXPLÍCITA do dono ("sim, mescle" ou "não,
+   * feche") num projeto em "sugerir": a guarda de autonomia barraria a mescla por
+   * ser um nível sem `mesclar`, mas aquele pull request tem a autorização do dono.
+   * Só estes dois caminhos usam. Sem isto, o "sim" em "sugerir" fica barrado.
+   */
+  fetchDeEscritaComAprovacaoDoDono?: (projeto: ProjetoParaAplicar) => typeof fetch
   env?: Ambiente
   intervaloMs?: number
   orcamentoMs?: number
@@ -333,7 +400,9 @@ export async function aplicarMelhoriasDeSegurancaDosProjetos(
   }
 
   try {
-    const elegiveis = deps.projetos.filter((p) => projetoPodeReceberMelhorias(p, env))
+    const elegiveis = deps.projetos.filter(
+      (p) => projetoPodeReceberMelhorias(p, env) || projetoPodeAcompanharMelhorias(p, env)
+    )
     if (elegiveis.length === 0) return nada
 
     const fichasBrutas = await deps.prisma.repoItem.findMany({
@@ -341,6 +410,14 @@ export async function aplicarMelhoriasDeSegurancaDosProjetos(
       select: { projectId: true, estado: true },
     })
     const fichas = new Map(fichasBrutas.map((f) => [f.projectId, lerFichaDeMelhorias(f.estado)]))
+    // Em "sugerir" só vale a pena passar quando há pull request aberto para perguntar.
+    for (let i = elegiveis.length - 1; i >= 0; i -= 1) {
+      const p = elegiveis[i]!
+      if (modoDaSeguranca(p) !== 'sugerir') continue
+      const f = fichas.get(p.id)
+      if (!f || !temPrAbertoNaFicha(f)) elegiveis.splice(i, 1)
+    }
+    if (elegiveis.length === 0) return nada
     const agora = deps.agora()
     const jaAvisados = new Set<string>()
 
@@ -512,7 +589,8 @@ async function passadaDoProjeto(args: {
       agora: deps.agora(),
     }
 
-    const registrar = async (id: string, resultado: DadosDoRegistro): Promise<void> => {
+    /** Grava o estado na ficha e no painel. Devolve se o evento do painel é NOVO. */
+    const registrar = async (id: string, resultado: DadosDoRegistro): Promise<boolean> => {
       const anterior = ficha.melhorias[id]
       const agoraIso = deps.agora().toISOString()
       const pr: RegistroDoPr | undefined = resultado.pr ?? anterior?.pr
@@ -531,6 +609,9 @@ async function passadaDoProjeto(args: {
         ...(dadoAnterior !== undefined ? { anterior: dadoAnterior } : {}),
         ...(pr ? { pr } : {}),
         desfazer: comoDesfazerDaMelhoria(id, repositorio),
+        ...(anterior?.mescla && resultado.estado === 'aguardando-revisao'
+          ? { mescla: anterior.mescla }
+          : {}),
       }
       ficha.melhorias[id] = registro
       try {
@@ -540,9 +621,9 @@ async function passadaDoProjeto(args: {
           `aplicar segurança em ${repositorio}: não consegui gravar a ficha: ${erroDeRedeSeguro(erro, '')}`
         )
       }
-      if (anterior?.estado === resultado.estado && anterior.motivo === registro.motivo) return
+      if (anterior?.estado === resultado.estado && anterior.motivo === registro.motivo) return false
       try {
-        await registrarNoPainelSeForNovo({
+        return await registrarNoPainelSeForNovo({
           prisma: deps.prisma,
           projectId: projeto.id,
           chave: chaveDoEventoDaMelhoria(repositorio, id, resultado.estado),
@@ -557,6 +638,62 @@ async function passadaDoProjeto(args: {
       } catch (erro) {
         aviso(
           `aplicar segurança em ${repositorio}: não consegui gravar no painel: ${erroDeRedeSeguro(erro, '')}`
+        )
+        return false
+      }
+    }
+
+    /** Uma linha no painel, uma vez por `chave`. Devolve se é nova. */
+    const noPainel = async (chave: string, texto: string): Promise<boolean> => {
+      try {
+        return await registrarNoPainelSeForNovo({
+          prisma: deps.prisma,
+          projectId: projeto.id,
+          chave,
+          texto: textoSeguroParaOPainel(texto, segredos),
+        })
+      } catch (erro) {
+        aviso(
+          `aplicar segurança em ${repositorio}: não consegui gravar no painel: ${erroDeRedeSeguro(erro, '')}`
+        )
+        return false
+      }
+    }
+
+    /** Lembra, na ficha, que o GitHub recusou o merge deste commit (sem isso viraria laço). */
+    const lembrarRecusa = async (
+      id: string,
+      sha: string,
+      motivo: string,
+      recusas: number
+    ): Promise<void> => {
+      const atual = ficha.melhorias[id]
+      if (!atual) return
+      ficha.melhorias[id] = {
+        ...atual,
+        atualizadoEm: deps.agora().toISOString(),
+        motivo: textoSeguroParaOPainel(`não mesclei: ${motivo}`, segredos),
+        mescla: { sha, motivo: textoSeguroParaOPainel(motivo, segredos), recusas },
+      }
+      try {
+        await salvarFicha(deps.prisma, projeto.id, ficha)
+      } catch (erro) {
+        aviso(
+          `aplicar segurança em ${repositorio}: não consegui gravar a ficha: ${erroDeRedeSeguro(erro, '')}`
+        )
+      }
+    }
+
+    const avisarPorMensagem = async (texto: string): Promise<void> => {
+      if (!deps.avisarDono) return
+      try {
+        await deps.avisarDono(
+          { id: projeto.id, wingId: projeto.wingId, userId: projeto.userId },
+          textoSeguroParaOPainel(texto, segredos)
+        )
+      } catch (erro) {
+        aviso(
+          `aplicar segurança em ${repositorio}: não consegui avisar o dono: ${erroDeRedeSeguro(erro, '')}`
         )
       }
     }
@@ -605,8 +742,198 @@ async function passadaDoProjeto(args: {
       agora: deps.agora(),
     })
 
+    const modo = modoDaSeguranca(projeto)
+
+    const invalidarSondagemDaPassada = async (): Promise<void> => {
+      try {
+        await invalidarSondagem(deps.prisma, projeto.id)
+        sondagemInvalidada = true
+      } catch (erro) {
+        aviso(
+          `aplicar segurança em ${repositorio}: não consegui invalidar a sondagem: ${erroDeRedeSeguro(erro, '')}`
+        )
+      }
+    }
+
+    /**
+     * Um pull request ABERTO do aplicador, já conferido como sendo dele. Em
+     * "cuidar" o produto mescla; em "sugerir" pergunta ao dono. Devolve se
+     * mesclou nesta chamada.
+     */
+    const cuidarDoPrAbertoDaMelhoria = async (item: {
+      id: string
+      registro: RegistroDaMelhoria
+      corpoDoPr: unknown
+      modo: 'cuidar' | 'sugerir'
+    }): Promise<boolean> => {
+      const { id, registro } = item
+      const pr = registro.pr
+      if (!pr) return false
+      const nome = nomeDaMelhoriaPorId(id)
+      const avaliacao = await avaliarPrAbertoDaMelhoria({
+        corpoDoPr: item.corpoDoPr,
+        ctx,
+        env,
+      })
+      const curto = (sha: string): string => sha.slice(0, 7)
+
+      if (avaliacao.tipo === 'espera') {
+        info(`aplicar segurança em ${repositorio}: #${pr.numero} espera (${avaliacao.motivo})`)
+        return false
+      }
+      if (avaliacao.tipo === 'segredo') {
+        const texto = textoDoAlertaDeSegredo({
+          repositorio,
+          numero: pr.numero,
+          checks: avaliacao.checks,
+          url: avaliacao.url,
+        })
+        const novo = await noPainel(
+          `melhoria-de-seguranca:${repositorio}:${id}:segredo:${avaliacao.sha}`,
+          texto
+        )
+        if (novo) await avisarPorMensagem(texto)
+        return false
+      }
+      if (avaliacao.tipo === 'impedido') {
+        await noPainel(
+          `melhoria-de-seguranca:${repositorio}:${id}:mescla:${curto(avaliacao.sha)}:${resumoDe(avaliacao.motivo)}`,
+          `Segurança de ${repositorio}: não mesclei o pull request #${pr.numero} (${nome}): ${avaliacao.motivo}.`
+        )
+        return false
+      }
+
+      // Pronto: verificação verde, sem conflito, base certa.
+      const tentativa = lerTentativaDeMescla(registro)
+      if (tentativa && tentativa.recusas >= TETO_DE_RECUSAS_DO_MERGE) return false
+      if (tentativa && tentativa.sha === avaliacao.sha) return false
+
+      let ctxDoMerge = ctx
+      if (item.modo === 'sugerir') {
+        const decidido = await decidirComOSimOuNao(item, avaliacao.sha, nome)
+        if (decidido === 'nada') return false
+        if (decidido === 'fechado') return false
+        if (deps.fetchDeEscritaComAprovacaoDoDono) {
+          ctxDoMerge = {
+            ...ctx,
+            escritor: criarEscritorDeSeguranca({
+              repositorio,
+              fetchImpl: deps.fetchDeEscritaComAprovacaoDoDono(projeto),
+              ritmo: deps.ritmo,
+              aoReceberRespostaRuim,
+            }),
+          }
+        }
+      }
+
+      const desfecho: DesfechoDoMerge = await mesclarPrDaMelhoria({
+        registro,
+        ctx: ctxDoMerge,
+        shaAvaliada: avaliacao.sha,
+      })
+      if (desfecho.tipo === 'mesclado') {
+        const motivo = `mesclada pelo produto: o pull request #${pr.numero} foi mesclado porque a verificação passou. Para desfazer, reverta o pull request #${pr.numero}.`
+        const novo = await registrar(id, { estado: 'aplicado', motivo })
+        if (novo) {
+          await avisarPorMensagem(
+            textoDoAvisoDeMesclada({ repositorio, numero: pr.numero, nome, url: pr.url })
+          )
+        }
+        return true
+      }
+      if (desfecho.tipo === 'recusado') {
+        const motivo = `o GitHub não deixou mesclar o pull request #${pr.numero} (${desfecho.status ?? 'sem código'}): ${desfecho.motivo}`
+        await lembrarRecusa(id, avaliacao.sha, motivo, (tentativa?.recusas ?? 0) + 1)
+        await noPainel(
+          `melhoria-de-seguranca:${repositorio}:${id}:mescla:${curto(avaliacao.sha)}:${resumoDe(motivo)}`,
+          `Segurança de ${repositorio}: não mesclei o pull request #${pr.numero} (${nome}): ${motivo}. Só tento de novo se chegar um commit novo.`
+        )
+        return false
+      }
+      if (desfecho.tipo === 'barrado') {
+        await noPainel(
+          `melhoria-de-seguranca:${repositorio}:${id}:mescla:${curto(avaliacao.sha)}:${resumoDe(desfecho.motivo)}`,
+          `Segurança de ${repositorio}: não mesclei o pull request #${pr.numero} (${nome}): ${desfecho.motivo}.`
+        )
+      }
+      return false
+    }
+
+    /**
+     * Em "sugerir": a pergunta ao dono sobre este pull request neste commit.
+     * Devolve `mesclar` quando o dono disse sim, `fechado` quando disse não (e o
+     * pull request foi fechado) e `nada` quando ainda não há resposta.
+     */
+    const decidirComOSimOuNao = async (
+      item: { id: string; registro: RegistroDaMelhoria },
+      sha: string,
+      nome: string
+    ): Promise<'mesclar' | 'fechado' | 'nada'> => {
+      const pr = item.registro.pr
+      if (!pr) return 'nada'
+      const dedupKey = dedupKeyDaPerguntaDeMescla(repositorio, pr.numero, sha)
+      const resposta = async (valor: string): Promise<boolean> =>
+        (await deps.prisma.agentQuestion.findFirst({
+          where: { projectId: projeto.id, dedupKey, status: 'answered', answer: valor },
+          select: { id: true },
+        })) !== null
+
+      if (await resposta(RESPOSTA_PODE_MESCLAR_A_MELHORIA)) return 'mesclar'
+      if (await resposta(RESPOSTA_NAO_MESCLAR_A_MELHORIA)) {
+        const ctxDoFechar = deps.fetchDeEscritaComAprovacaoDoDono
+          ? {
+              ...ctx,
+              escritor: criarEscritorDeSeguranca({
+                repositorio,
+                fetchImpl: deps.fetchDeEscritaComAprovacaoDoDono(projeto),
+                ritmo: deps.ritmo,
+                aoReceberRespostaRuim,
+              }),
+            }
+          : ctx
+        const fechou = await fecharPrRecusadoPeloDono({ registro: item.registro, ctx: ctxDoFechar })
+        if (fechou.fechado) {
+          await registrar(item.id, { estado: 'dispensado', motivo: fechou.motivo })
+          return 'fechado'
+        }
+        await noPainel(
+          `melhoria-de-seguranca:${repositorio}:${item.id}:mescla:${sha.slice(0, 7)}:${resumoDe(fechou.motivo)}`,
+          `Segurança de ${repositorio}: o dono não aprovou o pull request #${pr.numero}, mas não consegui fechá-lo: ${fechou.motivo}.`
+        )
+        return 'nada'
+      }
+
+      const existente = await deps.prisma.agentQuestion.findFirst({
+        where: { projectId: projeto.id, dedupKey, status: { in: ['open', 'answered'] } },
+        select: { id: true },
+      })
+      if (existente) return 'nada'
+      if (projeto.userId === null || deps.agentQuestion === null) {
+        aviso(`aplicar segurança em ${repositorio}: sem como perguntar ao dono sobre #${pr.numero}`)
+        return 'nada'
+      }
+      await deps.agentQuestion.ask(projeto.userId, projeto.id, {
+        text: textoDaPerguntaDeMescla({
+          repositorio,
+          numero: pr.numero,
+          idBase: idBaseDaMelhoria(item.id) ?? item.id,
+          nome,
+        }),
+        options: [
+          { label: 'Sim, pode mesclar', value: RESPOSTA_PODE_MESCLAR_A_MELHORIA },
+          { label: 'Não, feche o pull request', value: RESPOSTA_NAO_MESCLAR_A_MELHORIA },
+          opcaoDeTextoLivre(),
+        ],
+        dedupKey,
+      })
+      return 'nada'
+    }
+
     // 1) Só leitura: confirmar o que ficou incerto e acompanhar os pull requests abertos.
-    for (const { id } of plano.conferir.slice(0, MAX_ACOMPANHAMENTOS_POR_PASSADA)) {
+    for (const { id } of plano.conferir.slice(
+      0,
+      modo === 'cuidar' ? MAX_ACOMPANHAMENTOS_POR_PASSADA : 0
+    )) {
       const base = idBaseDaMelhoria(id)
       if (
         base === null ||
@@ -621,20 +948,33 @@ async function passadaDoProjeto(args: {
       }
     }
     for (const { id, registro } of plano.acompanhar.slice(0, MAX_ACOMPANHAMENTOS_POR_PASSADA)) {
+      if (controle.signal.aborted) break
       const r = await acompanharPrDeSeguranca(registro, ctx)
       if (r.estado === 'aplicado' || r.estado === 'dispensado') {
         await registrar(id, { estado: r.estado, motivo: r.motivo })
-        if (r.estado === 'aplicado') {
-          try {
-            await invalidarSondagem(deps.prisma, projeto.id)
-            sondagemInvalidada = true
-          } catch (erro) {
-            aviso(
-              `aplicar segurança em ${repositorio}: não consegui invalidar a sondagem: ${erroDeRedeSeguro(erro, '')}`
-            )
-          }
-        }
+        if (r.estado === 'aplicado') await invalidarSondagemDaPassada()
+        continue
       }
+      if (r.estado !== 'aguardando-revisao' || modo === 'so_olhar') continue
+      try {
+        const mesclou = await cuidarDoPrAbertoDaMelhoria({
+          id,
+          registro,
+          corpoDoPr: r.corpo,
+          modo,
+        })
+        if (mesclou) await invalidarSondagemDaPassada()
+      } catch (erro) {
+        aviso(
+          `aplicar segurança em ${repositorio}: não consegui cuidar do pull request de ${id}: ${mascararCredenciais(mensagemDoErro(erro), segredos)}`
+        )
+      }
+    }
+
+    // Em "sugerir" a passada termina aqui: acompanhar e perguntar sobre o que já está aberto.
+    if (modo !== 'cuidar') {
+      await agendar(args.intervaloMs)
+      return resumo('sem-melhoria')
     }
 
     // 2) Workflows de deploy/CD: nunca mexe sem o dono; pergunta uma vez.

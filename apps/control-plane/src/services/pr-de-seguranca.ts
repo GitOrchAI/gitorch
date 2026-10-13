@@ -1,11 +1,12 @@
 // "Este pull request é do aplicador de segurança?"
 //
 // O aplicador abre pull requests no repositório do cliente (varredura gratuita
-// de senhas, permissões mínimas dos workflows). Quem decide mesclá-los é o dono,
-// depois de revisar: o produto nunca mescla, fecha nem retoma um pull request
-// destes. Por isso a identificação é inequívoca e mora num módulo sem
-// dependências, que o juiz do QA, o vigia, o reconhecimento de entrega delegada
-// e a porta do merge importam sem arrastar o aplicador junto.
+// de senhas, permissões mínimas dos workflows). O QA, o vigia e a entrega
+// delegada nunca mesclam, fecham nem retomam um pull request destes; só o próprio
+// aplicador o mescla, e só quando o projeto está em "cuidar" ou o dono disse sim
+// (`mescla-da-melhoria-de-seguranca.ts`). Por isso a identificação é inequívoca e
+// mora num módulo sem dependências, que o juiz do QA, o vigia, o reconhecimento
+// de entrega delegada e a porta do merge importam sem arrastar o aplicador junto.
 //
 // Dois sinais, e qualquer um basta: o ramo com o prefixo do GitOrch e a marca no
 // corpo. Errar para o lado de enxergar "segurança" demais só deixa de mesclar

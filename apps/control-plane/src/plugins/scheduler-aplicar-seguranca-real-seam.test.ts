@@ -126,6 +126,7 @@ const ENV_KEYS = [
   'GITORCH_APLICAR_SEGURANCA',
   'GITORCH_APLICAR_SEGURANCA_EM',
   'GITORCH_APLICAR_SEGURANCA_ALERTAS',
+  'GITORCH_TELEGRAM_CHAT_ID',
 ]
 
 describe('aplicação das melhorias de segurança no tique (real seam)', () => {
@@ -461,5 +462,80 @@ describe('aplicação das melhorias de segurança no tique (real seam)', () => {
     )
     expect(github.pulls).toEqual([])
     expect(github.escritas()).toEqual([])
+  })
+
+  test('um pull request de segurança aberto, com verificação verde, é mesclado pelo tique e o dono é avisado UMA vez', async () => {
+    process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = 'bot-de-teste'
+    instalacao.token = TOKEN_DA_INSTALACAO
+    const { github, fetchMock } = redeComGitHub({
+      alertasDeDependencias: true,
+      atualizacoesDeSeguranca: true,
+      segredos: 'enabled',
+      bloqueioDePush: 'enabled',
+      varreduraDeCodigo: 'configured',
+      permissaoDoWorkflow: 'read',
+    })
+    const numero = github.abrirPullDeTeste()
+    github.definirChecks(numero, [{ name: 'test', status: 'completed', conclusion: 'success' }])
+    const prisma = buildFakePrisma(projeto())
+    prisma.telegramLink.findUnique = vi.fn(async () => ({
+      status: 'linked',
+      chatId: '777',
+    })) as never
+    const ID = 'permissoes-minimas-dos-workflows:.github/workflows/ci.yml'
+    prisma.memoria.fichas.set('proj_1|melhorias|0', {
+      projectId: 'proj_1',
+      tipo: 'melhorias',
+      numero: 0,
+      atualizadoEm: new Date(),
+      estado: {
+        versao: 1,
+        proximaPassadaEm: null,
+        melhorias: {
+          [ID]: {
+            estado: 'aguardando-revisao',
+            atualizadoEm: new Date().toISOString(),
+            proximaTentativaEm: null,
+            tentativas: 1,
+            motivo: 'o pull request segue aberto',
+            desfazer: 'Como desfazer: feche o pull request.',
+            pr: {
+              numero,
+              ramo: 'gitorch/seguranca/permissoes-minimas-ci-yml',
+              caminho: '.github/workflows/ci.yml',
+              acao: 'editar',
+              url: null,
+            },
+          },
+        },
+      },
+    })
+    const { infoSpy } = await subir(prisma)
+
+    const mesclagens = () =>
+      github.escritas().filter((e) => e.metodo === 'PUT' && e.caminho.endsWith('/merge'))
+    await vi.waitFor(() => expect(mesclagens()).toHaveLength(1), { timeout: 8000, interval: 10 })
+    expect(mesclagens()[0]?.autorizacao).toBe(`Bearer ${TOKEN_DA_INSTALACAO}`)
+    expect(prisma.memoria.estadoDe('proj_1', 'melhorias')).toMatchObject({
+      melhorias: { [ID]: { estado: 'aplicado' } },
+    })
+
+    const avisos = () =>
+      fetchMock.mock.calls.filter(
+        ([u, init]) =>
+          String(u).startsWith('https://api.telegram.org/') &&
+          String(init?.body).includes('mesclei o pull request')
+      )
+    await vi.waitFor(() => expect(avisos()).toHaveLength(1), { timeout: 8000, interval: 10 })
+    expect(String(avisos()[0]?.[1]?.body)).toContain(REPO)
+
+    // os tiques seguintes não mesclam nem avisam de novo
+    const antes = etapasMedidas(infoSpy)
+    await vi.waitFor(() => expect(etapasMedidas(infoSpy)).toBeGreaterThanOrEqual(antes + 3), {
+      timeout: 8000,
+      interval: 10,
+    })
+    expect(mesclagens()).toHaveLength(1)
+    expect(avisos()).toHaveLength(1)
   })
 })
