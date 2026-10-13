@@ -62,7 +62,10 @@ import {
   lerFichaDoItem,
   type PrismaDaFichaDoItem,
 } from '../services/ficha-do-item.js'
-import { registrarNoPainelUmaVez } from '../services/registro-no-painel.js'
+import {
+  registrarNoPainelSeForNovo,
+  registrarNoPainelUmaVez,
+} from '../services/registro-no-painel.js'
 import { parseDedupKeyDeVinculoDaTarefa } from '../services/perguntar-vinculo-da-tarefa.js'
 import { processarRespostaDoVinculoDaTarefa } from '../services/processar-resposta-vinculo-da-tarefa.js'
 import {
@@ -697,7 +700,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     resposta: string
     projectId: string
     opcoes: Array<{ label: string; value: string }>
-  }): Promise<void> => {
+  }): Promise<ResultadoDoManipuladorDeResposta | void> => {
     const chave = parseDedupKeyDeVinculoDaTarefa(args.dedupKey)
     if (!chave) return
     const projeto = await app.prisma.project.findUnique({
@@ -718,7 +721,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       )
     }
 
-    await processarRespostaDoVinculoDaTarefa(
+    return await processarRespostaDoVinculoDaTarefa(
       { dedupKey: args.dedupKey, resposta: args.resposta, opcoes: args.opcoes },
       {
         gravarVinculo: async ({ numeroDoPr, issueNumber }) => {
@@ -779,7 +782,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           }
         },
         registrarNoPainel: ({ chave: chaveDoRegistro, texto }) =>
-          registrarNoPainelUmaVez({
+          registrarNoPainelSeForNovo({
             prisma: app.prisma,
             projectId: args.projectId,
             chave: chaveDoRegistro,

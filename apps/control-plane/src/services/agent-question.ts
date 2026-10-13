@@ -44,6 +44,12 @@ export interface AgentQuestionRecord {
    * SUCESSO + um aviso claro, em vez de 500 ou de fingir silêncio.
    */
   avisoDoManipulador?: string
+  /**
+   * EFÊMERO como `avisoDoManipulador`: o manipulador não conseguiu usar a
+   * resposta e a pergunta segue `open`. Quem chamou `answer()` mostra o texto
+   * ao dono no mesmo canal e NÃO trata a pergunta como respondida.
+   */
+  respostaNaoEntendida?: string
 }
 
 export interface AskInput {
@@ -153,6 +159,14 @@ export interface ManipuladorDeRespostaArgs {
  */
 export interface ResultadoDoManipuladorDeResposta {
   aviso?: string
+  /**
+   * A resposta NÃO pôde ser usada (o dono é leigo e escreveu como fala): a
+   * pergunta continua `open` e `answer()` devolve esta mensagem em
+   * `AgentQuestionRecord.respostaNaoEntendida`, para o canal por onde o dono
+   * respondeu (Telegram ou painel) mostrá-la. Texto vazio = continua aberta,
+   * mas já não há nada novo a dizer (o canal fica em silêncio).
+   */
+  naoEntendida?: string
 }
 
 /**
@@ -342,6 +356,13 @@ export class AgentQuestionService {
           // manipulador jamais saberia que está numa correção de suposição.
           statusAnterior: existing.status,
         })
+        if (resultado?.naoEntendida !== undefined) {
+          // Nada é gravado: a pergunta continua aberta para a próxima tentativa.
+          return {
+            ...(existing as unknown as AgentQuestionRecord),
+            respostaNaoEntendida: resultado.naoEntendida,
+          }
+        }
         avisoDoManipulador = resultado?.aviso
       } catch (err) {
         const mensagem = err instanceof Error ? err.message : String(err)

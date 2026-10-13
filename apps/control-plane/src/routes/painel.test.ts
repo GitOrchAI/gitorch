@@ -2094,6 +2094,25 @@ describe('Rotas do painel do owner', () => {
       expect(logou).toBe(true)
     })
 
+    test('resposta que o tratador não conseguiu usar → 409 RESPOSTA_NAO_ENTENDIDA com a frase em português, pergunta segue aberta', async () => {
+      const frase = 'Responda só com o número da tarefa, por exemplo 3976.'
+      const answerImpl = vi.fn().mockResolvedValue({
+        id: 'd1',
+        status: 'open',
+        answer: null,
+        respostaNaoEntendida: frase,
+      })
+      await build(
+        fakePrisma({ agentQuestion: { findUnique: vi.fn().mockResolvedValue(pergunta()) } }),
+        { answerImpl }
+      )
+
+      const res = await responder({ resposta: 'ok' })
+
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toEqual({ code: 'RESPOSTA_NAO_ENTENDIDA', error: frase })
+    })
+
     // Item 2 do defeito: quando a correção do dono FOI registrada de forma
     // durável (comentário na issue + a própria agent_question respondida)
     // mas não havia sessão viva do dev para entregá-la de imediato, a

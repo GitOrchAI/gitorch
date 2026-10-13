@@ -210,6 +210,9 @@ export type ResponderDecisaoResultado =
  *   - `code: 'JA_RESPONDIDA'` — a mesma pergunta já foi respondida pelo
  *     Telegram: devolve a resposta que existe, para a tela mostrar em vez de
  *     sumir com o clique.
+ *   - `code: 'RESPOSTA_NAO_ENTENDIDA'` — a resposta não pôde ser usada (ex.:
+ *     "a qual tarefa?" sem tarefa que sirva): a decisão segue aberta e `erro`
+ *     é a frase do servidor, com exemplo do que serve.
  *   - `code: 'ERRO_AO_RESPONDER'` (ou qualquer outro/ausente) — falha real ao
  *     registrar agora; nunca finge que já foi respondida.
  */
@@ -243,6 +246,14 @@ export async function responderDecisao(
           ok: false,
           ...(jaRespondida ? { jaRespondida } : {}),
           erro: 'Essa decisão já foi respondida pelo Telegram.',
+        }
+      }
+      if (codigo === 'RESPOSTA_NAO_ENTENDIDA') {
+        // A decisão segue aberta: a frase do servidor diz o que faltou, com exemplo.
+        const frase = corpo && typeof corpo['error'] === 'string' ? corpo['error'] : ''
+        return {
+          ok: false,
+          erro: frase || 'Não consegui usar essa resposta. A decisão continua aberta.',
         }
       }
       return {

@@ -134,6 +134,14 @@ describe('responderDecisao', () => {
       expect(r.erro).not.toMatch(/já foi respondida/i)
     }
   })
+  it('409 RESPOSTA_NAO_ENTENDIDA mostra a frase do servidor (com o exemplo), sem virar "já respondida"', async () => {
+    const frase = 'Responda só com o número da tarefa, por exemplo 3976.'
+    const r = await responderDecisao('d1', 'ok', {
+      fetchImpl: fetchQueRetorna(409, { code: 'RESPOSTA_NAO_ENTENDIDA', error: frase }),
+    })
+    expect(r).toEqual({ ok: false, erro: frase })
+    expect(r).not.toHaveProperty('jaRespondida')
+  })
   it('404 diz que a decisão sumiu', async () => {
     const r = await responderDecisao('d1', 'Sim', { fetchImpl: fetchQueRetorna(404, {}) })
     expect(r).toEqual({ ok: false, erro: 'Essa decisão não existe mais.' })

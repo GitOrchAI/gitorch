@@ -557,6 +557,35 @@ describe('handleTelegramUpdate — o fluxo de "digitando ativo" (3º caminho de 
     expect(defaultAgentQuestionStateManager.getActiveTypingQuestion(USER_ID)).toBeNull()
   })
 
+  it('resposta que o tratador não conseguiu usar: devolve a mensagem com exemplo e MANTÉM o estado de digitação (a próxima mensagem tenta de novo)', async () => {
+    defaultAgentQuestionStateManager.setActiveTypingQuestion(USER_ID, {
+      questionId: 'q_ativa_3',
+      userId: USER_ID,
+      chatId: CHAT_ID,
+    })
+    const deps = {
+      agentQuestionService: {
+        answer: vi.fn(async (id: string) => ({
+          id,
+          status: 'open',
+          respostaNaoEntendida: 'Responda só com o número da tarefa, por exemplo 3976.',
+        })),
+      },
+    }
+
+    const reply = await handleTelegramUpdate(
+      fakePrismaLinkado(USER_ID, CHAT_ID) as any,
+      { update_id: 32, message: { chat: { id: 777 }, text: 'ok' } },
+      deps as any
+    )
+
+    expect(reply).toEqual({
+      chatId: CHAT_ID,
+      text: 'Responda só com o número da tarefa, por exemplo 3976.',
+    })
+    expect(defaultAgentQuestionStateManager.getActiveTypingQuestion(USER_ID)).not.toBeNull()
+  })
+
   // ---------------------------------------------------------------------
   // `answer()` pode LANÇAR de verdade (dedupKey corrompido, erro de banco —
   // agent-question.ts `answer()` propaga a falha do manipulador). Sem
@@ -1588,6 +1617,50 @@ describe('handleTelegramQuestionReply — resposta em TEXTO LIVRE casada por rep
     const body = JSON.parse(String(editCall?.[1]?.body))
     expect(body.text).toContain('✓ Você escolheu: quero um tom mais escuro')
     expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+
+  it('resposta que o tratador não conseguiu usar: NÃO colapsa a pergunta e manda UMA mensagem com o exemplo no mesmo chat', async () => {
+    const aberta = {
+      ...QUESTION,
+      status: 'open',
+      respostaNaoEntendida: 'Responda só com o número da tarefa, por exemplo 3976.',
+    }
+    const { deps, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: aberta,
+    })
+
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 5,
+      message: { chat: { id: 555 }, text: 'ok', reply_to_message: { message_id: 77 } },
+    })
+
+    expect(handled).toBe(true)
+    const chamadas = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+    expect(chamadas.filter((c) => String(c[0]).includes('/editMessageText'))).toHaveLength(0)
+    const envios = chamadas.filter((c) => String(c[0]).includes('/sendMessage'))
+    expect(envios).toHaveLength(1)
+    const corpo = JSON.parse(String(envios[0]?.[1]?.body))
+    expect(corpo.chat_id).toBe('555')
+    expect(corpo.text).toContain('por exemplo 3976')
+  })
+
+  it('resposta não usada e sem nada novo a dizer (mensagem vazia): a pergunta fica aberta e o bot não manda nada', async () => {
+    const aberta = { ...QUESTION, status: 'open', respostaNaoEntendida: '' }
+    const { deps, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: aberta,
+    })
+
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 6,
+      message: { chat: { id: 555 }, text: 'vi', reply_to_message: { message_id: 77 } },
+    })
+
+    expect(handled).toBe(true)
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('mensagem que NÃO é reply a nada: devolve false, não toca no banco nem na rede', async () => {
