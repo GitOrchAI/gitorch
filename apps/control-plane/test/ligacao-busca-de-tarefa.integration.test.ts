@@ -533,7 +533,7 @@ describe.skipIf(!reachable)('busca da tarefa pelo código e pergunta ao dono (in
     })
     const [pergunta] = await perguntasDoProjeto(projectId)
 
-    await perguntas.answer(pergunta!.id, 'é a #713, a do wishlist', 'panel')
+    await perguntas.answer(pergunta!.id, 'é a tarefa #713', 'panel')
 
     expect(await ficha(projectId, 590)).toMatchObject({ issue: 713, vinculoOrigem: 'dono' })
   })
