@@ -117,6 +117,14 @@ test('plans blocked project status when dependencies are open', () => {
       wishCreatedAt: '2026-06-23T11:00:00.000Z',
       mergedAt: '2026-06-23T12:00:00.000Z',
     },
+    {
+      operationKey: 'project-lead-time:I_6:1',
+      kind: 'update-project-field',
+      nodeId: 'I_6',
+      projectItemId: 'PVTI_6',
+      fieldName: 'Lead time',
+      value: 1,
+    },
   ])
 })
 
@@ -223,6 +231,14 @@ test('plans weight and iteration fields when present', () => {
       projectItemId: 'PVTI_6',
       fieldName: 'Iteration',
       value: 'Sprint 2',
+    },
+    {
+      operationKey: 'project-lead-time:I_6:1',
+      kind: 'update-project-field',
+      nodeId: 'I_6',
+      projectItemId: 'PVTI_6',
+      fieldName: 'Lead time',
+      value: 1,
     },
   ])
 })
