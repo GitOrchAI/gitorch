@@ -1,0 +1,185 @@
+name: Pacote da versão
+
+# A cada merge na main cujo CI terminou verde, o GitHub MONTA a versão e
+# publica um pacote pronto para rodar: quem for usar só baixa, confere a soma,
+# abre numa pasta e sobe. Nada é instalado nem compilado fora daqui.
+#
+# O pacote é provado antes de ser publicado: o job abre o tar numa pasta vazia,
+# tira o checkout do caminho e sobe o serviço de DENTRO da pasta aberta, contra
+# banco e redis do job, com o banco preparado pelo db-migrate.sh do próprio
+# pacote.
+#
+# Dispara quando o workflow `CI` termina com sucesso num push da main, e
+# também à mão (workflow_dispatch) para reempacotar um commit da main.
+#
+# Exige a variável de repositório GITORCH_PUBLIC_API_URL (endereço público da
+# API, embutido no front estático na hora do build). Sem ela o job falha.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Sha completo (40 hexadecimais) de um commit que já está na main. Vazio = a ponta da main.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Um pacote por commit: dois disparos para o mesmo commit não correm juntos.
+concurrency:
+  group: pacote-da-versao-${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  pacote:
+    # Pelo CI: só quando ele terminou verde, num push da main e vindo deste
+    # repositório (nunca de fork).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gitorch_pacote
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # O commit que o CI aprovou (ou o pedido à mão); nunca a ponta da main de agora.
+      COMMIT: ${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+      PUBLIC_API_URL: ${{ vars.GITORCH_PUBLIC_API_URL }}
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gitorch_pacote
+      REDIS_URL: redis://localhost:6379/1
+    steps:
+      - name: Conferir o commit e a variável do endereço da API
+        run: |
+          echo "SAIDA=$RUNNER_TEMP/pacote-saida" >> "$GITHUB_ENV"
+          if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::commit inválido ('$COMMIT'): precisa ser o sha completo, 40 hexadecimais minúsculos"
+            exit 1
+          fi
+          if [ -z "$PUBLIC_API_URL" ]; then
+            echo "::error::a variável de repositório GITORCH_PUBLIC_API_URL não está configurada: ela é o endereço público da API embutido no front. Configure em Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Conferir que o commit está na main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "::error::o commit $COMMIT não está na main: só se empacota o que já passou por PR, CI e merge"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+
+      - uses: ./.github/actions/setup-pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate ephemeral secrets
+        # O valor é mascarado ANTES de ir para GITHUB_ENV: o que entra ali
+        # passa a aparecer no cabeçalho `env:` de todo passo seguinte, e o
+        # registro do CI é público. São só da fumaça do pacote; não vão no tar.
+        run: |
+          for nome in JWT_SECRET GITORCH_CREDENTIAL_KEY GITHUB_WEBHOOK_SECRET; do
+            valor="$(openssl rand -hex 32)"
+            echo "::add-mask::$valor"
+            echo "$nome=$valor" >> "$GITHUB_ENV"
+          done
+
+      - name: Prisma generate
+        working-directory: apps/control-plane
+        run: npx prisma generate
+
+      - name: Build web (export estático)
+        run: pnpm --filter web build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.GITORCH_PUBLIC_API_URL }}
+      - name: Build control-plane + deps
+        run: npx turbo run build --filter=@gitorch/control-plane...
+
+      - name: Empacotar a versão
+        run: scripts/ci/empacotar-versao.sh "$COMMIT" "$SAIDA"
+
+      - name: Garantir cliente psql
+        run: command -v psql >/dev/null || sudo apt-get install -y --no-install-recommends postgresql-client
+
+      # A partir daqui o checkout deixa de existir para o serviço: o pacote tem
+      # de se bastar. Sem isto, atalhos que apontam para o checkout (por
+      # exemplo o caminho gravado nos executáveis do pnpm) esconderiam um
+      # componente que faltasse no tar.
+      - name: Tirar o checkout do caminho
+        run: rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/control-plane/dist apps/web/out packages/*/dist
+
+      - name: Abrir o pacote numa pasta vazia e conferir a soma
+        run: |
+          set -euo pipefail
+          ABERTO="$(mktemp -d "$RUNNER_TEMP/pacote-aberto-XXXXXX")"
+          (cd "$SAIDA" && sha256sum -c "gitorch-$COMMIT.tar.gz.sha256")
+          tar -xzf "$SAIDA/gitorch-$COMMIT.tar.gz" -C "$ABERTO"
+          echo "ABERTO=$ABERTO" >> "$GITHUB_ENV"
+          test "$(cat "$ABERTO/apps/control-plane/dist/commit-publicado.txt")" = "$COMMIT"
+
+      # O banco do job está vazio: o db-migrate.sh DO PACOTE faz o baseline,
+      # aplica o ledger e semeia os planos, como numa implantação de verdade.
+      - name: Preparar o banco com o db-migrate.sh do pacote
+        working-directory: ${{ env.ABERTO }}/apps/control-plane
+        run: bash scripts/db-migrate.sh
+
+      - name: Fumaça do pacote (sobe de dentro da pasta aberta)
+        env:
+          FUMACA_RAIZ: ${{ env.ABERTO }}
+          FUMACA_COMMIT_ESPERADO: ${{ env.COMMIT }}
+        run: scripts/ci/fumaca-de-producao.sh
+
+      - name: Resumo do pacote
+        run: |
+          {
+            echo "### Pacote da versão"
+            echo
+            echo "- commit: \`$COMMIT\`"
+            echo "- tamanho do tar: $(du -h "$SAIDA/gitorch-$COMMIT.tar.gz" | cut -f1)"
+            echo "- soma sha256: \`$(cut -d' ' -f1 "$SAIDA/gitorch-$COMMIT.tar.gz.sha256")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitorch-pacote-${{ env.COMMIT }}
+          path: |
+            ${{ env.SAIDA }}/gitorch-${{ env.COMMIT }}.tar.gz
+            ${{ env.SAIDA }}/gitorch-${{ env.COMMIT }}.tar.gz.sha256
+            ${{ env.SAIDA }}/MANIFESTO.json
+          retention-days: 7
+          if-no-files-found: error
+          # O tar já vai comprimido; comprimir de novo só gasta tempo.
+          compression-level: 0

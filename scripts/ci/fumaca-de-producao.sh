@@ -15,6 +15,13 @@
 # Uso:  scripts/ci/fumaca-de-producao.sh   (da raiz do repositório, depois do
 #       build do web e do control-plane, com o banco já migrado)
 #
+# Variáveis opcionais, para provar um PACOTE aberto em outra pasta em vez do
+# checkout construído:
+#   FUMACA_RAIZ              raiz com apps/control-plane/dist e apps/web/out
+#                            (padrão: a raiz do repositório git);
+#   FUMACA_COMMIT_ESPERADO   se definida, /api/v1/version precisa devolver
+#                            exatamente este commit.
+#
 # Variáveis que o serviço EXIGE para subir em produção (vêm do job):
 #   DATABASE_URL            banco já migrado (use montar-banco-como-a-main.sh)
 #   REDIS_URL               redis alcançável
@@ -38,7 +45,7 @@ set -euo pipefail
 : "${GITHUB_WEBHOOK_SECRET:?GITHUB_WEBHOOK_SECRET ausente}"
 : "${GITORCH_CREDENTIAL_KEY:?GITORCH_CREDENTIAL_KEY ausente}"
 
-RAIZ="$(git rev-parse --show-toplevel)"
+RAIZ="${FUMACA_RAIZ:-$(git rev-parse --show-toplevel)}"
 PORTA="${FUMACA_PORT:-4013}"
 BASE="http://127.0.0.1:${PORTA}"
 FRONT="$RAIZ/apps/web/out/setup/index.html"
@@ -113,6 +120,12 @@ echo "${VERSAO%$'\n'*}" | node -e '
   const v = JSON.parse(require("fs").readFileSync(0, "utf8"));
   if (typeof v.commit !== "string" || typeof v.noArDesde !== "string") process.exit(1);
 ' || falhar "/api/v1/version sem commit e noArDesde"
+if [ -n "${FUMACA_COMMIT_ESPERADO:-}" ]; then
+  echo "${VERSAO%$'\n'*}" | ESPERADO="$FUMACA_COMMIT_ESPERADO" node -e '
+    const v = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (v.commit !== process.env.ESPERADO) process.exit(1);
+  ' || falhar "/api/v1/version não devolveu o commit esperado ($FUMACA_COMMIT_ESPERADO)"
+fi
 echo "[fumaca] /api/v1/version ok: ${VERSAO%$'\n'*}"
 
 # O log é JSON (pino); nível >= 50 é erro ou fatal. Linha que não é JSON é ignorada.
