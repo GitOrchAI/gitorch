@@ -1111,6 +1111,9 @@ model WishlistItem {
   payload   String
   targetRepositoryIds String[] @map("target_repository_ids")
   isCrossRepo Boolean @default(false) @map("is_cross_repo")
+  status      String   @default("pending") // pending | processing | completed | failed_enrichment
+  title       String?
+  price       Float?
   createdAt DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -60,6 +60,7 @@ describe('MIGRATION_LEDGER', () => {
       'guest-limits-mapping-migration.sql',
       'wishlist-migration.sql',
       'multi-repo-wishlist-migration.sql',
+      'add-wishlist-status-migration.sql',
       'guest-profile-migration.sql',
       'repo-item-vinculos-migration.sql',
       'anexo-pedido-migration.sql',

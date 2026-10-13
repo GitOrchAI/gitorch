@@ -117,6 +117,9 @@ describe('processarComandoWishlistAdd', () => {
       source: 'telegram',
       targetRepositoryIds: [],
       isCrossRepo: false,
+      status: 'pending',
+      title: null,
+      price: null,
       createdAt: new Date(),
     })
 
