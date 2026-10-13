@@ -76,9 +76,12 @@ function buildFakePrisma(
 ) {
   const fichas = new Map<string, FichaGravada>()
   const eventos: Array<{ chave: string; texto: string }> = []
+  let iniciosDaEtapa = 0
   return {
     _fichas: fichas,
     _eventos: eventos,
+    /** Quantas vezes a etapa de segurança começou de verdade (a primeira leitura dela é a lista de projetos). */
+    _iniciosDaEtapa: () => iniciosDaEtapa,
     mission: {
       updateMany: vi.fn(async () => ({ count: 0 })),
       findMany: vi.fn(async () => []),
@@ -89,9 +92,17 @@ function buildFakePrisma(
     project: {
       findFirst: vi.fn(async () => PROJETO),
       findUnique: vi.fn(async () => PROJETO),
-      findMany: vi.fn(async (args?: { select?: Record<string, unknown> }) =>
-        args?.select && 'encryptedClientToken' in args.select ? [PROJETO] : []
-      ),
+      findMany: vi.fn(async (args?: { select?: Record<string, unknown> }) => {
+        // Só a etapa de segurança pede, juntas, a configuração de execução e a autonomia de segurança.
+        if (
+          args?.select &&
+          'runtimeConfig' in args.select &&
+          'autonomiaDeSeguranca' in args.select
+        ) {
+          iniciosDaEtapa += 1
+        }
+        return args?.select && 'encryptedClientToken' in args.select ? [PROJETO] : []
+      }),
       update: vi.fn(async () => ({})),
     },
     engineConnection: {
@@ -395,16 +406,22 @@ describe('nota de segurança e conformidade no tique (real seam)', () => {
         ),
       { timeout: 8000, interval: 10 }
     )
-    // vários tiques depois, ainda uma única leitura: a guarda barrou os disparos
+    // vários tiques depois, a etapa começou uma única vez e leu o GitHub uma única vez:
+    // a guarda barrou os disparos (conta execuções reais, não linhas de registro)
+    expect(prisma._iniciosDaEtapa()).toBe(1)
     expect(leiturasDoRepositorio()).toBe(1)
+    expect(etapasMedidas(infoSpy)).toBe(0)
 
     portao.resolve()
-    await vi.waitFor(() => expect(etapasMedidas(infoSpy)).toBe(1), { timeout: 8000, interval: 10 })
-    // resolvida, o tique seguinte dispara a etapa de novo (agora o gate da ficha a dispensa)
-    await vi.waitFor(() => expect(etapasMedidas(infoSpy)).toBeGreaterThanOrEqual(3), {
+    // resolvida, a guarda se solta e os tiques seguintes iniciam a etapa de novo
+    // (agora o gate da ficha a dispensa de ler o GitHub): cada conclusão é uma
+    // execução real a mais, e o total só cresce, então ">= 2" não depende da velocidade
+    await vi.waitFor(() => expect(etapasMedidas(infoSpy)).toBeGreaterThanOrEqual(2), {
       timeout: 8000,
       interval: 10,
     })
+    expect(prisma._iniciosDaEtapa()).toBeGreaterThanOrEqual(2)
+    expect(leiturasDoRepositorio()).toBe(1)
   })
 
   test('rejeição da etapa vira aviso, não derruba o processo e o tique segue', async () => {
