@@ -70,12 +70,18 @@ function registra(componente, relativo, bytes) {
   componentes.set(componente, c)
 }
 
+/** Só "não existe" (ou caminho quebrado) é esperado; qualquer outro erro de leitura sobe. */
+function ausente(erro) {
+  return ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(erro?.code)
+}
+
 function existe(relativo) {
   try {
     fs.lstatSync(path.join(RAIZ, relativo))
     return true
-  } catch {
-    return false
+  } catch (erro) {
+    if (ausente(erro)) return false
+    throw erro
   }
 }
 
@@ -91,8 +97,9 @@ function percorre(componente, relativo, { projeto, ignorar = () => false }) {
   let entradas
   try {
     entradas = fs.readdirSync(absoluto, { withFileTypes: true })
-  } catch {
-    return
+  } catch (erro) {
+    if (ausente(erro)) return
+    throw erro
   }
   for (const e of entradas) {
     const filho = `${relativo}/${e.name}`
@@ -152,8 +159,9 @@ const pacotesDoMonorepo = new Set() // packages/<nome>
 function lerJson(relativo) {
   try {
     return JSON.parse(fs.readFileSync(path.join(RAIZ, relativo), 'utf8'))
-  } catch {
-    return {}
+  } catch (erro) {
+    if (ausente(erro)) return {}
+    throw erro
   }
 }
 
@@ -165,8 +173,9 @@ function resolveLink(relativo) {
   let real
   try {
     real = fs.realpathSync(path.join(RAIZ, relativo))
-  } catch {
-    return null
+  } catch (erro) {
+    if (ausente(erro)) return null
+    throw erro
   }
   const rel = path.relative(RAIZ, real)
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null
@@ -187,8 +196,9 @@ function visitaVirtual(nome) {
   let entradas = []
   try {
     entradas = fs.readdirSync(path.join(RAIZ, pasta), { withFileTypes: true })
-  } catch {
-    return
+  } catch (erro) {
+    if (ausente(erro)) return
+    throw erro
   }
   for (const e of entradas) {
     if (e.name.startsWith('.')) continue

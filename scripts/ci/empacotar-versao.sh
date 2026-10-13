@@ -81,7 +81,10 @@ PARTE="$TMP/gerado"
 mkdir -p "$PARTE/apps/control-plane/dist"
 printf '%s\n' "$COMMIT" >"$PARTE/apps/control-plane/dist/commit-publicado.txt"
 # Se o build já deixou um commit-publicado.txt, o gerado aqui o substitui.
-grep -vxF 'apps/control-plane/dist/commit-publicado.txt' "$TMP/lista.txt" >"$TMP/lista-final.txt" || true
+# (sed, e não grep -v: o grep sai com 1 quando não sobra linha e isso obrigaria a
+# engolir o código de saída, escondendo também erro real de leitura e escrita.)
+sed '/^apps\/control-plane\/dist\/commit-publicado\.txt$/d' "$TMP/lista.txt" >"$TMP/lista-final.txt"
+[ -s "$TMP/lista-final.txt" ] || falhar "a lista final do pacote ficou vazia: nada a empacotar"
 
 COMMIT="$COMMIT" COMPONENTES="$TMP/componentes.json" SISTEMA="$(uname -s)" ARQUITETURA="$(uname -m)" \
   NODE_VERSAO="$(node -p 'process.version')" \
