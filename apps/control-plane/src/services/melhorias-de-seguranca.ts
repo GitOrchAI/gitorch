@@ -199,7 +199,7 @@ export function chaveDoEventoDaMelhoria(
 
 const FRASE_DO_ESTADO: Record<EstadoDaMelhoria, string> = {
   aplicado: 'aplicada',
-  'aguardando-revisao': 'proposta por pull request (espera revisão)',
+  'aguardando-revisao': 'proposta por pull request, ainda não mesclada',
   'aguardando-dono': 'à espera da resposta do dono',
   recusado: 'recusada pelo GitHub',
   indisponivel: 'indisponível neste repositório',
@@ -217,6 +217,12 @@ const NOME_DA_MELHORIA: Record<string, string> = {
   'alternativa-de-varredura-de-senhas': 'varredura gratuita de senhas (gitleaks)',
   'permissoes-minimas-dos-workflows': 'permissões mínimas do workflow',
   'permissao-padrao-do-workflow': 'permissão padrão do token das Actions',
+}
+
+export function nomeDaMelhoriaPorId(id: string): string {
+  const base = id.split(':', 1)[0] ?? id
+  const nome = NOME_DA_MELHORIA[base] ?? base
+  return id.includes(':') ? `${nome} (${id.slice(base.length + 1)})` : nome
 }
 
 export function textoDoEventoDaMelhoria(args: {

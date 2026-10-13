@@ -29,15 +29,18 @@
 // Mesclar num ramo que não é a principal é declarar entregue o que não foi.
 //
 // O sétimo, que roda antes de todos os outros: pull request do APLICADOR DE
-// SEGURANÇA nunca é mesclado pelo produto. Ele muda configuração e workflows do
-// repositório do cliente; quem revisa e mescla é o dono. As outras camadas (o QA e o vigia nem olham esses
-// pull requests) podem falhar; esta não pode.
+// SEGURANÇA não é mesclado pelos caminhos de entrega (QA, vigia): ele muda
+// configuração e workflows do repositório do cliente. A única exceção é o próprio
+// aplicador, num projeto em "cuidar" (ou com o "sim" explícito do dono), que
+// declara `melhoriaDeSegurancaDoProduto` e passa por TODOS os outros porteiros.
+// As outras camadas (o QA e o vigia nem olham esses pull requests) podem falhar;
+// esta não pode.
 //
 // Os outros três (já existiam): a verificação diz se o código roda, o QA diz
 // se resolve o que a tarefa pediu, e o diff completo garante que o julgamento
 // foi sobre a mudança inteira.
 
-import { ehPrDeSeguranca } from './pr-de-seguranca.js'
+import { ehPrDeSeguranca, PREFIXO_DOS_RAMOS_DE_SEGURANCA } from './pr-de-seguranca.js'
 
 export interface ResultadoDoMerge {
   mesclado: boolean
@@ -76,6 +79,12 @@ export async function mesclarPr(deps: {
   lerCiAgora: (sha: string) => Promise<string>
   /** Faz o merge de verdade. Deve lançar em falha do GitHub. */
   merge: () => Promise<boolean>
+  /**
+   * Só o aplicador de segurança passa `true`, depois de provar que o pull
+   * request é dele e que o projeto autorizou (cuidar, ou o "sim" do dono). Sem
+   * isto o porteiro 7 continua barrando qualquer pull request de segurança.
+   */
+  melhoriaDeSegurancaDoProduto?: boolean
 }): Promise<ResultadoDoMerge> {
   // O PR do aplicador de segurança é do dono: nem a "entrega encomendada", nem
   // QA aprovado, nem CI verde mudam isso.
@@ -88,11 +97,18 @@ export async function mesclarPr(deps: {
     }
   }
   if (ehPrDeSeguranca({ ramo: deps.ramoDoPr, corpo: deps.corpoDoPr })) {
-    return {
-      mesclado: false,
-      motivo:
-        'este pull request é uma melhoria de segurança aberta pelo GitOrch: o produto nunca o mescla — ' +
-        'quem revisa e mescla é o dono',
+    // A exceção vale só para o ramo que o aplicador cria: o corpo com a marca,
+    // sozinho, não basta para liberar.
+    const liberado =
+      deps.melhoriaDeSegurancaDoProduto === true &&
+      deps.ramoDoPr.startsWith(PREFIXO_DOS_RAMOS_DE_SEGURANCA)
+    if (!liberado) {
+      return {
+        mesclado: false,
+        motivo:
+          'este pull request é uma melhoria de segurança aberta pelo GitOrch: só o aplicador de segurança ' +
+          'o mescla, e só quando o dono autoriza o projeto (Cuidar) — este caminho não o mescla',
+      }
     }
   }
   // Porteiro mais barato (um booleano já pronto, nenhuma comparação) e o mais

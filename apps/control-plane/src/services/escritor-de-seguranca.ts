@@ -3,8 +3,9 @@
 // Duas travas moram aqui, na saída de rede, para um chamador novo não conseguir
 // esquecê-las:
 //  - LISTA BRANCA: só existem as ações abaixo, cada uma com método, endereço e
-//    corpo conferidos. Não há ação para proteger branch, mesclar, apagar
-//    repositório ou mexer em visibilidade: o que não está na lista não tem como
+//    corpo conferidos. Não há ação para proteger branch, apagar repositório ou
+//    mexer em visibilidade; a única mescla é a de um pull request de segurança,
+//    sempre amarrada ao commit esperado: o que não está na lista não tem como
 //    ser pedido. As escritas em arquivo só aceitam ramo do próprio GitOrch, nunca
 //    a branch padrão;
 //  - RITMO: no mínimo 1 s entre duas escritas (regra do GitHub), em série, para
@@ -43,6 +44,8 @@ export const ACOES_DE_SEGURANCA = [
   'apagar-arquivo-no-ramo',
   'abrir-pr-de-seguranca',
   'fechar-pr-de-seguranca',
+  'comentar-pr-de-seguranca',
+  'mesclar-pr-de-seguranca',
   'apagar-ramo-de-seguranca',
 ] as const
 
@@ -201,6 +204,28 @@ const LISTA_BRANCA: Readonly<Record<AcaoDeSeguranca, Regra>> = {
     metodo: 'PATCH',
     caminho: /^\/pulls\/\d+$/,
     corpo: (corpo) => ehObjeto(corpo) && SO_ESSAS(corpo, ['state']) && corpo['state'] === 'closed',
+  },
+  'comentar-pr-de-seguranca': {
+    metodo: 'POST',
+    caminho: /^\/issues\/\d+\/comments$/,
+    corpo: (corpo) =>
+      ehObjeto(corpo) &&
+      SO_ESSAS(corpo, ['body']) &&
+      typeof corpo['body'] === 'string' &&
+      corpo['body'].length > 0 &&
+      corpo['body'].length <= 1000,
+  },
+  // O `sha` é obrigatório: o GitHub só mescla se a ponta do PR ainda for este commit.
+  'mesclar-pr-de-seguranca': {
+    metodo: 'PUT',
+    caminho: /^\/pulls\/\d+\/merge$/,
+    corpo: (corpo) =>
+      ehObjeto(corpo) &&
+      SO_ESSAS(corpo, ['sha', 'commit_title', 'commit_message']) &&
+      typeof corpo['sha'] === 'string' &&
+      SHA_COMPLETO.test(corpo['sha']) &&
+      (corpo['commit_title'] === undefined || typeof corpo['commit_title'] === 'string') &&
+      (corpo['commit_message'] === undefined || typeof corpo['commit_message'] === 'string'),
   },
   'apagar-ramo-de-seguranca': {
     metodo: 'DELETE',

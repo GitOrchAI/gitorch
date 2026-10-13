@@ -215,6 +215,30 @@ describe('escritor de segurança: a lista branca', () => {
       { state: 'closed' },
     ],
     [
+      'comentar PR',
+      {
+        acao: 'comentar-pr-de-seguranca',
+        caminho: '/issues/7/comments',
+        corpo: { body: 'Fechado a pedido do dono.' },
+        token: TOKEN,
+      },
+      'POST',
+      `/repos/${REPO}/issues/7/comments`,
+      { body: 'Fechado a pedido do dono.' },
+    ],
+    [
+      'mesclar PR (com o commit esperado)',
+      {
+        acao: 'mesclar-pr-de-seguranca',
+        caminho: '/pulls/7/merge',
+        corpo: { sha: SHA, commit_title: 't' },
+        token: TOKEN,
+      },
+      'PUT',
+      `/repos/${REPO}/pulls/7/merge`,
+      { sha: SHA, commit_title: 't' },
+    ],
+    [
       'apagar ramo',
       { acao: 'apagar-ramo-de-seguranca', caminho: `/git/refs/heads/${RAMO}`, token: TOKEN },
       'DELETE',
@@ -242,6 +266,35 @@ describe('escritor de segurança: a lista branca', () => {
       expect(c.url).not.toContain(TOKEN)
     }
   )
+
+  it('a mescla exige o commit esperado e recusa corpo com campo a mais ou sem sha', async () => {
+    const { escritor, fetchImpl } = montar()
+    for (const corpo of [
+      undefined,
+      {},
+      { sha: 'abc' },
+      { sha: SHA, merge_method: 'squash', extra: 1 },
+      { sha: SHA, commit_title: 3 },
+    ]) {
+      await expect(
+        escritor.enviar({
+          acao: 'mesclar-pr-de-seguranca',
+          caminho: '/pulls/7/merge',
+          ...(corpo === undefined ? {} : { corpo }),
+          token: TOKEN,
+        })
+      ).rejects.toThrow(/lista branca/)
+    }
+    await expect(
+      escritor.enviar({
+        acao: 'mesclar-pr-de-seguranca',
+        caminho: '/pulls/7/merge/../../x',
+        corpo: { sha: SHA },
+        token: TOKEN,
+      })
+    ).rejects.toThrow(/lista branca/)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
 
   it('uma ação que não está na lista é recusada SEM chamar a rede', async () => {
     const { escritor, fetchImpl } = montar()

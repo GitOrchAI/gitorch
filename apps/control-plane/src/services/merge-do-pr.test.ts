@@ -266,6 +266,62 @@ describe('mesclarPr — só mescla PR que MIRA a branch padrão do projeto', () 
       expect(r.motivo).toContain('dono')
     })
 
+    it('o aplicador de segurança, quando declara a melhoria do produto, mescla pelos mesmos porteiros', async () => {
+      let chamado = false
+      const r = await mesclarPr({
+        ...base,
+        ramoDoPr: 'gitorch/seguranca/permissoes-ci-yml',
+        melhoriaDeSegurancaDoProduto: true,
+        merge: async () => {
+          chamado = true
+          return true
+        },
+      })
+      expect(chamado).toBe(true)
+      expect(r.mesclado).toBe(true)
+    })
+
+    it('a melhoria do produto continua barrada por CI, base e commit trocado', async () => {
+      const casos: Array<Record<string, unknown>> = [
+        { lerCiAgora: async () => 'pending' },
+        { ciState: 'red' },
+        { baseDoPr: 'develop' },
+        { shaAtual: 'outro' },
+        { delegado: false },
+      ]
+      for (const caso of casos) {
+        let chamado = false
+        const r = await mesclarPr({
+          ...base,
+          ramoDoPr: 'gitorch/seguranca/permissoes-ci-yml',
+          melhoriaDeSegurancaDoProduto: true,
+          ...caso,
+          merge: async () => {
+            chamado = true
+            return true
+          },
+        })
+        expect(chamado).toBe(false)
+        expect(r.mesclado).toBe(false)
+      }
+    })
+
+    it('a marca no corpo, sem o ramo do aplicador, não libera nem com a declaração', async () => {
+      let chamado = false
+      const r = await mesclarPr({
+        ...base,
+        ramoDoPr: 'qualquer-outro',
+        corpoDoPr: '<!-- gitorch:seguranca -->',
+        melhoriaDeSegurancaDoProduto: true,
+        merge: async () => {
+          chamado = true
+          return true
+        },
+      })
+      expect(chamado).toBe(false)
+      expect(r.mesclado).toBe(false)
+    })
+
     it('NÃO mescla um PR com a marca de segurança no corpo, mesmo com outro nome de ramo', async () => {
       let chamado = false
       const r = await mesclarPr({
