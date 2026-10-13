@@ -946,23 +946,27 @@ async function julgarEntregaViaRails(
       )
     }
 
-    const closingIssuesReferences = await options.closingIssues?.(target.number).catch((err) => {
-      options.onWarn?.(
-        `[qa] falha ao consultar closingIssuesReferences do PR #${target.number}: ${err instanceof Error ? err.message : String(err)}`
-      )
-      return []
-    })
+    let closingIssuesReferences: number[] = []
+    if (options.closingIssues) {
+      closingIssuesReferences = await options.closingIssues(p.number).catch((err) => {
+        options.onWarn?.(
+          `[qa] falha ao consultar closingIssuesReferences do PR #${p.number}: ${err instanceof Error ? err.message : String(err)}`
+        )
+        return []
+      })
+    }
     const veredito = ehPrDelegado({
       numeroDoPr: p.number,
       autor: p.user?.login,
-      corpo: p.body,
+      corpo: p.body ?? undefined,
       sessoes: options.sessoes ?? [],
-      issueComEtiquetaDeDelegacao: (n) => etiquetasPorIssue.get(n) ?? false,
+      issueComEtiquetaDeDelegacao: () => true, // Para o QA, estar delegado é suficiente
       // Participante do repositório: a autoria vem do campo do GitHub, nunca
       // do texto do PR.
       authorAssociation: p.author_association,
       tipoDoAutor: p.user?.type,
       ramoDoPr: p.head?.ref,
+      closingIssuesReferences,
     })
     // PR julgável por ser de um PARTICIPANTE, e não por ser entrega do dev: não
     // existe sessão, tarefa de origem nem dev para retrabalhar. Tudo o que é

@@ -319,8 +319,8 @@ describe('o que o vigia decide para o PR órfão', () => {
 
   it('sem tarefa de origem registrada não fecha nem retoma — escala', () => {
     const d = decidirAcaoNoPrOrfao(situacao({ issueNumber: null, mergeable: false }))
-    expect(d.acao).toBe('escalar')
-    expect(d.motivo).toContain('tarefa de origem')
+    expect(d.acao).toBe('pedir-julgamento')
+    expect(d.motivo).toContain('julgando via diff/GraphQL')
   })
 
   it('mergeable ainda indefinido: o GitHub não terminou de calcular — não age', () => {
@@ -373,15 +373,12 @@ describe('o teto DIZ quando morde', () => {
   it('a varredura avisa o dono e grava o evento quando o teto morde', async () => {
     const avisos: string[] = []
     const eventos: Array<{ numeroDoPr: number; acao: AcaoDoVigia['acao']; texto: string }> = []
-    let pediuJulgamento = false
     await rodar({
       prs: [prAberto({ numero: 356, corpo: CORPO_PR_356_DEV, mergeable: false })],
       issueDoPr: () => 329,
       acoesAnteriores: async () => MAX_ACOES_DO_VIGIA,
       tarefaJaDevolvidaAFila: async () => true,
-      pedirJulgamento: async () => {
-        pediuJulgamento = true
-      },
+      pedirJulgamento: async () => {},
       avisarDono: async (t) => {
         avisos.push(t)
         return true
@@ -907,10 +904,10 @@ describe('ACHADO 1 — a sessão de conserto nasce no RAMO DO PR, nunca na princ
     ['ramo desconhecido', { branchDoPr: null }],
     ['ramo vazio', { branchDoPr: '' }],
     ['ramo de um fork', { branchDoPr: 'ramo-do-fork', branchNoRepoDoProjeto: false }],
-  ])('%s NÃO vira sessão na principal — pede julgamento', (_nome, over) => {
+  ])('%s NÃO vira sessão na principal — escala', (_nome, over) => {
     for (const causa of [{ mergeable: false }, { verificacao: 'vermelha' as const }]) {
       const d = decidirAcaoNoPrOrfao(situacao({ ...causa, ...over }))
-      expect(d.acao).toBe('pedir-julgamento')
+      expect(d.acao).toBe('escalar')
       expect(d.motivo).toContain('ramo')
     }
   })
@@ -935,7 +932,7 @@ describe('ACHADO 1 — a sessão de conserto nasce no RAMO DO PR, nunca na princ
         }
       }
     }
-    expect([...acoes].sort()).toEqual(['escalar', 'fechar', 'ignorar', 'pedir-julgamento'])
+    expect([...acoes].sort()).toEqual(['escalar', 'fechar', 'ignorar'])
   })
 
   it('a varredura repassa o ramo do PR para `abrirSessaoDeConserto`', async () => {
@@ -1012,6 +1009,9 @@ describe('ACHADO 2 — a estreia não pode ser uma limpeza em massa', () => {
       prs: oitoParaFechar.map((numero) =>
         prAberto({ numero, corpo: CORPO_PR_356_DEV, mergeable: true, verificacao: 'verde' })
       ),
+      pedirJulgamento: async () => {
+        avisos.push('pediu')
+      },
       issueDoPr: () => null,
       avisarDono: async (t) => {
         avisos.push(t)

@@ -502,8 +502,7 @@ export function decidirAcaoNoPrOrfao(pr: PrOrfaoObservado): AcaoDoVigia {
   if (pr.issueNumber === null) {
     return {
       acao: 'pedir-julgamento',
-      motivo:
-        `O pull request #${pr.numero} é do dev assíncrono, está parado e não tenho tarefa de origem registrada, julgando via diff/GraphQL.`,
+      motivo: `O pull request #${pr.numero} é do dev assíncrono, está parado e não tenho tarefa de origem registrada, julgando via diff/GraphQL.`,
     }
   }
 
