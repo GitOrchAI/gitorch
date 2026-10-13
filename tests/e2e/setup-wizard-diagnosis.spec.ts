@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { PrismaClient } from '@prisma/client'
 import jwt from 'jsonwebtoken'
-import { EngineConnectionService } from '../../apps/control-plane/dist/services/engine-connection.js'
+import { EngineConnectionService } from '../../apps/control-plane/src/services/engine-connection.js'
 
 /**
  * E2E real da F1 (diagnóstico grátis do setup wizard): navegador de verdade,
