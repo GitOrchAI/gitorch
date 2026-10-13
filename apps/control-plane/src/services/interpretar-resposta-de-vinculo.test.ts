@@ -20,7 +20,13 @@ describe('interpretarRespostaDeVinculo: número de tarefa', () => {
     ['3976 👍', 3976],
     ['é a 3976, obrigado', 3976],
     ['#3976 #3976', 3976],
-    ['é a 3976 (https://github.com/acme/api/issues/3976)', 3976],
+    ['É a 3976', 3976],
+    ['é a tarefa #3976!', 3976],
+    ['e da 3976', 3976],
+    ['da tarefa 3976', 3976],
+    ['seria a 3976', 3976],
+    ['nº 3976', 3976],
+    ['n 3976', 3976],
   ])('%j vira a tarefa %i', (texto, numero) => {
     expect(interpretarRespostaDeVinculo(texto, REPO)).toEqual({ tipo: 'tarefa', numero })
   })
@@ -30,7 +36,7 @@ describe('interpretarRespostaDeVinculo: número de tarefa', () => {
       'https://github.com/acme/api/issues/3976',
       'https://github.com/Acme/API/issues/3976',
       'https://www.github.com/acme/api/issues/3976?foo=bar#issuecomment-1',
-      'olha: https://github.com/acme/api/issues/3976/ valeu',
+      'https://github.com/acme/api/issues/3976/ valeu',
     ]) {
       expect(interpretarRespostaDeVinculo(link, REPO)).toEqual({ tipo: 'tarefa', numero: 3976 })
     }
@@ -81,18 +87,32 @@ describe('interpretarRespostaDeVinculo: número de tarefa', () => {
     expect(interpretarRespostaDeVinculo('#2030', REPO)).toEqual({ tipo: 'tarefa', numero: 2030 })
   })
 
-  it('um número de verdade ao lado de outro que é outra coisa fica só com o de verdade', () => {
-    expect(interpretarRespostaDeVinculo('é a 3976, feita às 14h', REPO)).toEqual({
-      tipo: 'tarefa',
-      numero: 3976,
-    })
-  })
-
   it('zero e números enormes não viram tarefa', () => {
     expect(interpretarRespostaDeVinculo('0', REPO)).toEqual({ tipo: 'nao-entendida' })
     expect(interpretarRespostaDeVinculo('#99999999999999', REPO)).toEqual({
       tipo: 'nao-entendida',
     })
+  })
+})
+
+describe('interpretarRespostaDeVinculo: número no meio de frase nunca vira tarefa', () => {
+  it.each([
+    'dia 15 de outubro',
+    'o valor é 3976',
+    'até 3976',
+    'vale 3976 pontos',
+    'acho que é a 3976 mas confirma',
+    '3976 ou nenhuma',
+    'tarefa 3976 por favor fecha o resto',
+    'R$ 3976',
+    'às 14h',
+    '15/10',
+    '50%',
+    'é a 3976, feita às 14h',
+    'é a 3976 (https://github.com/acme/api/issues/3976)',
+    'olha: https://github.com/acme/api/issues/3976',
+  ])('%j não é entendida', (texto) => {
+    expect(interpretarRespostaDeVinculo(texto, REPO)).toEqual({ tipo: 'nao-entendida' })
   })
 })
 
