@@ -121,6 +121,32 @@ describe('ehPrDelegado', () => {
       })
     ).toEqual({ delegado: true, issueNumber: 24 })
   })
+
+  it('o fechamento formal do GitHub (closingIssuesReferences) ganha da menção solta', () => {
+    expect(
+      ehPrDelegado({
+        numeroDoPr: 63,
+        autor: 'loureng',
+        corpo: 'Closes #99',
+        sessoes: [],
+        issueComEtiquetaDeDelegacao: (n) => n === 10,
+        closingIssuesReferences: [10],
+      })
+    ).toEqual({ delegado: true, issueNumber: 10 })
+  })
+
+  it('fechamento formal do GitHub (closingIssuesReferences) é ignorado se não tem etiqueta de delegação', () => {
+    expect(
+      ehPrDelegado({
+        numeroDoPr: 63,
+        autor: 'loureng',
+        corpo: '',
+        sessoes: [],
+        issueComEtiquetaDeDelegacao: () => false,
+        closingIssuesReferences: [10],
+      })
+    ).toEqual({ delegado: false, issueNumber: null })
+  })
 })
 
 // PR de participante do repositório é atendido como o do dev delegado. A

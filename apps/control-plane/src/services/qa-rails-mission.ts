@@ -410,6 +410,8 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
     mergeCommitSha: string
     issueNumber: number | null
   }) => Promise<void>
+  /** (Best-effort) Consulta via GraphQL as issues conectadas formalmente. */
+  closingIssues?: (numeroDoPr: number) => Promise<number[]>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
@@ -944,6 +946,12 @@ async function julgarEntregaViaRails(
       )
     }
 
+    const closingIssuesReferences = await options.closingIssues?.(target.number).catch((err) => {
+      options.onWarn?.(
+        `[qa] falha ao consultar closingIssuesReferences do PR #${target.number}: ${err instanceof Error ? err.message : String(err)}`
+      )
+      return []
+    })
     const veredito = ehPrDelegado({
       numeroDoPr: p.number,
       autor: p.user?.login,

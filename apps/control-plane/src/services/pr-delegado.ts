@@ -45,6 +45,8 @@ export function ehPrDelegado(args: {
   tipoDoAutor?: string | null | undefined
   /** `head.ref` do PR, quando quem chama o tem. */
   ramoDoPr?: string | null | undefined
+  /** Consulta formal do GitHub (`closingIssuesReferences`). */
+  closingIssuesReferences?: number[]
 }): ResultadoPrDelegado {
   // 0) O pull request do aplicador de segurança nunca é entrega encomendada,
   // nem de participante: é o dono que o revisa e mescla. Vem antes de tudo,
@@ -62,7 +64,16 @@ export function ehPrDelegado(args: {
     return { delegado: true, issueNumber: null }
   }
 
-  // 3) Recuo: palavra de ligação no corpo + etiqueta na issue + SESSÃO
+  // 3) Recuo: fechamento formal do GitHub (closingIssuesReferences)
+  if (args.closingIssuesReferences && args.closingIssuesReferences.length > 0) {
+    for (const n of args.closingIssuesReferences) {
+      if (args.issueComEtiquetaDeDelegacao(n)) {
+        return { delegado: true, issueNumber: n }
+      }
+    }
+  }
+
+  // 4) Recuo: palavra de ligação no corpo + etiqueta na issue + SESSÃO
   // registrada para aquela issue.
   //
   // A sessão é obrigatória aqui — não é reforço, é a correção do furo mais
@@ -88,7 +99,7 @@ export function ehPrDelegado(args: {
     }
   }
 
-  // 4) PARTICIPANTE do repositório: quem o dono deixou orquestrar tem o PR
+  // 5) PARTICIPANTE do repositório: quem o dono deixou orquestrar tem o PR
   // julgado como o do dev delegado, mesmo sem linha de sessão. A decisão vem SÓ do `author_association` informado pelo GitHub —
   // texto do corpo ou login não contam (repositório público). É o ÚLTIMO recuo
   // de propósito: qualquer prova de delegação de verdade (linha, jules, ligação)

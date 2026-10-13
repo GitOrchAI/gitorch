@@ -356,6 +356,8 @@ describe('o teto DIZ quando morde', () => {
         tarefaJaDevolvidaAFila: true,
       })
     )
+    // Se a tarefa de origem está presente (329), ao esgotar limite a ação vira 'escalar'.
+    // Mas no `situacao` padrão o PR tem issueNumber: 329.
     expect(d.acao).toBe('escalar')
     expect(d.motivo).toContain(String(MAX_ACOES_DO_VIGIA))
     expect(d.motivo).toContain('#356')
@@ -371,11 +373,15 @@ describe('o teto DIZ quando morde', () => {
   it('a varredura avisa o dono e grava o evento quando o teto morde', async () => {
     const avisos: string[] = []
     const eventos: Array<{ numeroDoPr: number; acao: AcaoDoVigia['acao']; texto: string }> = []
+    let pediuJulgamento = false
     await rodar({
       prs: [prAberto({ numero: 356, corpo: CORPO_PR_356_DEV, mergeable: false })],
       issueDoPr: () => 329,
       acoesAnteriores: async () => MAX_ACOES_DO_VIGIA,
       tarefaJaDevolvidaAFila: async () => true,
+      pedirJulgamento: async () => {
+        pediuJulgamento = true
+      },
       avisarDono: async (t) => {
         avisos.push(t)
         return true
@@ -691,6 +697,7 @@ async function rodar(over: {
   acoesAnteriores?: (n: number) => Promise<number>
   tarefaJaDevolvidaAFila?: (issueNumber: number) => Promise<boolean>
   vagasLivres?: number
+  pedirJulgamento?: VigiaDoPrDeps['pedirJulgamento']
   abrirSessaoDeConserto?: VigiaDoPrDeps['abrirSessaoDeConserto']
   fecharPr?: VigiaDoPrDeps['fecharPr']
   avisarDono?: VigiaDoPrDeps['avisarDono']
@@ -709,7 +716,7 @@ async function rodar(over: {
     acoesAnteriores: over.acoesAnteriores ?? (async () => 0),
     tarefaJaDevolvidaAFila: over.tarefaJaDevolvidaAFila ?? (async () => false),
     vagasLivres: over.vagasLivres ?? 15,
-    pedirJulgamento: async () => {},
+    pedirJulgamento: over.pedirJulgamento ?? (async () => {}),
     abrirSessaoDeConserto: over.abrirSessaoDeConserto ?? (async () => true),
     fecharPr: over.fecharPr ?? (async () => true),
     avisarDono: over.avisarDono ?? (async () => true),
@@ -900,10 +907,10 @@ describe('ACHADO 1 — a sessão de conserto nasce no RAMO DO PR, nunca na princ
     ['ramo desconhecido', { branchDoPr: null }],
     ['ramo vazio', { branchDoPr: '' }],
     ['ramo de um fork', { branchDoPr: 'ramo-do-fork', branchNoRepoDoProjeto: false }],
-  ])('%s NÃO vira sessão na principal — escala', (_nome, over) => {
+  ])('%s NÃO vira sessão na principal — pede julgamento', (_nome, over) => {
     for (const causa of [{ mergeable: false }, { verificacao: 'vermelha' as const }]) {
       const d = decidirAcaoNoPrOrfao(situacao({ ...causa, ...over }))
-      expect(d.acao).toBe('escalar')
+      expect(d.acao).toBe('pedir-julgamento')
       expect(d.motivo).toContain('ramo')
     }
   })
@@ -928,7 +935,7 @@ describe('ACHADO 1 — a sessão de conserto nasce no RAMO DO PR, nunca na princ
         }
       }
     }
-    expect([...acoes].sort()).toEqual(['escalar', 'fechar', 'ignorar'])
+    expect([...acoes].sort()).toEqual(['escalar', 'fechar', 'ignorar', 'pedir-julgamento'])
   })
 
   it('a varredura repassa o ramo do PR para `abrirSessaoDeConserto`', async () => {
