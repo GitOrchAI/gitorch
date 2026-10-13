@@ -67,6 +67,11 @@ const ACAO_DA_ROTA: ReadonlyArray<{ caminho: RegExp; acao: AcaoNoRepositorio }> 
   // A mais forte do sistema: fechar o ciclo dentro do código do cliente.
   { caminho: /\/pulls\/\d+\/merge\b/, acao: 'mesclar' },
   { caminho: /\/pulls\/\d+\/(update-branch|reviews)\b/, acao: 'propor' },
+  // Pedir nova execução do CI (`.../actions/runs/{id}/rerun` e
+  // `.../rerun-failed-jobs`) gasta o runner do cliente e muda o resultado que
+  // o porteiro de mescla lê. Regra EXPLÍCITA no degrau mais alto, em vez de
+  // depender do fallback de rota desconhecida.
+  { caminho: /\/actions\/runs\/\d+\/rerun(-failed-jobs)?\/?$/, acao: 'mesclar' },
   // MEXER NO PULL REQUEST EM SI (`PATCH /repos/dono/nome/pulls/N`) é o que
   // FECHA a entrega de alguém. Estava caindo em `propor` junto com "abrir pull
   // request", e `propor` já está liberado no nível "Sugerir" — cujo texto
