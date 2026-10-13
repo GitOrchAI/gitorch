@@ -21,7 +21,7 @@
 #                                         incluindo o cliente Prisma gerado, os binários
 #                                         nativos, prisma e tsx (que o db-migrate.sh executa);
 #   - runtime                             script que o agendador chama a partir da raiz;
-#   - MANIFESTO.json                      commit, data UTC, node, arquitetura, sistema e
+#   - MANIFESTO.json                      commit, data UTC, node e nodeMajor, arquitetura, sistema e
 #                                         componentes com tamanho;
 #   - apps/control-plane/dist/commit-publicado.txt  o commit que o serviço informa em
 #                                         /api/v1/version.
@@ -93,6 +93,7 @@ COMMIT="$COMMIT" COMPONENTES="$TMP/componentes.json" SISTEMA="$(uname -s)" ARQUI
       commit: process.env.COMMIT,
       geradoEm: new Date().toISOString(),
       node: process.env.NODE_VERSAO,
+      nodeMajor: Number(process.env.NODE_VERSAO.replace(/^v/, "").split(".")[0]),
       arquitetura: process.env.ARQUITETURA,
       sistema: process.env.SISTEMA,
       componentes,

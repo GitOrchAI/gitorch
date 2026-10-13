@@ -160,7 +160,7 @@ test('auditoria completa (--all) no repo atual não acusa débito novo', () => {
 // (vps.tailcc2470.ts.net) usando o escape genérico infra-guard-allow já
 // existente — a exceção mais estreita possível (nenhum padrão novo, nenhuma
 // allowlist permanente). A URL real entra por Variables do repo (pages.yml
-// lê vars.GITORCH_PUBLIC_API_URL), não por código versionado.
+// lê vars.NEXT_PUBLIC_API_URL), não por código versionado.
 test('hostname do Funnel de produção COM infra-guard-allow passa (linha revisada)', () => {
   const diff = `diff --git a/README.md b/README.md
 index 111..222 100644
