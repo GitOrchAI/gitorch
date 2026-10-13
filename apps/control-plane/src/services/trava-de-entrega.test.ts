@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -151,11 +151,47 @@ describe('trava de entrega: guarda única podeIniciarTrabalho', () => {
     expect(await trava.podeIniciarTrabalho()).toBe(true)
   })
 
-  it('cliente de banco sem o modelo da trava (dublê de teste) não bloqueia nem avisa', async () => {
-    const onWarn = vi.fn()
-    const trava = criarTravaDeEntrega({} as unknown as PrismaDaTrava, { onWarn })
-    expect(await trava.podeIniciarTrabalho()).toBe(true)
-    expect(onWarn).not.toHaveBeenCalled()
+  describe('cliente de banco sem o modelo da trava', () => {
+    const vitestOriginal = process.env['VITEST']
+    afterEach(() => {
+      if (vitestOriginal === undefined) delete process.env['VITEST']
+      else process.env['VITEST'] = vitestOriginal
+    })
+
+    it('em teste (dublê que não trata de entrega) não bloqueia nem avisa', async () => {
+      const onWarn = vi.fn()
+      const trava = criarTravaDeEntrega({} as unknown as PrismaDaTrava, { onWarn })
+      expect(await trava.podeIniciarTrabalho()).toBe(true)
+      expect(onWarn).not.toHaveBeenCalled()
+    })
+
+    it('FAIL-SAFE fora de teste: cliente gerado antigo adia o trabalho novo e avisa', async () => {
+      delete process.env['VITEST']
+      const onWarn = vi.fn()
+      const trava = criarTravaDeEntrega({} as unknown as PrismaDaTrava, { onWarn })
+      expect(await trava.podeIniciarTrabalho()).toBe(false)
+      expect(onWarn).toHaveBeenCalledTimes(1)
+      expect(onWarn.mock.calls[0]![0]).toMatch(/sem o modelo da trava de entrega/i)
+      expect(onWarn.mock.calls[0]![0]).toMatch(/gere o cliente de novo/i)
+    })
+
+    it('fora de teste o aviso respeita o intervalo mínimo entre avisos', async () => {
+      delete process.env['VITEST']
+      const onWarn = vi.fn()
+      let t = 0
+      const trava = criarTravaDeEntrega({} as unknown as PrismaDaTrava, {
+        onWarn,
+        agora: () => t,
+        cacheMs: 10,
+      })
+      await trava.podeIniciarTrabalho()
+      t += 20
+      await trava.podeIniciarTrabalho()
+      expect(onWarn).toHaveBeenCalledTimes(1)
+      t += 61_000
+      await trava.podeIniciarTrabalho()
+      expect(onWarn).toHaveBeenCalledTimes(2)
+    })
   })
 
   it('o modelo e a tabela existem de verdade: schema.prisma e a migração concordam', () => {
@@ -174,6 +210,41 @@ describe('trava de entrega: guarda única podeIniciarTrabalho', () => {
     const trava = criarTravaDeEntrega(prisma, { agora: () => 5, cacheMs: 60_000 })
     expect(await trava.podeIniciarTrabalho()).toBe(true)
     await trava.ligarTrava({ motivo: 'm', por: 'p' })
+    expect(await trava.podeIniciarTrabalho()).toBe(false)
+  })
+})
+
+describe('trava de entrega: corrida do cache', () => {
+  it('ligar e, na mesma volta do laço, a guarda já devolve false (cache de 1 minuto)', async () => {
+    const { prisma } = bancoFalso()
+    const trava = criarTravaDeEntrega(prisma, { agora: () => 5, cacheMs: 60_000 })
+    expect(await trava.podeIniciarTrabalho()).toBe(true)
+    await trava.ligarTrava({ motivo: 'm', por: 'p' })
+    expect(await trava.podeIniciarTrabalho()).toBe(false)
+  })
+
+  it('uma leitura que já estava em voo antes do ligar não repõe "sem trava" no cache', async () => {
+    const { prisma, estado } = bancoFalso()
+    let liberar!: () => void
+    const portao = new Promise<void>((r) => (liberar = r))
+    const leituraOriginal = prisma.travaDeEntrega.findUnique.bind(prisma.travaDeEntrega)
+    let primeira = true
+    prisma.travaDeEntrega.findUnique = async (args) => {
+      if (primeira) {
+        primeira = false
+        const antiga = await leituraOriginal(args)
+        await portao
+        return antiga
+      }
+      return leituraOriginal(args)
+    }
+    const trava = criarTravaDeEntrega(prisma, { agora: () => 5, cacheMs: 60_000 })
+    const emVoo = trava.podeIniciarTrabalho()
+    await Promise.resolve()
+    await trava.ligarTrava({ motivo: 'm', por: 'p' })
+    liberar()
+    await emVoo
+    expect(estado.linha?.ligada).toBe(true)
     expect(await trava.podeIniciarTrabalho()).toBe(false)
   })
 })
