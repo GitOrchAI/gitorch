@@ -4,6 +4,7 @@ import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 import { processDiagnosisJob, repoWorkspaceSlug } from '../services/free-diagnosis.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { exportGraphIsolated } from '../services/graph-export.js'
+import { podeIniciarTrabalho, recusarPorEntrega } from '../services/trava-de-entrega.js'
 
 interface DiagnoseBody {
   repo: string
@@ -68,6 +69,12 @@ export const diagnoseRoutes = async (app: FastifyInstance): Promise<void> => {
       })
       if (existing) {
         return reply.send({ id: existing.id, status: existing.status })
+      }
+
+      // Reaproveitar um diagnóstico existente (acima) não inicia nada; criar um
+      // novo inicia clone e indexação, então espera a troca de versão acabar.
+      if (!(await podeIniciarTrabalho(app.prisma, (m) => app.log.warn(m)))) {
+        return recusarPorEntrega(reply)
       }
 
       const job = await app.prisma.diagnosisJob.create({

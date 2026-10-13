@@ -32,6 +32,7 @@ import { mintInstallationToken } from '../services/github-app-token.js'
 import { repoWorkspaceSlug } from '../services/free-diagnosis.js'
 import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 import { pipelineRoutes } from './pipeline-routes.js'
+import { entregaRoutes } from './entrega.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -59,6 +60,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Missions trigger and status endpoints
   await missionRoutes(app)
+
+  // Consulta e trava da troca de versão: só o entregador, em loopback + segredo.
+  await entregaRoutes(app)
 
   // Painel do owner: pulso, quem está atuando e responder decisão (leva 1 do
   // porte do handoff GitOrch Design System). Escopo por dono; sem migração.

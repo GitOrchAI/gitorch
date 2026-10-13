@@ -1,6 +1,7 @@
 import { FastifyRequest, FastifyReply, FastifyInstance } from 'fastify'
 import { PrismaClient, Prisma } from '@prisma/client'
 import { isF6AgentRole } from '@gitorch/agents'
+import { podeIniciarTrabalho, recusarPorEntrega } from '../services/trava-de-entrega.js'
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -30,6 +31,11 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
     async (request: FastifyRequest<{ Body: TriggerMissionBody }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const { projectId, type, payload } = request.body
+
+      // Troca de versão em andamento: não nasce missão nova.
+      if (!(await podeIniciarTrabalho(app.prisma, (m) => app.log.warn(m)))) {
+        return recusarPorEntrega(reply)
+      }
 
       // Verify project belongs to wing
       const project = await app.prisma.project.findFirst({
@@ -89,6 +95,7 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
       // clicou quer ver o papel rodar AGORA, não daqui a meia hora.
       const result = await app.triggerAgentMission(role, undefined, undefined, 'sob-demanda')
       if (!result.triggered) {
+        if (result.reason === 'em-entrega') return recusarPorEntrega(reply)
         return reply.code(409).send({ triggered: false, role, reason: result.reason })
       }
       return reply.code(202).send({ triggered: true, role, missionId: result.missionId })

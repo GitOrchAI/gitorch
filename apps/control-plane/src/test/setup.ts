@@ -94,6 +94,12 @@ class MockPrismaClient {
     count: vi.fn().mockResolvedValue(0),
     delete: vi.fn().mockResolvedValue({}),
   }
+  // Trava de entrega: por padrão desligada (nenhuma linha), para os testes que
+  // não tratam de troca de versão enxergarem o produto livre para trabalhar.
+  travaDeEntrega = {
+    findUnique: vi.fn().mockResolvedValue(null),
+    upsert: vi.fn().mockResolvedValue({}),
+  }
   projectSchedule = {
     findMany: vi.fn().mockResolvedValue([]),
     count: vi.fn().mockResolvedValue(0),

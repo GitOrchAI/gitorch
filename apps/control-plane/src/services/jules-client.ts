@@ -42,6 +42,11 @@ export interface CriarSessaoDeps {
   titulo: string
   /** O pedido em si: a task no padrão da issue. */
   prompt: string
+  /**
+   * Guarda da trava de entrega: `false` = há uma troca de versão em curso e
+   * nenhuma sessão nova deve nascer. Ausente: sempre permitido.
+   */
+  podeIniciar?: () => Promise<boolean>
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
 }
@@ -60,6 +65,10 @@ export async function criarSessaoJules(
 ): Promise<ResultadoDoAcionamentoDoDev> {
   const warn = deps.onWarn ?? (() => undefined)
   if (!deps.apiKey) return { situacao: 'desligado' }
+  if (deps.podeIniciar && !(await deps.podeIniciar())) {
+    warn('[jules] em entrega: sessão nova adiada até a atualização terminar')
+    return { situacao: 'desligado' }
+  }
 
   const source = julesSourceName(deps.repository)
   if (!source) {

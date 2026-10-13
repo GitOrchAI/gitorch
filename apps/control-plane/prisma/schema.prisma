@@ -527,6 +527,21 @@ model VezPendente {
   @@map("vez_pendente")
 }
 
+// Trava de entrega: pede ao produto que pare de INICIAR trabalho novo enquanto
+// uma troca de versão acontece. Linha única (id fixo), gravada no banco para
+// sobreviver a um reinício do serviço — uma trava só em memória sumiria
+// justamente no restart que a troca provoca. Ver services/trava-de-entrega.ts.
+model TravaDeEntrega {
+  id        String    @id
+  ligada    Boolean   @default(false)
+  desde     DateTime?
+  motivo    String?
+  ligadaPor String?   @map("ligada_por")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@map("trava_de_entrega")
+}
+
 model Mission {
   id          String   @id @default(cuid())
   projectId   String   @map("project_id")

@@ -54,6 +54,7 @@ import {
 } from '../services/responder-retomada-travada.js'
 import { chaveDoDevDoProjeto as resolverChaveDoDevDoProjeto } from '../services/chave-do-dev-assincrono.js'
 import { criarSessaoJules } from '../services/jules-client.js'
+import { podeIniciarTrabalho } from '../services/trava-de-entrega.js'
 import { abrirSessao, registrarPr, type PrismaDevSession } from '../services/dev-session-store.js'
 import { ghJson, headersGithub } from '../services/github-json.js'
 import {
@@ -646,6 +647,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       },
       criarSessaoDev: async ({ repository, startingBranch, titulo, prompt }) =>
         criarSessaoJules({
+          podeIniciar: () => podeIniciarTrabalho(app.prisma, (m) => app.log.warn(m)),
           apiKey:
             (await resolverChaveDoDevDoProjeto(depsDaChaveDoDevParaRetomada, args.projectId)) ??
             undefined,

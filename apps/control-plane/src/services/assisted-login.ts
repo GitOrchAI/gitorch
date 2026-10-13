@@ -266,6 +266,16 @@ export class AssistedLoginService {
   }
 
   /**
+   * Quantos logins estão abertos agora. A sessão sai do mapa quando termina
+   * (sucesso, falha ou tempo esgotado), então o tamanho do mapa é a contagem
+   * dos que ainda estão em andamento. A troca de versão do produto espera por
+   * este número: reiniciar o serviço mataria o login no meio.
+   */
+  contarAbertas(): number {
+    return this.sessions.size
+  }
+
+  /**
    * Inicia o login assistido do motor. Quando `envHome` é passado (o diretório
    * do ambiente isolado do user, 0700), o container usa ELE como HOME: a
    * credencial que o CLI grava no login (`.codex/`, `.claude/`,

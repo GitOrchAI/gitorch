@@ -46,6 +46,11 @@ import {
   textoDaVersaoNoAr,
   type VersaoNoAr,
 } from '../../components/painel/painel-versao'
+import {
+  buscarAtualizacao,
+  textoDaAtualizacao,
+  type AtualizacaoEmAndamento,
+} from '../../components/painel/painel-atualizacao'
 import { usePainelBusca } from '../../components/painel/usePainelBusca'
 import { Ad, AdMark } from '../../components/painel/PainelIcons'
 import type { DecisaoView } from '../../components/painel/PainelUI'
@@ -162,6 +167,24 @@ export default function PainelOwner() {
       vivo = false
     }
   }, [])
+
+  // Faixa de atualização em andamento: a trava de entrega do servidor. Confere
+  // de novo a cada minuto para a faixa sumir sozinha quando a troca termina.
+  const [atualizacao, setAtualizacao] = useState<AtualizacaoEmAndamento | null>(null)
+  useEffect(() => {
+    let vivo = true
+    const conferir = () =>
+      buscarAtualizacao().then((a) => {
+        if (vivo) setAtualizacao(a)
+      })
+    void conferir()
+    const id = setInterval(() => void conferir(), 60_000)
+    return () => {
+      vivo = false
+      clearInterval(id)
+    }
+  }, [])
+  const textoDaFaixa = textoDaAtualizacao(atualizacao)
 
   const [decisoes, setDecisoes] = useState<DecisaoView[]>([])
   const [avisoDecisao, setAvisoDecisao] = useState<string | null>(null)
@@ -410,6 +433,12 @@ export default function PainelOwner() {
               Pedir
             </button>
           </header>
+
+          {textoDaFaixa ? (
+            <div className="pn-atualizando" role="status">
+              {textoDaFaixa}
+            </div>
+          ) : null}
 
           <div className="pn-scroll">{renderTela(tela)}</div>
         </div>

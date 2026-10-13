@@ -45,6 +45,19 @@ afterEach(async () => {
 })
 
 describe('AssistedLoginService', () => {
+  it('contarAbertas: conta o login em andamento e volta a zero quando ele termina', async () => {
+    const { handle, emitExit } = fakeHandle()
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl: vi.fn().mockReturnValue(handle),
+    })
+    expect(service.contarAbertas()).toBe(0)
+    service.start('user-1', 'codex')
+    expect(service.contarAbertas()).toBe(1)
+    emitExit(1)
+    await vi.waitFor(() => expect(service.contarAbertas()).toBe(0))
+  })
+
   it('codex: url_ready assim que o stdout tem link+código, connected quando o processo sai 0', async () => {
     const { handle, emitStdout, emitExit } = fakeHandle()
     const engineConnections = fakeEngineConnections()

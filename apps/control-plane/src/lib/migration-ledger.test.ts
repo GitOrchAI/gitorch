@@ -67,6 +67,7 @@ describe('MIGRATION_LEDGER', () => {
       'guest-quota-migration.sql',
       'pipeline-intelligence-migration.sql',
       'repo-item-ligacao-migration.sql',
+      'trava-de-entrega-migration.sql',
     ])
   })
 })
