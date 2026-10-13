@@ -979,6 +979,7 @@ async function julgarEntregaViaRails(
       authorAssociation: p.author_association,
       tipoDoAutor: p.user?.type,
       ramoDoPr: p.head?.ref,
+      closingIssuesReferences,
     })
     // PR julgável por ser de um PARTICIPANTE, e não por ser entrega do dev: não
     // existe sessão, tarefa de origem nem dev para retrabalhar. Tudo o que é
