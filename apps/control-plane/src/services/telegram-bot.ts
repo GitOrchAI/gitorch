@@ -697,6 +697,20 @@ export async function handleTelegramCallback(
     })
     return
   }
+  // Resposta que o tratador não conseguiu usar: a pergunta segue aberta (nada
+  // colapsa, o estado de digitação continua) e o dono lê o motivo no popup.
+  if (updated?.respostaNaoEntendida !== undefined) {
+    if (updated.respostaNaoEntendida) {
+      await answerTelegramCallback({
+        botToken: deps.botToken,
+        callbackQueryId: cq.id,
+        text: updated.respostaNaoEntendida,
+        showAlert: true,
+        ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      })
+    }
+    return
+  }
   defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
 
   // FIX-UP L4-T27 (revisão, item 3): guarda o aviso ANTES de decidir qual
@@ -869,6 +883,20 @@ export async function handleTelegramQuestionReply(
     return true
   }
   if (!updated) return true // pergunta sumiu entre o findFirst e o answer (corrida rara); nada a colapsar
+
+  // Resposta que o tratador não conseguiu usar: a pergunta segue aberta, não
+  // colapsa, e o dono recebe o motivo (com exemplo) NO MESMO chat, uma vez.
+  if (updated.respostaNaoEntendida !== undefined) {
+    if (updated.respostaNaoEntendida) {
+      await sendTelegramMessage({
+        botToken: deps.botToken,
+        chatId,
+        text: updated.respostaNaoEntendida,
+        ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      })
+    }
+    return true
+  }
 
   const options = Array.isArray(question.options)
     ? (question.options as unknown as TelegramQuestionOption[])
@@ -1673,8 +1701,13 @@ export async function handleTelegramUpdate(
         // esta função já usa pros outros ramos (quem chama, em
         // plugins/telegram.ts, envia via sendTelegramMessage): nunca um
         // envio duplicado por dentro.
+        let registrada: Awaited<ReturnType<AgentQuestionService['answer']>>
         try {
-          await deps.agentQuestionService.answer(active.questionId, message.text.trim(), 'telegram')
+          registrada = await deps.agentQuestionService.answer(
+            active.questionId,
+            message.text.trim(),
+            'telegram'
+          )
         } catch (err) {
           const mensagem = err instanceof Error ? err.message : String(err)
           deps.onError?.(
@@ -1688,6 +1721,13 @@ export async function handleTelegramUpdate(
             chatId,
             text: 'Não deu para registrar sua resposta agora. Tente de novo em instantes.',
           }
+        }
+        // Resposta que o tratador não conseguiu usar: a pergunta segue aberta e o
+        // estado de digitação fica, para o dono tentar de novo na mensagem seguinte.
+        if (registrada?.respostaNaoEntendida !== undefined) {
+          return registrada.respostaNaoEntendida
+            ? { chatId, text: registrada.respostaNaoEntendida }
+            : null
         }
         defaultAgentQuestionStateManager.clearActiveTypingQuestion(link.userId)
         return {

@@ -897,6 +897,16 @@ export const painelRoutes = async (
         // Corrida rara: sumiu entre o findUnique e o answer.
         return reply.code(404).send({ error: 'Decisão não encontrada.' })
       }
+      // O tratador não conseguiu usar a resposta (ex.: "a qual tarefa?" sem número
+      // que sirva): a pergunta segue aberta e a tela mostra o motivo, em português.
+      if (atualizada.respostaNaoEntendida !== undefined) {
+        return reply.code(409).send({
+          code: 'RESPOSTA_NAO_ENTENDIDA',
+          error:
+            atualizada.respostaNaoEntendida ||
+            'Ainda não consegui usar essa resposta. A decisão continua aberta.',
+        })
+      }
 
       // D70: "quem responde primeiro fecha o outro canal" — a resposta já
       // está gravada (answer() é a fonte de verdade); isto só tenta colapsar

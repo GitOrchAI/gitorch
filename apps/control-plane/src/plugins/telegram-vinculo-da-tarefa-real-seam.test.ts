@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import Fastify from 'fastify'
+import Fastify, { type FastifyInstance } from 'fastify'
 import type { PrismaClient } from '@prisma/client'
 import { telegramPlugin } from './telegram.js'
 
@@ -74,6 +74,11 @@ describe('resposta do dono ao vínculo da tarefa (real seam)', () => {
     const prisma = buildFakePrisma(opcoes)
     const app = Fastify({ logger: false })
     app.decorate('prisma', prisma as unknown as PrismaClient)
+    // A borda externa do GitHub: o leitor de credencial devolve um token de teste e o
+    // `fetch` global é trocado em cada teste que precisa conferir a tarefa.
+    app.decorate('engineConnections', {
+      getRawGithubToken: async () => 'token-de-teste',
+    } as unknown as FastifyInstance['engineConnections'])
     await app.register(telegramPlugin)
     const perguntas = app.agentQuestionService
     if (!perguntas) throw new Error('o plugin do Telegram não decorou o serviço de perguntas')
@@ -115,6 +120,77 @@ describe('resposta do dono ao vínculo da tarefa (real seam)', () => {
       'banco fora'
     )
     expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    await app.close()
+  })
+
+  function issueDoGithub(estado: 'open' | 'closed' | 'ausente') {
+    const chamadas: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (entrada: unknown) => {
+        const url = new URL(String(entrada))
+        chamadas.push(url.pathname)
+        if (estado === 'ausente') return new Response('{}', { status: 404 })
+        return new Response(JSON.stringify({ state: estado, number: 3976 }), { status: 200 })
+      })
+    )
+    return chamadas
+  }
+
+  const OPCOES_PADRAO = [
+    { label: '#713 — wishlist', value: 'vinculo-issue-713' },
+    { label: 'Nenhuma destas', value: 'nenhuma-destas' },
+  ]
+
+  test('resposta "3976", sem "#", vincula o pull request à tarefa e fecha a pergunta', async () => {
+    const chamadas = issueDoGithub('open')
+    const { app, prisma, perguntas } = await montar(OPCOES_PADRAO)
+
+    const resultado = await perguntas.answer('q_1', '3976', 'telegram')
+
+    expect(chamadas).toEqual(['/repos/acme/api/issues/3976'])
+    expect(prisma._upserts).toHaveLength(1)
+    expect(prisma._upserts[0]!.update).toMatchObject({ issueNumber: 3976, vinculoOrigem: 'dono' })
+    expect(prisma.agentQuestion.update).toHaveBeenCalled()
+    expect(resultado?.respostaNaoEntendida).toBeUndefined()
+    await app.close()
+  })
+
+  test('resposta "nenhuma" segue o caminho de "nenhuma destas": não mexe na ficha e fecha a pergunta', async () => {
+    const chamadas = issueDoGithub('open')
+    const { app, prisma, perguntas } = await montar(OPCOES_PADRAO)
+
+    const resultado = await perguntas.answer('q_1', 'nenhuma', 'telegram')
+
+    expect(chamadas).toEqual([])
+    expect(prisma._upserts).toHaveLength(0)
+    expect(prisma.agentQuestion.update).toHaveBeenCalled()
+    expect(resultado?.respostaNaoEntendida).toBeUndefined()
+    await app.close()
+  })
+
+  test('resposta "ok" não fecha a pergunta e gera UMA mensagem com exemplo', async () => {
+    issueDoGithub('open')
+    const { app, prisma, perguntas } = await montar(OPCOES_PADRAO)
+
+    const resultado = await perguntas.answer('q_1', 'ok', 'telegram')
+
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    expect(prisma._upserts).toHaveLength(0)
+    expect(resultado?.status).toBe('open')
+    expect(resultado?.respostaNaoEntendida).toContain('por exemplo 3976')
+    await app.close()
+  })
+
+  test('tarefa citada que não existe mais: pergunta segue aberta e o dono recebe a explicação', async () => {
+    issueDoGithub('ausente')
+    const { app, prisma, perguntas } = await montar(OPCOES_PADRAO)
+
+    const resultado = await perguntas.answer('q_1', 'é a 3976', 'telegram')
+
+    expect(prisma._upserts).toHaveLength(0)
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    expect(resultado?.respostaNaoEntendida).toContain('A tarefa #3976 não está aberta')
     await app.close()
   })
 })
