@@ -90,7 +90,7 @@ describe('processarRespostaDoVinculoDaTarefa', () => {
     const m = montar()
 
     await processarRespostaDoVinculoDaTarefa(
-      { dedupKey: CHAVE, resposta: 'é a tarefa #42, a do carrinho', opcoes: OPCOES },
+      { dedupKey: CHAVE, resposta: 'é a tarefa #42', opcoes: OPCOES },
       m.deps
     )
 
@@ -207,7 +207,7 @@ describe('processarRespostaDoVinculoDaTarefa', () => {
     const m = montar()
 
     const r = await processarRespostaDoVinculoDaTarefa(
-      { dedupKey: CHAVE, resposta: 'acho que #42 ou #43', opcoes: OPCOES },
+      { dedupKey: CHAVE, resposta: '#42 ou #43', opcoes: OPCOES },
       m.deps
     )
 
@@ -236,7 +236,7 @@ describe('processarRespostaDoVinculoDaTarefa', () => {
     const m = montar()
 
     await processarRespostaDoVinculoDaTarefa(
-      { dedupKey: CHAVE, resposta: '#42, sim, a #42', opcoes: OPCOES },
+      { dedupKey: CHAVE, resposta: '#42, #42', opcoes: OPCOES },
       m.deps
     )
 

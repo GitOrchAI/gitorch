@@ -16,12 +16,6 @@ export type InterpretacaoDaResposta =
   | { tipo: 'outro-repositorio'; repositorio: string }
   | { tipo: 'nao-entendida' }
 
-/** Acima disto não é número de tarefa (evita estouro e telefone colado). */
-const MAX_DIGITOS = 9
-
-const ANO_MIN = 1990
-const ANO_MAX = 2100
-
 const HOSTS_DO_GITHUB = new Set(['github.com', 'www.github.com'])
 
 /** Minúsculas, sem acento, `º` vira `o`. */
@@ -33,7 +27,10 @@ function soPalavras(normalizado: string): string {
   return normalizado
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
-    .replace(/( (por favor|obrigado|obrigada|brigado|valeu|vlw))+$/, '')
+    .replace(
+      /(^| )(por favor|obrigado|obrigada|brigado|valeu|vlw)( (por favor|obrigado|obrigada|brigado|valeu|vlw))*$/,
+      ''
+    )
 }
 
 /** Padrões que, sozinhos, dizem "não há tarefa". Sobre texto já passado por `soPalavras`. */
@@ -44,8 +41,6 @@ const PADROES_DE_NENHUMA: RegExp[] = [
   /^sem (tarefa|task|issue)( nenhuma)?$/,
   /^(pode )?(seguir|segue)( (sem|com) (tarefa|task|issue|nenhuma))?$/,
 ]
-
-const PALAVRAS_DE_NEGACAO = /\b(nao|nenhum|nenhuma|sem|avulso|avulsa)\b/
 
 interface LinkDeTarefa {
   repositorio: string
@@ -60,9 +55,9 @@ function extrairLinks(texto: string): { links: LinkDeTarefa[]; resto: string } {
     try {
       url = new URL(achado.replace(/[.,;:!?]+$/, ''))
     } catch {
-      return ' '
+      return ' link-externo '
     }
-    if (!HOSTS_DO_GITHUB.has(url.hostname.toLowerCase())) return ' '
+    if (!HOSTS_DO_GITHUB.has(url.hostname.toLowerCase())) return ' link-externo '
     const [dono, repo, tipo, numero] = url.pathname.split('/').filter(Boolean)
     if (dono && repo && tipo === 'issues' && numero && /^\d{1,9}$/.test(numero)) {
       links.push({ repositorio: `${dono}/${repo}`, numero: Number(numero) })
@@ -72,35 +67,42 @@ function extrairLinks(texto: string): { links: LinkDeTarefa[]; resto: string } {
   return { links, resto }
 }
 
-const PREFIXO_EXPLICITO = /(tarefa|issue|task|numero|no|n)\s*[:.]?\s*$/
+/**
+ * Gramática FECHADA de um item de resposta (texto já normalizado e aparado):
+ * [frase de apontar] [rótulo] [#]número, e nada mais. Qualquer palavra fora
+ * disto torna a resposta "não entendida"; número no meio de frase nunca vale.
+ */
+const ITEM_DE_TAREFA =
+  /^(?:(?:e|eh|seria|era)\s+)?(?:(?:a|o|da|do|de)\s+)?(?:(?:tarefa|issue|task)\s+)?(?:(?:numero|no|n)\s*[:.]?\s*)?#?(\d{1,9})$/
 
-const MOEDA_ANTES = /(r\$|us\$|\$)\s*$/
-const UNIDADE_DEPOIS =
-  /^\s*(reais|real|dolares?|usd|brl|k\b|mil\b|h\b|hs\b|hrs?\b|horas?\b|min\b|minutos?\b|seg\b|segundos?\b|dias?\b|semanas?\b|mes(es)?\b|anos?\b|%|por cento|x\b)/
-const PREFIXO_DE_ANO = /(^|\s)(em|de|desde|ate|ano|ano de)\s+$/
+/** Separadores entre itens: vírgula, "e", "ou", ou espaço entre números. */
+const SEPARADOR_DE_ITENS = /\s*,\s*|\s+(?:e|ou)\s+|(?<=\d)\s+(?=#?\d)/
 
-/** Os números do texto que podem ser tarefa, na ordem em que aparecem, sem repetição. */
-function numerosDeTarefa(normalizado: string): number[] {
-  const achados: number[] = []
-  for (const m of normalizado.matchAll(/(?<![a-z0-9])(#?)(\d+)(?![a-z0-9])/g)) {
-    const [, cerquilha, digitos] = m
-    if (digitos === undefined || digitos.length > MAX_DIGITOS) continue
-    const numero = Number(digitos)
-    if (numero <= 0) continue
-    const inicio = m.index ?? 0
-    const antes = normalizado.slice(0, inicio)
-    const depois = normalizado.slice(inicio + m[0].length)
+/** Tira pontuação/emoji das pontas e cortesias finais ("por favor", "obrigado"). */
+function aparar(normalizado: string): string {
+  const semPontas = (t: string) => t.replace(/^[^a-z0-9#]+/, '').replace(/[^a-z0-9%]+$/, '')
+  let t = semPontas(normalizado).replace(/\s+/g, ' ')
+  t = semPontas(
+    t.replace(
+      /(^| )(por favor|obrigado|obrigada|brigado|valeu|vlw)( (por favor|obrigado|obrigada|brigado|valeu|vlw))*$/,
+      ''
+    )
+  )
+  return t
+}
 
-    const explicito = cerquilha === '#' || PREFIXO_EXPLICITO.test(antes)
-    if (!explicito) {
-      // Parte de decimal, milhar, horário ou data: o vizinho imediato é separador + dígito.
-      if (/\d[.,:/]$/.test(antes) || /^[.,:/]\d/.test(depois)) continue
-      if (MOEDA_ANTES.test(antes) || UNIDADE_DEPOIS.test(depois)) continue
-      if (numero >= ANO_MIN && numero <= ANO_MAX && PREFIXO_DE_ANO.test(antes)) continue
-    }
-    if (!achados.includes(numero)) achados.push(numero)
+/** Os números da resposta INTEIRA, ou null se qualquer parte fugir da gramática. */
+function numerosDaResposta(aparado: string): number[] | null {
+  if (aparado === '') return null
+  const numeros: number[] = []
+  for (const parte of aparado.split(SEPARADOR_DE_ITENS)) {
+    const m = ITEM_DE_TAREFA.exec(parte.trim())
+    if (!m || m[1] === undefined) return null
+    const numero = Number(m[1])
+    if (numero <= 0) return null
+    if (!numeros.includes(numero)) numeros.push(numero)
   }
-  return achados
+  return numeros
 }
 
 export function interpretarRespostaDeVinculo(
@@ -113,19 +115,22 @@ export function interpretarRespostaDeVinculo(
   if (alheio) return { tipo: 'outro-repositorio', repositorio: alheio.repositorio }
 
   const normalizado = normalizar(resto)
-  const numeros = [...links.map((l) => l.numero)]
-  for (const n of numerosDeTarefa(normalizado)) if (!numeros.includes(n)) numeros.push(n)
 
-  const palavras = soPalavras(normalizado)
+  let numeros: number[] | null
+  if (links.length > 0) {
+    // Link do próprio repositório vale só quando é a resposta inteira.
+    if (aparar(normalizado) !== '') return { tipo: 'nao-entendida' }
+    numeros = [...new Set(links.map((l) => l.numero))]
+  } else {
+    numeros = numerosDaResposta(aparar(normalizado))
+  }
 
-  if (numeros.length > 0) {
-    // "não é a 3976" e "sem tarefa, 3976": a negação muda o sentido do número.
-    if (PALAVRAS_DE_NEGACAO.test(palavras)) return { tipo: 'nao-entendida' }
+  if (numeros && numeros.length > 0) {
     const [unico, ...outros] = numeros
     if (unico !== undefined && outros.length === 0) return { tipo: 'tarefa', numero: unico }
     return { tipo: 'varias', numeros }
   }
 
-  if (PADROES_DE_NENHUMA.some((p) => p.test(palavras))) return { tipo: 'nenhuma' }
+  if (PADROES_DE_NENHUMA.some((p) => p.test(soPalavras(normalizado)))) return { tipo: 'nenhuma' }
   return { tipo: 'nao-entendida' }
 }
