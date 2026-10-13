@@ -112,7 +112,7 @@ confere "soma conferida por sha256sum -c" bash -c "cd '$S1' && sha256sum -c 'git
 confere "cópia do manifesto fora do tar" test -s "$S1/MANIFESTO.json"
 
 LISTA="$TMP/lista.txt"
-tar -tzf "$TAR" >"$LISTA" 2>/dev/null || true
+if ! tar -tzf "$TAR" >"$LISTA"; then nok "tar lista o conteúdo do pacote"; fi
 tem() { grep -qE "$1" "$LISTA"; }
 confere "MANIFESTO.json dentro do tar" tem '^(\./)?MANIFESTO\.json$'
 confere "commit-publicado.txt dentro do tar" tem '^(\./)?apps/control-plane/dist/commit-publicado\.txt$'
@@ -133,7 +133,7 @@ confere_nao "devDependency que o serviço não usa fora do tar" tem '\.pnpm/vite
 
 # Links simbólicos preservados como links (não viram cópia).
 TV="$TMP/tar-verboso.txt"
-tar -tvzf "$TAR" >"$TV" 2>/dev/null || true
+if ! tar -tvzf "$TAR" >"$TV"; then nok "tar lista o conteúdo detalhado do pacote"; fi
 confere "link do pnpm preservado" grep -qE 'apps/control-plane/node_modules/fastify -> \.\./\.\./\.\./node_modules/\.pnpm/fastify@1/node_modules/fastify' "$TV"
 confere "link entre pacotes do monorepo preservado" grep -qE 'apps/control-plane/node_modules/@gitorch/agents -> \.\./\.\./\.\./\.\./packages/agents' "$TV"
 
@@ -154,7 +154,9 @@ confere "manifesto declara nodeMajor igual ao major do node desta máquina" node
   if (!Number.isInteger(m.nodeMajor) || m.nodeMajor !== major) process.exit(1);
   if (!m.node.startsWith("v" + m.nodeMajor + ".")) process.exit(1);' "$MAN"
 confere_nao "manifesto não tem endereço (nenhuma URL em campo algum)" grep -qiE 'https?://|API_URL' "$MAN"
-confere_nao "manifesto do tar também não tem endereço" bash -c "tar -xzOf '$TAR' ./MANIFESTO.json 2>/dev/null | grep -qiE 'https?://|API_URL' || tar -xzOf '$TAR' MANIFESTO.json 2>/dev/null | grep -qiE 'https?://|API_URL'"
+MAN_DO_TAR="$TMP/manifesto-do-tar.json"
+if ! tar -xzOf "$TAR" MANIFESTO.json >"$MAN_DO_TAR"; then nok "tar extrai o manifesto do pacote"; fi
+confere_nao "manifesto do tar também não tem endereço" grep -qiE 'https?://|API_URL' "$MAN_DO_TAR"
 confere "manifesto lista componentes com tamanho" node -e '
   const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   const nomes = m.componentes.map((c) => c.nome);
@@ -162,12 +164,12 @@ confere "manifesto lista componentes com tamanho" node -e '
     if (!nomes.includes(n)) process.exit(1);
   }
   if (!m.componentes.every((c) => Number.isInteger(c.bytes) && c.bytes >= 0)) process.exit(1);' "$MAN"
-confere "manifesto do tar igual à cópia de fora" bash -c "tar -xzOf '$TAR' MANIFESTO.json 2>/dev/null | cmp -s - '$MAN' || tar -xzOf '$TAR' ./MANIFESTO.json | cmp -s - '$MAN'"
+confere "manifesto do tar igual à cópia de fora" cmp -s "$MAN_DO_TAR" "$MAN"
 
 # O pacote aberto numa pasta vazia traz o mesmo commit lido pelo serviço.
 ABERTO="$TMP/aberto"
 mkdir -p "$ABERTO"
-tar -xzf "$TAR" -C "$ABERTO" 2>/dev/null || true
+if ! tar -xzf "$TAR" -C "$ABERTO"; then nok "tar abre o pacote numa pasta vazia"; fi
 confere "commit-publicado.txt aberto contém o commit" bash -c "[ \"\$(cat '$ABERTO/apps/control-plane/dist/commit-publicado.txt')\" = '$COMMIT' ]"
 confere "link do pnpm continua resolvendo depois de aberto" test -f "$ABERTO/apps/control-plane/node_modules/fastify/index.js"
 confere "dependência da dependência resolve depois de aberto" test -f "$ABERTO/apps/control-plane/node_modules/fastify/../pino/index.js"
@@ -218,6 +220,39 @@ if roda "$R5" "$COMMIT" "$TMP/saida-sem-front" >"$TMP/sem-front.log" 2>&1; then
 else
   ok "falha sem o front"
 fi
+
+echo "== caso 6: erro ao filtrar a lista não pode virar pacote pronto =="
+# Ferramentas de mentira à frente no PATH: simulam falha de leitura/escrita
+# no ponto do filtro da lista (grep e sed) sem depender de permissão do disco.
+R6="$TMP/arvore-filtro"
+monta_arvore "$R6"
+FALSAS="$TMP/ferramentas-falsas"
+mkdir -p "$FALSAS"
+for f in grep sed; do
+  printf '#!/usr/bin/env bash\necho "%s falso: erro de leitura" >&2\nexit 2\n' "$f" >"$FALSAS/$f"
+  chmod +x "$FALSAS/$f"
+done
+rc=0
+PATH="$FALSAS:$PATH" roda "$R6" "$COMMIT" "$TMP/saida-filtro" >"$TMP/filtro.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then ok "falha (exit $rc) quando o filtro da lista dá erro"; else nok "deveria falhar quando o filtro da lista dá erro"; fi
+confere_nao "não diz 'pacote pronto' com o filtro falhando" grep -q 'pacote pronto' "$TMP/filtro.log"
+confere_nao "nenhum tar deixado para trás com o filtro falhando" test -e "$TMP/saida-filtro/gitorch-$COMMIT.tar.gz"
+
+echo "== caso 7: lista final vazia =="
+# Filtro que "termina bem" mas não devolve nada: o empacotador não pode seguir.
+R7="$TMP/arvore-lista-vazia"
+monta_arvore "$R7"
+VAZIAS="$TMP/ferramentas-vazias"
+mkdir -p "$VAZIAS"
+for f in grep sed; do
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$VAZIAS/$f"
+  chmod +x "$VAZIAS/$f"
+done
+rc=0
+PATH="$VAZIAS:$PATH" roda "$R7" "$COMMIT" "$TMP/saida-vazia" >"$TMP/vazia.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then ok "falha (exit $rc) com a lista final vazia"; else nok "deveria falhar com a lista final vazia"; fi
+confere "mensagem em português diz que a lista ficou vazia" grep -q 'lista final do pacote ficou vazia' "$TMP/vazia.log"
+confere_nao "não diz 'pacote pronto' com a lista vazia" grep -q 'pacote pronto' "$TMP/vazia.log"
 
 echo
 echo "passos ok: $PASSOS, falhas: $FALHAS"

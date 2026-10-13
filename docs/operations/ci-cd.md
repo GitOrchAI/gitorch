@@ -87,7 +87,7 @@ A cada merge na main cujo CI terminou verde, o GitHub **monta a versão e public
 - **Onde baixar:** artefato `gitorch-pacote-<commit>` da execução, com três arquivos: `gitorch-<commit>.tar.gz`, `gitorch-<commit>.tar.gz.sha256` e `MANIFESTO.json`. **A retenção é de 7 dias.**
 - **Como conferir a soma:** na pasta onde estão o tar e o `.sha256`, `sha256sum -c gitorch-<commit>.tar.gz.sha256` (tem de imprimir `OK`).
 - **Configuração necessária:** o **segredo** de repositório `GITORCH_PUBLIC_API_URL` (Settings, Secrets and variables, Actions, Secrets) é o endereço público da API que o front embute no build. É segredo e não variável porque o registro do CI é público: segredo é mascarado, variável não. Sem ele, ou se não começar com `https://`, o job falha logo no início com a mensagem dizendo qual segredo configurar, sem mostrar o valor. O endereço fica só dentro do front construído (que é servido ao navegador); não entra no `MANIFESTO.json`.
-- **Node da máquina de destino:** a máquina de destino precisa rodar o mesmo major do Node do manifesto (campo `nodeMajor`), porque o pacote leva módulos nativos compilados.
+- **Node da máquina de destino:** a máquina de destino precisa rodar o mesmo major do Node do manifesto (campo `nodeMajor`), porque o pacote leva módulos nativos compilados. Quem instala o pacote deve recusar a instalação quando o major do Node da máquina for diferente do `nodeMajor` do manifesto.
 - **Como é montado:** `scripts/ci/empacotar-versao.sh <commit> <pasta>` parte do checkout já construído e não constrói nada; `scripts/ci/empacotar-versao.test.sh` testa o empacotador contra uma árvore mínima e roda no job `zero-tolerance` por `scripts/ci/empacotar-versao.test.ts`.
 
 ## Testes dos scripts de automação
