@@ -348,6 +348,13 @@ export interface SmDelegationOptions {
   reservarLugarDaIssue?: (issueNumber: number) => Promise<boolean>
   /** Devolve a reserva quando o dev externo recusa criar a sessão. */
   liberarLugarDaIssue?: (issueNumber: number) => Promise<void>
+  /**
+   * Guarda da trava de entrega: `false` = há uma troca de versão em curso e o
+   * SM não abre trabalho novo neste ciclo (nenhuma sessão, nenhuma etiqueta).
+   * O que já está em andamento segue; as tarefas voltam a ser delegadas no
+   * primeiro ciclo depois que a trava soltar. Ausente: sempre permitido.
+   */
+  trabalhoNovoPermitido?: () => Promise<boolean>
   fetchImpl?: typeof fetch
   /**
    * Linhas de sessão abertas deste projeto. É a fila real: issue com linha viva
@@ -848,33 +855,40 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
 
   let travadaPorVaga = false
   let prontasNoDiagnostico = 0
-  const escolhidas = falhaAoProtegerContraDuplicata
-    ? []
-    : escolherParaDelegar({
-        candidatas,
-        arquivosEmTrabalho: [...arquivosEmTrabalho],
-        sessoesVivas: options.sessoesVivas ?? [],
-        issuesComPrAbertoDoDev: comPrAbertoDoDev,
-        delegadasHoje: options.delegadasHoje ?? 0,
-        onDiagnostico: (d) => {
-          travadaPorVaga = d.travadaPorVaga
-          prontasNoDiagnostico = d.prontas
-        },
-        // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
-        // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
-        // projeto — e 15 linhas COMPLETED abertas no gitorch zeravam a folga e
-        // paravam a delegação (medido 29/08).
-        ...(options.ocupamVagaNaConta !== undefined
-          ? { ocupamVagaNaConta: options.ocupamVagaNaConta }
-          : {}),
-        ...(options.vivasNaConta !== undefined ? { vivasNaConta: options.vivasNaConta } : {}),
-        ...(options.issuesComAnalisePendente
-          ? { issuesComAnalisePendente: options.issuesComAnalisePendente }
-          : {}),
-        tetoConcorrentes: options.tetoConcorrentes ?? 3,
-        tetoDiario: options.tetoDiario ?? 15,
-        capPorCiclo: cap,
-      })
+  const emEntrega = options.trabalhoNovoPermitido ? !(await options.trabalhoNovoPermitido()) : false
+  if (emEntrega) {
+    options.onWarn(
+      'sm-delegation: em entrega: trabalho novo adiado, nada será delegado neste ciclo'
+    )
+  }
+  const escolhidas =
+    falhaAoProtegerContraDuplicata || emEntrega
+      ? []
+      : escolherParaDelegar({
+          candidatas,
+          arquivosEmTrabalho: [...arquivosEmTrabalho],
+          sessoesVivas: options.sessoesVivas ?? [],
+          issuesComPrAbertoDoDev: comPrAbertoDoDev,
+          delegadasHoje: options.delegadasHoje ?? 0,
+          onDiagnostico: (d) => {
+            travadaPorVaga = d.travadaPorVaga
+            prontasNoDiagnostico = d.prontas
+          },
+          // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
+          // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
+          // projeto — e 15 linhas COMPLETED abertas no gitorch zeravam a folga e
+          // paravam a delegação (medido 29/08).
+          ...(options.ocupamVagaNaConta !== undefined
+            ? { ocupamVagaNaConta: options.ocupamVagaNaConta }
+            : {}),
+          ...(options.vivasNaConta !== undefined ? { vivasNaConta: options.vivasNaConta } : {}),
+          ...(options.issuesComAnalisePendente
+            ? { issuesComAnalisePendente: options.issuesComAnalisePendente }
+            : {}),
+          tetoConcorrentes: options.tetoConcorrentes ?? 3,
+          tetoDiario: options.tetoDiario ?? 15,
+          capPorCiclo: cap,
+        })
   const porNumero = new Map(abertas.map((t) => [t.number, t]))
 
   const delegated: number[] = []

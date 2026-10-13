@@ -14,6 +14,7 @@ import {
   type AssistedLoginOptions,
   type LoginState,
 } from '../services/assisted-login.js'
+import { podeIniciarTrabalho, recusarPorEntrega } from '../services/trava-de-entrega.js'
 
 // Seam de teste/fake: permite injetar um `runDeviceLoginImpl` fake em vez de
 // disparar um container podman de verdade (usado pelos testes de
@@ -47,6 +48,9 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
     image: process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest',
     ...(opts.runDeviceLoginImpl ? { runDeviceLoginImpl: opts.runDeviceLoginImpl } : {}),
   })
+
+  // A rota interna do entregador conta os logins abertos por este serviço.
+  app.decorate('assistedLogin', assistedLogin)
 
   // Lista as conexões de motor do usuário autenticado (só status).
 
@@ -187,6 +191,11 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
       return reply
         .code(400)
         .send({ error: `runtime não suportado para login assistido: ${runtime}` })
+    }
+    // Troca de versão em andamento: o login assistido abre um processo e uma
+    // sessão em memória que a troca cortaria.
+    if (!(await podeIniciarTrabalho(app.prisma, (m) => app.log.warn(m)))) {
+      return recusarPorEntrega(reply)
     }
     // O motor loga DENTRO do ambiente isolado do user: HOME = dir 0700 do
     // ambiente, então a credencial que o CLI grava vive ali, protegida, e a

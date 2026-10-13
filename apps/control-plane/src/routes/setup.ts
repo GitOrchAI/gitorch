@@ -6,6 +6,7 @@ import { F6_AGENT_ROLES, isF6AgentRuntime, type F6AgentRuntime } from '@gitorch/
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import { resolveOwnerId as resolveOwnerIdCanonico } from '../lib/resolve-owner-id.js'
 import { resolveEngineId } from '../services/engine-connection.js'
+import { podeIniciarTrabalho, recusarPorEntrega } from '../services/trava-de-entrega.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
 import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
@@ -597,6 +598,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       const user = request.user
       if (!user) {
         return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
+      }
+      // Troca de versão em andamento: o cadastro cria a missão de provisionamento.
+      if (!(await podeIniciarTrabalho(app.prisma, (m) => app.log.warn(m)))) {
+        return recusarPorEntrega(reply)
       }
 
       const { repos, engines, plan, envConfig, autonomia } = request.body as SetupSubmitBody
@@ -1267,6 +1272,9 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       const user = request.user
       if (!user) {
         return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      if (!(await podeIniciarTrabalho(app.prisma, (m) => app.log.warn(m)))) {
+        return recusarPorEntrega(reply)
       }
       const ownerId = await resolveOwnerId(user)
       const { projects } = (request.body ?? {}) as { projects?: string[] }

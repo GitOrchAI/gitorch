@@ -157,6 +157,8 @@ import {
 } from '../services/aviso-por-janela.js'
 import { decidirAvisoDeTickQuebrado } from '../services/aviso-de-tick-quebrado.js'
 import { notificadorDaInstancia } from '../services/banco-atrasado.js'
+import { podeIniciarTrabalho, travaDe } from '../services/trava-de-entrega.js'
+import { vigiarTravaEsquecida } from '../services/aviso-de-trava-esquecida.js'
 import { classificarAviso } from '../services/classe-do-aviso.js'
 
 /** ESTEIRA-T11: minutos que a esteira pode ficar travada por vaga antes de avisar. */
@@ -3058,6 +3060,7 @@ export const varrerRespostasPrParado = async (app: FastifyInstance) => {
                         projeto.id
                       )) ?? undefined
                     return criarSessaoJules({
+                      podeIniciar: () => podeIniciarTrabalho(app.prisma),
                       apiKey,
                       repository: args.repository,
                       // Sempre a base do projeto (retomarPrReprovado): o ramo
@@ -3212,16 +3215,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   )
   const remoteStack = buildRemoteRuntimeStackIfConfigured(app)
 
+  // Guarda única da trava de entrega para tudo que INICIA trabalho neste plugin.
+  // Falha de leitura conta como "não pode" (ver services/trava-de-entrega.ts).
+  const podeIniciar = (): Promise<boolean> =>
+    podeIniciarTrabalho(app.prisma, (m) => app.log.warn(m))
+
   // Missão presa vira failed: cobre 'running' passado de STALE_RUNNING_MS e
   // 'pending' que nunca chegou a rodar (processo morto entre criar e iniciar).
   const failStuckMissions = async (): Promise<void> => {
     const staleBefore = new Date(Date.now() - STALE_RUNNING_MS)
     const pendingBefore = new Date(Date.now() - PENDING_TIMEOUT_MS)
+    // Em entrega a fila para de andar de propósito: uma missão `pending` que
+    // espera a troca de versão acabar não está "presa", e marcá-la como falha
+    // só porque a atualização demorou perderia o trabalho que o dono pediu.
+    const filaParadaPelaEntrega = !(await podeIniciar())
     const stuck = await app.prisma.mission.updateMany({
       where: {
         OR: [
           { status: 'running', startedAt: { lt: staleBefore } },
-          { status: 'pending', createdAt: { lt: pendingBefore } },
+          ...(filaParadaPelaEntrega
+            ? []
+            : [{ status: 'pending', createdAt: { lt: pendingBefore } }]),
         ],
       },
       data: {
@@ -3357,6 +3371,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     origem: OrigemDoDisparo = 'agenda'
   ): Promise<TriggerResult> => {
     await failStuckMissions()
+
+    // Troca de versão em andamento: nenhuma missão nasce. Vem DEPOIS de
+    // `failStuckMissions` de propósito: a limpeza de missão presa tem de seguir
+    // rodando, senão uma missão morta seguraria a troca para sempre.
+    if (!(await podeIniciar())) {
+      app.log.info(`[Scheduler] em entrega: trabalho novo adiado (${role}, origem ${origem})`)
+      return { triggered: false, reason: 'em-entrega' }
+    }
 
     // Concorrência elástica: teto de missões ativas simultâneas na VM. Default 1
     // (comportamento atual); sobe via env quando a VM-MT-SaaS (32GB) entrar.
@@ -4159,6 +4181,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const delegation = await runSmDelegation({
             repository: project.wingId,
             githubToken: railsToken as string,
+            trabalhoNovoPermitido: podeIniciar,
             // O NÍVEL DESTE PROJETO, e sem isto a esteira para.
             //
             // Medido em produção em 30/08: o Scrum Master saiu de 82 missões
@@ -4222,6 +4245,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               }
 
               return criarSessaoJules({
+                podeIniciar,
                 // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
                 apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
@@ -5817,6 +5841,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // definição (a retomada mesma cuida de acordá-la), e queimar a janela do
     // cron não muda nada além de atrasar a PRÓXIMA verificação em uma hora.
     'cota-esperando',
+    // Troca de versão em andamento: a janela do cron é devolvida para o papel
+    // rodar assim que a trava soltar, em vez de perdê-la.
+    'em-entrega',
   ])
 
   /**
@@ -5946,6 +5973,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // cada tick (mesma cadência do resto do dispatch); claim condicional evita
   // dois ticks pegarem a mesma missão.
   const processSetupMissions = async (): Promise<void> => {
+    // Tomar a missão de `pending` para `running` é iniciar trabalho: em entrega
+    // elas ficam na fila, intactas, até a trava soltar.
+    if (!(await podeIniciar())) return
     let pending
     try {
       pending = await app.prisma.mission.findMany({
@@ -7544,6 +7574,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             },
             criarSessaoDev: async ({ repository, startingBranch, titulo, prompt }) =>
               criarSessaoJules({
+                podeIniciar,
                 apiKey: (await chaveDoDevDoProjeto(linha.projectId)) ?? undefined,
                 repository,
                 // Base do projeto (retomarPrReprovado) — nunca o ramo do PR antigo.
@@ -8672,6 +8703,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sessão fazia o conserto e nunca publicava. O antigo é fechado como
     // substituído quando o novo aparece (pr-substituido.ts).
     const criada = await criarSessaoJules({
+      podeIniciar,
       apiKey: (await chaveDoDevDoProjeto(args.projeto.id)) ?? undefined,
       repository: args.projeto.wingId,
       ...montarSessaoDeConsertoDoVigia({
@@ -11874,6 +11906,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * que o restante do produto evita reinventar.
    */
   const retomarMissoesEsperandoCota = async (): Promise<void> => {
+    // Acordar missão que esperava cota (waiting -> running) é iniciar trabalho.
+    if (!(await podeIniciar())) return
     const agoraIso = new Date().toISOString()
     let adormecidas: Array<{
       id: string
@@ -13099,7 +13133,50 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     onDebug: (mensagem) => app.log.debug(mensagem),
   })
 
+  // TRAVA DE ENTREGA no relógio. Uma troca de versão pede que o produto pare de
+  // INICIAR trabalho novo; o que já está rodando termina e nada é cancelado.
+  // Em vez de espalhar um `if` por etapa, o tique decide UMA vez no começo e as
+  // etapas que iniciam trabalho (abrir/tomar missão, abrir sessão do dev,
+  // escrever no GitHub do cliente) passam por `medirEtapaDeTrabalhoNovo`, que
+  // as pula. Manutenção, leitura e fechamento do que já terminou seguem.
+  let ultimoAvisoDeTravaEsquecida: Date | null = null
+  const decidirSeEstaEmEntrega = async (): Promise<boolean> => {
+    if (await podeIniciar()) return false
+    app.log.info('[Scheduler] em entrega: trabalho novo adiado neste tique')
+    try {
+      const estado = await travaDe(app.prisma).estadoDaTrava()
+      if (estado.ligada) {
+        ultimoAvisoDeTravaEsquecida = await vigiarTravaEsquecida({
+          estado,
+          ultimoAviso: ultimoAvisoDeTravaEsquecida,
+          agora: new Date(),
+          listarProjetos: () =>
+            app.prisma.project.findMany({ where: { isActive: true }, select: { id: true } }),
+          avisar: notificadorDaInstancia(),
+          registrarNoPainel: (projectId, chave, texto) =>
+            registrarNoPainelUmaVez({ prisma: app.prisma, projectId, chave, texto }),
+          log: { warn: (m) => app.log.warn(m) },
+        })
+      }
+    } catch (err) {
+      app.log.warn(
+        err,
+        '[Scheduler] não consegui conferir a trava esquecida; tenta no próximo tique'
+      )
+    }
+    return true
+  }
+  const medirEtapaDeTrabalhoNovo = async (
+    emEntrega: boolean,
+    etapa: string,
+    fn: () => Promise<void>
+  ): Promise<void> => {
+    if (emEntrega) return
+    await medirEtapa(etapa, fn)
+  }
+
   const tick = async () => {
+    const emEntrega = await decidirSeEstaEmEntrega()
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
     // sai sem GH_TOKEN). `renovarTokensGithubDoRelogio` nunca rejeita e só
@@ -13125,8 +13202,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await medirEtapa('reconferirAcessoDoRelogio', async () => {
       await reconferirAcessoDoRelogio(app)
     })
-    await medirEtapa('processSetupMissions', () => processSetupMissions())
-    await medirEtapa('varrerSessoesDoDev', () => varrerSessoesDoDev())
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'processSetupMissions', () => processSetupMissions())
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerSessoesDoDev', () => varrerSessoesDoDev())
     // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd): ANTES dos
     // dois varredores abaixo, de propósito — são eles que fecham sessão. L4-
     // T30 (05/09, pós-D75): a reconciliação agora ENCERRA a sessão presa ela
@@ -13186,11 +13263,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // até 20 s, e o tique já passa do minuto. A etapa é disparada sem espera,
     // com guarda contra sobreposição própria; a duração continua medida (o
     // log sai quando ela termina, não dentro do tique).
-    dispararSegurancaEmSegundoPlano()
+    if (!emEntrega) dispararSegurancaEmSegundoPlano()
     // C10 (fix-up L4-T5, CSO): rede de segurança para PR duplicado LEGADO —
     // cadência própria de 6h (a função em si decide se roda ou não neste
     // tique). Nunca derruba o tique: cada projeto se isola sozinho.
-    await medirEtapa('varrerPrsDuplicadosDosProjetos', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerPrsDuplicadosDosProjetos', () =>
       varrerPrsDuplicadosDosProjetos().catch((err) =>
         app.log.warn(err, '[Scheduler] varredura de PRs duplicados falhou; tenta no próximo ciclo')
       )
@@ -13202,7 +13279,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
     // A cerimônia semanal. Nunca derruba o tique: uma retrospectiva que falha
     // não pode calar o resto do relógio.
-    await medirEtapa('rodarRetrospectiva', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'rodarRetrospectiva', () =>
       rodarRetrospectiva().catch((err) =>
         app.log.error(err, '[Scheduler] retrospectiva falhou; tenta na semana que vem')
       )
@@ -13222,7 +13299,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sem parar enquanto o resto do tique faz trabalho pesado.
     // ANTES da árvore, de propósito: fechar a tarefa é o que permite a
     // feature dela fechar em seguida, na mesma passada.
-    await medirEtapa('varrerTarefasEntregues', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerTarefasEntregues', () =>
       varrerTarefasEntregues().catch((err) =>
         app.log.error(
           err,
@@ -13230,7 +13307,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         )
       )
     )
-    await medirEtapa('varrerArvoreDosPlanos', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerArvoreDosPlanos', () =>
       varrerArvoreDosPlanos().catch((err) =>
         app.log.error(
           err,
@@ -13238,7 +13315,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         )
       )
     )
-    await medirEtapa('varrerPublicacoes', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerPublicacoes', () =>
       varrerPublicacoes().catch((err) =>
         app.log.error(err, '[Scheduler] varredura de publicações falhou; tenta no próximo tick')
       )
@@ -13255,7 +13332,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // aqui que a esteira acorda a missão que dormia esperando o motor
     // voltar. Nunca derruba o tick: cada missão se isola sozinha dentro da
     // função (try/catch por missão, ver retomarMissoesEsperandoCota).
-    await medirEtapa('retomarMissoesEsperandoCota', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'retomarMissoesEsperandoCota', () =>
       retomarMissoesEsperandoCota().catch((err) =>
         app.log.error(
           err,
@@ -13279,7 +13356,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // A sprint do quadro do cliente. Vem depois da cota e antes das missões
     // porque é barata quando não há nada a fazer (uma leitura por projeto) e
     // porque a sprint precisa existir ANTES de o Produto pendurar tarefa nela.
-    await medirEtapa('varrerSprintDosProjetos', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerSprintDosProjetos', () =>
       varrerSprintDosProjetos().catch((err) =>
         app.log.error(err, '[Scheduler] varredura de sprint falhou; tenta no próximo tick')
       )
@@ -13287,14 +13364,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // LOGO DEPOIS, e nesta ordem: o ciclo precisa existir antes de ter o que
     // pôr dentro dele. Na primeira passada de um quadro novo, a de cima cria a
     // sprint e esta já a preenche na mesma volta do relógio.
-    await medirEtapa('varrerItensDaSprint', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerItensDaSprint', () =>
       varrerItensDaSprint().catch((err) =>
         app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
       )
     )
     // Cadência dedicada (Option B) para garantir que as issues que precisam de
     // análise não fiquem presas até o próximo agendamento do RA.
-    await medirEtapa('varrerAnalisesPendentes', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerAnalisesPendentes', () =>
       varrerAnalisesPendentes().catch((err) =>
         app.log.error(
           err,
@@ -13305,7 +13382,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // L4-T8: a rede de segurança do quadro — pendura no board qualquer issue
     // aberta que ainda ficou de fora (o anexo na hora da criação é
     // best-effort). Cadência própria (6h), não trava o resto do tique.
-    await medirEtapa('varrerIssuesForaDoQuadroDosProjetos', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerIssuesForaDoQuadroDosProjetos', () =>
       varrerIssuesForaDoQuadroDosProjetos().catch((err) =>
         app.log.error(
           err,
@@ -13321,7 +13398,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       )
     )
     await medirEtapa('sweepExpiredEnvironments', () => sweepExpiredEnvironments())
-    await medirEtapa('dispararAgendas', async () => {
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'dispararAgendas', async () => {
       const now = new Date()
       let schedules
       try {
@@ -13432,7 +13509,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             tickEmAndamento = true
             void tick()
               .then(() => {
-                void varrerRespostasPrParado(app)
+                // Responder PR parado pode abrir sessão do dev: só fora da entrega.
+                void podeIniciar().then((livre) => {
+                  if (livre) void varrerRespostasPrParado(app)
+                })
 
                 estadoDoTickQuebrado = decidirAvisoDeTickQuebrado(
                   estadoDoTickQuebrado,
@@ -13518,8 +13598,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   let tickRapidoEmAndamento = false
 
   const tickRapido = async (): Promise<void> => {
+    // Vigia de PR órfão (abre sessão do dev) e os dreno das filas (acordam
+    // papéis) só INICIAM trabalho: em entrega as filas ficam intactas.
+    const emEntrega = !(await podeIniciar())
     // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás.
-    await medirEtapa('varrerPrsOrfaos', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'varrerPrsOrfaos', () =>
       varrerPrsOrfaos().catch((err) =>
         app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
       )
@@ -13527,19 +13610,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
     // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
     // próprios erros e devolve `reason`.
-    await medirEtapa('drenarPassagemDeBastao', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'drenarPassagemDeBastao', () =>
       drenarPassagemDeBastao().catch((err) =>
         app.log.error(err, '[Scheduler] a passagem de bastão falhou; tenta no próximo tique')
       )
     )
-    await medirEtapa('drenarFilaDeJulgamento', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'drenarFilaDeJulgamento', () =>
       drenarFilaDeJulgamento().catch((err) =>
         app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
       )
     )
     // DJ-T3: vaga liberada no dev assíncrono — acorda o SM na hora em vez de
     // esperar a janela do cron.
-    await medirEtapa('drenarFilaDeVagaLiberada', () =>
+    await medirEtapaDeTrabalhoNovo(emEntrega, 'drenarFilaDeVagaLiberada', () =>
       drenarFilaDeVagaLiberada().catch((err) =>
         app.log.error(
           err,

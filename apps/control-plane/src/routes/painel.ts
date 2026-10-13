@@ -44,6 +44,7 @@ import {
 } from '../services/medicao-do-ciclo.js'
 import { aplicarOrdemDosPedidos } from '../services/ordem-dos-pedidos.js'
 import { exigirPermissao } from '@gitorch/cadence'
+import { travaDe } from '../services/trava-de-entrega.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { fetchDoRepositorio, fetchSemPermissao } from '../services/guarda-de-autonomia.js'
 import { TIPO_DO_APRENDIZADO } from '../services/memoria-do-jules.js'
@@ -425,6 +426,28 @@ export const painelRoutes = async (
     })
     return ps.map((p) => p.id)
   }
+
+  // GET /api/v1/painel/atualizacao — a faixa "atualização em andamento". Só
+  // diz se a trava de entrega está ligada e desde quando; motivo, autor e
+  // contagens ficam na rota interna do entregador. Se a trava não puder ser
+  // lida, o painel não afirma uma atualização que não conseguiu confirmar.
+  app.get(
+    '/api/v1/painel/atualizacao',
+    RATE_LIMIT_POLLING,
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      try {
+        const estado = await travaDe(app.prisma).estadoDaTrava()
+        return reply.send({
+          ligada: estado.ligada,
+          desde: estado.ligada && estado.desde ? estado.desde.toISOString() : null,
+        })
+      } catch (err) {
+        app.log.warn(err, '[Painel] não consegui ler a trava de entrega')
+        return reply.send({ ligada: false, desde: null })
+      }
+    }
+  )
 
   // GET /api/v1/painel/pulso — o último sinal de qualquer projeto do dono, com
   // a hora REAL do evento. (API.md §2.2: /api/projects/:id/status devolve

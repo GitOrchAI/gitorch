@@ -102,6 +102,28 @@ describe('criarSessaoJules', () => {
     expect(chamadas).toHaveLength(0)
   })
 
+  it('trava de entrega ligada: não chama o dev e devolve DESLIGADO (nada é criado)', async () => {
+    const { impl, chamadas } = fetchFake([{ ok: true, status: 200, body: { name: 'sessions/x' } }])
+    const sessao = await criarSessaoJules({
+      ...base,
+      fetchImpl: impl,
+      podeIniciar: async () => false,
+    })
+    expect(sessao).toEqual({ situacao: 'desligado' })
+    expect(chamadas).toHaveLength(0)
+  })
+
+  it('trava desligada: cria a sessão normalmente', async () => {
+    const { impl, chamadas } = fetchFake([{ ok: true, status: 200, body: { name: 'sessions/x' } }])
+    const sessao = await criarSessaoJules({
+      ...base,
+      fetchImpl: impl,
+      podeIniciar: async () => true,
+    })
+    expect(sessao).toEqual({ situacao: 'criada', sessionName: 'sessions/x' })
+    expect(chamadas).toHaveLength(1)
+  })
+
   it('repositório não conectado na conta: avisa o que fazer, sem quebrar a delegação', async () => {
     const avisos: string[] = []
     const { impl } = fetchFake([

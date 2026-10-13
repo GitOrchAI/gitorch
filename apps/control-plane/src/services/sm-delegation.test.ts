@@ -314,6 +314,34 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     expect(r.output).toContain('sessions/xyz')
   })
 
+  it('com a trava de entrega ligada NÃO delega: nenhuma sessão nasce nem etiqueta é posta', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const criarSessaoDev = vi.fn()
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      trabalhoNovoPermitido: async () => false,
+      criarSessaoDev,
+    })
+
+    expect(r.delegated).toEqual([])
+    expect(criarSessaoDev).not.toHaveBeenCalled()
+  })
+
+  it('com a trava desligada delega como sempre', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      trabalhoNovoPermitido: async () => true,
+      criarSessaoDev: async () => ({ situacao: 'criada' as const, sessionName: 'sessions/xyz' }),
+    })
+    expect(r.delegated).toEqual([42])
+  })
+
   it('guarda a ligação issue → sessão assim que a sessão nasce', async () => {
     const impl = fakeFetch([taskPronta()])
     const guardadas: Array<{ issueNumber: number; sessionName: string }> = []
