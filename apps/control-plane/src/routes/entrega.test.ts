@@ -170,18 +170,34 @@ describe('rotas internas de entrega', () => {
     expect(res.statusCode).toBe(404)
   })
 
-  it('pedido que passou por proxy (cabeçalho de encaminhamento) é de fora, mesmo vindo do loopback', async () => {
-    const { app } = await pronto({ ligada: false })
-    for (const h of ['x-forwarded-for', 'forwarded', 'x-real-ip']) {
+  it.each([
+    'x-forwarded-for',
+    'forwarded',
+    'x-real-ip',
+    'x-forwarded-host',
+    'x-forwarded-proto',
+    'x-forwarded-port',
+    'x-original-url',
+    'x-original-host',
+    'true-client-ip',
+    'cf-connecting-ip',
+    'via',
+    'tailscale-user-login',
+    'tailscale-user-name',
+    'tailscale-headers-info',
+  ])(
+    'pedido com o cabeçalho %s (passou por proxy) é de fora, mesmo vindo do loopback',
+    async (cabecalho) => {
+      const { app } = await pronto({ ligada: false })
       const res = await app.inject({
         method: 'GET',
         url: '/interno/entrega',
-        headers: { ...cab, [h]: '203.0.113.9' },
+        headers: { ...cab, [cabecalho]: '203.0.113.9' },
         remoteAddress: '127.0.0.1',
       })
       expect(res.statusCode).toBe(404)
     }
-  })
+  )
 
   it('cabeçalho X-Forwarded-For de loopback NÃO faz um endereço de fora passar', async () => {
     const { app } = await pronto({ ligada: false })

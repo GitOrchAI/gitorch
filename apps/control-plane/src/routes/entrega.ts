@@ -21,10 +21,36 @@ import type { AssistedLoginService } from '../services/assisted-login.js'
 //     (GITORCH_ENTREGA_TOKEN no ambiente), comparado em tempo constante. Sem a
 //     variável definida (ou vazia) as rotas não existem.
 //
+// Ligar e desligar a trava invalidam na hora o cache da guarda neste processo
+// (services/trava-de-entrega.ts), e `podeTrocar` lê a trava direto do banco,
+// sem cache: logo depois de `ligar`, nenhum ponto de início deste processo
+// ainda enxerga "sem trava".
+//
 // Ficam fora de `/api/`, então o login normal do painel não se aplica a elas.
 
 const CABECALHO_DO_SEGREDO = 'x-entrega-token'
-const CABECALHOS_DE_PROXY = ['x-forwarded-for', 'forwarded', 'x-real-ip', 'x-forwarded-host']
+const CABECALHOS_DE_PROXY = [
+  'x-forwarded-for',
+  'forwarded',
+  'x-real-ip',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-forwarded-port',
+  'x-original-url',
+  'x-original-host',
+  'true-client-ip',
+  'cf-connecting-ip',
+  'via',
+]
+/** Os proxies da rede privada acrescentam cabeçalhos com este prefixo. */
+const PREFIXO_DE_PROXY_DA_REDE = 'tailscale-'
+
+function passouPorProxy(request: FastifyRequest): boolean {
+  return (
+    CABECALHOS_DE_PROXY.some((h) => request.headers[h] !== undefined) ||
+    Object.keys(request.headers).some((h) => h.toLowerCase().startsWith(PREFIXO_DE_PROXY_DA_REDE))
+  )
+}
 const ENDERECOS_DE_LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
 /** Diagnóstico `running` sem atividade há mais que isso é restolho de um processo morto. */
@@ -49,7 +75,7 @@ function chamadorAutorizado(request: FastifyRequest): boolean {
   if (!esperado) return false
   const endereco = request.raw.socket.remoteAddress
   if (!endereco || !ENDERECOS_DE_LOOPBACK.has(endereco)) return false
-  if (CABECALHOS_DE_PROXY.some((h) => request.headers[h] !== undefined)) return false
+  if (passouPorProxy(request)) return false
   const recebido = request.headers[CABECALHO_DO_SEGREDO]
   if (typeof recebido !== 'string' || recebido === '') return false
   return segredoConfere(recebido, esperado)

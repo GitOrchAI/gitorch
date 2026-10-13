@@ -51,43 +51,71 @@ function blocoDeChaves(texto: string, inicio: number): string {
   return texto.slice(inicio)
 }
 
-/** `mission.update/updateMany` cujo `data: { ... }` põe `status: 'running'`. */
-function tomaMissaoParaRunning(codigo: string): boolean {
+/** Quantas chamadas `mission.update/updateMany` põem `status: 'running'` em `data`. */
+function contaTomadasParaRunning(codigo: string): number {
+  let total = 0
   const chamada = /\bmission\s*\.\s*(?:update|updateMany)\s*\(/g
   for (const m of codigo.matchAll(chamada)) {
     const dentro = codigo.slice(m.index, m.index + 3000)
     const data = /\bdata\s*:\s*\{/.exec(dentro)
     if (!data) continue
     const objeto = blocoDeChaves(dentro, data.index + data[0].length - 1)
-    if (/\bstatus\s*:\s*['"`]running['"`]/.test(objeto)) return true
+    if (/\bstatus\s*:\s*['"`]running['"`]/.test(objeto)) total += 1
   }
-  return false
+  return total
 }
 
-type Ponto = { nome: string; acha: (codigo: string) => boolean }
+const ocorrencias = (codigo: string, re: RegExp): number => [...codigo.matchAll(re)].length
+
+type ChaveDePonto =
+  | 'criaMissao'
+  | 'tomaMissao'
+  | 'criaDiagnostico'
+  | 'criaSessaoDev'
+  | 'loginAssistido'
+  | 'sessaoDevPorInjecao'
+type Ponto = { chave: ChaveDePonto; nome: string; conta: (codigo: string) => number }
 
 const PONTOS_DE_INICIO: Ponto[] = [
   {
+    chave: 'criaMissao',
     nome: 'cria missão',
-    acha: (c) =>
-      /\bmission\s*\.\s*(?:create|createMany|upsert)\s*\(/.test(c) ||
-      /INSERT\s+INTO\s+"?missions"?/i.test(c),
+    conta: (c) =>
+      ocorrencias(c, /\bmission\s*\.\s*(?:create|createMany|upsert)\s*\(/g) +
+      ocorrencias(c, /INSERT\s+INTO\s+"?missions"?/gi),
   },
-  { nome: "toma missão para 'running'", acha: tomaMissaoParaRunning },
-  { nome: 'cria diagnóstico', acha: (c) => /\bdiagnosisJob\s*\.\s*create\s*\(/.test(c) },
+  { chave: 'tomaMissao', nome: "toma missão para 'running'", conta: contaTomadasParaRunning },
   {
+    chave: 'criaDiagnostico',
+    nome: 'cria diagnóstico',
+    conta: (c) => ocorrencias(c, /\bdiagnosisJob\s*\.\s*create\s*\(/g),
+  },
+  {
+    chave: 'criaSessaoDev',
     nome: 'abre sessão do dev assíncrono',
-    acha: (c) => /(?<!function\s)\bcriarSessaoJules\s*\(/.test(c),
+    conta: (c) => ocorrencias(c, /(?<!function\s)\bcriarSessaoJules\s*\(/g),
   },
   {
+    chave: 'loginAssistido',
     nome: 'inicia login assistido',
-    acha: (c) => /\bassistedLogin\s*\.\s*start\s*\(/.test(c),
+    conta: (c) => ocorrencias(c, /\bassistedLogin\s*\.\s*start\s*\(/g),
   },
   {
+    chave: 'sessaoDevPorInjecao',
     nome: 'aciona a criação de sessão do dev por injeção',
-    acha: (c) => /\b(?:options|deps)\s*\.\s*criarSessaoDev\s*\(/.test(c),
+    conta: (c) => ocorrencias(c, /\b(?:options|deps)\s*\.\s*criarSessaoDev\s*\(/g),
   },
 ]
+
+/** Os pontos de início que um arquivo tem, por tipo (só os que existem). */
+function contarPontos(codigo: string): Partial<Record<ChaveDePonto, number>> {
+  const r: Partial<Record<ChaveDePonto, number>> = {}
+  for (const p of PONTOS_DE_INICIO) {
+    const n = p.conta(codigo)
+    if (n > 0) r[p.chave] = n
+  }
+  return r
+}
 
 /**
  * Arquivos que iniciam trabalho SEM importar a guarda, com o motivo e o trecho
@@ -117,6 +145,52 @@ const CHAMADO_SO_POR_QUEM_JA_CHECOU: Record<string, { motivo: string; prova: str
   },
 }
 
+/**
+ * Quantos pontos de início de cada tipo existem em cada arquivo e estão
+ * protegidos. `guarda` diz por onde a guarda chega até eles. Mudou a contagem
+ * (ponto novo ou removido)? Alguém precisa conferir o ponto e atualizar o número.
+ */
+const PONTOS_REGISTRADOS: Record<
+  string,
+  { pontos: Partial<Record<ChaveDePonto, number>>; guarda: string }
+> = {
+  'plugins/scheduler.ts': {
+    pontos: { criaMissao: 1, tomaMissao: 2, criaSessaoDev: 4 },
+    guarda:
+      'missão do relógio: `runTrigger` checa antes de criar; `processSetupMissions` e `retomarMissoesEsperandoCota` checam antes de tomar para running; as 4 sessões do dev recebem `podeIniciar`',
+  },
+  'plugins/engines.ts': {
+    pontos: { loginAssistido: 1 },
+    guarda: 'a rota de início do login assistido recusa com 503 antes de `start`',
+  },
+  'plugins/telegram.ts': {
+    pontos: { criaSessaoDev: 1 },
+    guarda: 'a sessão do dev recebe `podeIniciar` no pedido',
+  },
+  'routes/diagnose.ts': {
+    pontos: { criaDiagnostico: 1 },
+    guarda: 'a rota recusa com 503 antes de criar o diagnóstico',
+  },
+  'routes/missions.ts': {
+    pontos: { criaMissao: 1 },
+    guarda: 'a rota de criar missão recusa com 503 antes de criar',
+  },
+  'routes/setup.ts': {
+    pontos: { criaMissao: 2 },
+    guarda: 'as duas rotas que criam missão de setup recusam com 503 antes de criar',
+  },
+  'services/retomar-pr-reprovado.ts': {
+    pontos: { sessaoDevPorInjecao: 1 },
+    guarda:
+      'aciona o dev só por `criarSessaoDev` injetado, montado com `podeIniciar` pelos chamadores',
+  },
+  'services/sm-delegation.ts': {
+    pontos: { sessaoDevPorInjecao: 1 },
+    guarda:
+      'delega só se o agendador liberar (`trabalhoNovoPermitido`); a sessão sai por injeção com `podeIniciar`',
+  },
+}
+
 const importaAGuarda = (codigo: string): boolean => /trava-de-entrega\.js/.test(codigo)
 
 const fontes = fontesDeProducao(raizDoSrc).map((caminho) => ({
@@ -128,7 +202,7 @@ describe('todo ponto que INICIA trabalho passa pela trava de entrega', () => {
   it('o varredor encontra os pontos de início conhecidos (a varredura não está cega)', () => {
     const acham = (nome: string) =>
       fontes
-        .filter((f) => PONTOS_DE_INICIO.find((p) => p.nome === nome)!.acha(f.codigo))
+        .filter((f) => PONTOS_DE_INICIO.find((p) => p.nome === nome)!.conta(f.codigo) > 0)
         .map((f) => f.arquivo)
     expect(acham('cria missão')).toEqual(
       expect.arrayContaining(['plugins/scheduler.ts', 'routes/missions.ts', 'routes/setup.ts'])
@@ -141,14 +215,42 @@ describe('todo ponto que INICIA trabalho passa pela trava de entrega', () => {
     expect(acham('inicia login assistido')).toContain('plugins/engines.ts')
   })
 
-  it('nenhum arquivo de produção inicia trabalho sem a guarda ou sem estar justificado', () => {
+  it('cada arquivo tem exatamente os pontos de início registrados (ponto novo exige revisão)', () => {
+    const divergencias: string[] = []
+    const arquivosComPonto = new Set<string>()
+    for (const f of fontes) {
+      const real = contarPontos(f.codigo)
+      if (Object.keys(real).length === 0) continue
+      arquivosComPonto.add(f.arquivo)
+      const esperado = PONTOS_REGISTRADOS[f.arquivo]?.pontos ?? {}
+      if (
+        JSON.stringify(real, Object.keys(real).sort()) !==
+        JSON.stringify(esperado, Object.keys(esperado).sort())
+      ) {
+        divergencias.push(
+          `${f.arquivo}: real ${JSON.stringify(real)} / registrado ${JSON.stringify(esperado)}`
+        )
+      }
+    }
+    for (const arquivo of Object.keys(PONTOS_REGISTRADOS)) {
+      if (!arquivosComPonto.has(arquivo)) {
+        divergencias.push(`${arquivo}: registrado, mas não tem mais ponto de início (tire do mapa)`)
+      }
+    }
+    expect(
+      divergencias,
+      'A contagem real de pontos de início difere da registrada. Um ponto novo tem de ' +
+        'passar pela guarda (services/trava-de-entrega.js) E ter o número atualizado aqui, conscientemente'
+    ).toEqual([])
+  })
+
+  it('todo arquivo do mapa importa a guarda ou está justificado como chamado só por quem já checou', () => {
     const semGuarda: string[] = []
     for (const f of fontes) {
-      const pontos = PONTOS_DE_INICIO.filter((p) => p.acha(f.codigo)).map((p) => p.nome)
-      if (pontos.length === 0) continue
+      if (!PONTOS_REGISTRADOS[f.arquivo]) continue
       if (importaAGuarda(f.codigo)) continue
       if (CHAMADO_SO_POR_QUEM_JA_CHECOU[f.arquivo]) continue
-      semGuarda.push(`${f.arquivo}: ${pontos.join(', ')}`)
+      semGuarda.push(f.arquivo)
     }
     expect(
       semGuarda,

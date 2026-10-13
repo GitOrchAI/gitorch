@@ -104,10 +104,20 @@ export function criarTravaDeEntrega(
   const onWarn = opcoes.onWarn ?? (() => undefined)
 
   let cache: { ate: number; pode: boolean } | null = null
+  // Sobe a cada ligar/desligar: uma leitura que começou antes da mudança não
+  // pode gravar no cache o que viu (a resposta dela já nasceu velha).
+  let geracao = 0
   let ultimoAvisoDeLeitura = Number.NEGATIVE_INFINITY
 
   const ler = async (): Promise<EstadoDaTrava> =>
     paraEstado(await prisma.travaDeEntrega.findUnique({ where: { id: ID_DA_LINHA } }))
+
+  const avisar = (t: number, mensagem: string): void => {
+    if (t - ultimoAvisoDeLeitura >= INTERVALO_DO_AVISO_DE_LEITURA_MS) {
+      ultimoAvisoDeLeitura = t
+      onWarn(mensagem)
+    }
+  }
 
   return {
     estadoDaTrava: ler,
@@ -124,6 +134,7 @@ export function criarTravaDeEntrega(
         update: { ligada: true, desde, motivo, ligadaPor: por },
       })
       cache = null
+      geracao += 1
       return { ligada: true, desde, motivo, ligadaPor: por }
     },
 
@@ -136,36 +147,48 @@ export function criarTravaDeEntrega(
         update: { ligada: false, desde: null, motivo: null, ligadaPor: null },
       })
       cache = null
+      geracao += 1
       return { ...DESLIGADA }
     },
 
     async podeIniciarTrabalho() {
       const t = agora()
       if (cache && t < cache.ate) return cache.pode
+      const geracaoDaLeitura = geracao
       let pode: boolean
       try {
-        // Um cliente de banco SEM o modelo da trava não existe em produção (o
-        // cliente gerado a partir do schema sempre o tem, e o build barra o
-        // código que o referencia sem ele). Só aparece em dublês de teste que
-        // não tratam de entrega; nesse caso não há trava para consultar. Isto
-        // NÃO é uma falha de leitura: o banco responder erro continua adiando.
-        pode = !('travaDeEntrega' in prisma) || !(await ler()).ligada
+        // Um cliente de banco SEM o modelo da trava só é aceitável em teste
+        // (dublês que não tratam de entrega). Fora de teste significa cliente
+        // gerado antigo, sem regenerar depois de uma atualização: ignorar a
+        // trava em silêncio liberaria trabalho novo justamente numa troca de
+        // versão, então adia e avisa. O banco responder erro também adia.
+        if (!('travaDeEntrega' in prisma)) {
+          if (process.env['VITEST'] !== undefined) {
+            pode = true
+          } else {
+            pode = false
+            avisar(
+              t,
+              '[Entrega] cliente de banco sem o modelo da trava de entrega: gere o cliente de novo; trabalho novo adiado'
+            )
+          }
+        } else {
+          pode = !(await ler()).ligada
+        }
       } catch (err) {
         // FAIL-SAFE: sem ler a trava não dá para saber se há uma troca de
         // versão em curso. Iniciar trabalho novo no escuro arriscaria um agente
         // cortado no meio pela troca; adiar custa só alguns minutos de espera,
         // e o trabalho adiado volta sozinho quando o banco responder.
         pode = false
-        if (t - ultimoAvisoDeLeitura >= INTERVALO_DO_AVISO_DE_LEITURA_MS) {
-          ultimoAvisoDeLeitura = t
-          onWarn(
-            `[Entrega] não consegui ler a trava de entrega; trabalho novo adiado por segurança: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          )
-        }
+        avisar(
+          t,
+          `[Entrega] não consegui ler a trava de entrega; trabalho novo adiado por segurança: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
       }
-      cache = { ate: t + cacheMs, pode }
+      if (geracaoDaLeitura === geracao) cache = { ate: t + cacheMs, pode }
       return pode
     },
   }
