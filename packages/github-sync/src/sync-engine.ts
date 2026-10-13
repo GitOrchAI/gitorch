@@ -81,6 +81,7 @@ export class GitHubSyncEngine {
     for (const groupItem of allGroupItems) {
       const weight = this.workModel.weightFor(groupItem)
       const iteration = this.workModel.iterationFor(groupItem)
+      const leadTime = this.workModel.leadTimeFor(groupItem)
       const assigneesToUpdate =
         groupItem.assignees && groupItem.assignees.length > 0 ? groupItem.assignees : undefined
 
@@ -127,6 +128,18 @@ export class GitHubSyncEngine {
             value: iteration,
           })
         }
+
+        if (leadTime != null) {
+          const leadTimeHours = Math.max(1, Math.round(leadTime / (1000 * 60 * 60)))
+          operations.push({
+            operationKey: `project-lead-time:${groupItem.nodeId}:${leadTimeHours}`,
+            kind: 'update-project-field',
+            nodeId: groupItem.nodeId,
+            projectItemId,
+            fieldName: 'Lead time',
+            value: leadTimeHours,
+          })
+        }
       }
     }
 
@@ -171,6 +184,15 @@ export class GitHubSyncEngine {
                   itemId: operation.projectItemId,
                   fieldId: 'Iteration',
                   iterationId: val,
+                })
+                .catch(() => {})
+            } else if (field === 'Lead time' && typeof val === 'number') {
+              await client
+                .setNumberField({
+                  projectId: operation.projectId,
+                  itemId: operation.projectItemId,
+                  fieldId: 'Lead time',
+                  number: val,
                 })
                 .catch(() => {})
             }

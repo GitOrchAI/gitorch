@@ -33,6 +33,7 @@ export type ProjectV2FieldName =
   | 'Sub-issue progress'
   | 'Linked pull requests'
   | 'Reviewers'
+  | 'Lead time'
 
 export type ProjectV2Status =
   'Inbox' | 'Ready' | 'Blocked' | 'In Progress' | 'In Review' | 'Done' | 'Archived'
