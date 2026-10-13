@@ -218,10 +218,15 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate ephemeral secrets
+        # O valor é mascarado ANTES de ir para GITHUB_ENV: o que entra ali
+        # passa a aparecer no cabeçalho `env:` de todo passo seguinte, e o
+        # registro do CI é público.
         run: |
-          echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
-          echo "GITORCH_CREDENTIAL_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
-          echo "GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          for nome in JWT_SECRET GITORCH_CREDENTIAL_KEY GITHUB_WEBHOOK_SECRET; do
+            valor="$(openssl rand -hex 32)"
+            echo "::add-mask::$valor"
+            echo "$nome=$valor" >> "$GITHUB_ENV"
+          done
 
       - name: Prisma generate
         working-directory: apps/control-plane
