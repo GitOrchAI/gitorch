@@ -3,6 +3,7 @@ import {
   estadoDoCi,
   investigarEstadoDoCi,
   lerEstadoDoCiDoHead,
+  nomesDosJobsComFalha,
 } from './estado-da-verificacao-do-github.js'
 import type { PassoDoJob } from './causa-do-cancelamento.js'
 
@@ -38,19 +39,29 @@ describe('estadoDoCi', () => {
   // Cada um destes é uma forma de "não sei se passa", e aprovar sobre eles
   // seria aprovar sobre um teste que não terminou. "cancelled" SAIU desta
   // lista (L4-T17, ver describe próprio abaixo) — sozinho ele vira o estado
-  // "cancelado", não "red".
-  it.each(['timed_out', 'action_required', 'stale'])('conclusão "%s" reprova', (conclusao) => {
-    expect(estadoDoCi([ok(), { status: 'completed', conclusion: conclusao }])).toBe('red')
-  })
+  // "sem-resultado", não "red".
+  it.each(['timed_out', 'startup_failure'])(
+    'conclusão "%s" é falha real: vermelho',
+    (conclusao) => {
+      expect(estadoDoCi([ok(), { status: 'completed', conclusion: conclusao }])).toBe('red')
+    }
+  )
 
-  it('conclusão desconhecida reprova: o produto não inventa que passou', () => {
-    expect(estadoDoCi([ok(), { status: 'completed', conclusion: 'algo_novo_do_github' }])).toBe(
-      'red'
-    )
-  })
+  // Estas conclusões não provam falha de ninguém: a execução foi obsoleta
+  // (`stale`), espera uma pessoa liberar (`action_required`) ou o GitHub
+  // inventou um valor novo. O produto não reprova por elas e também não
+  // inventa que passou: não há resultado.
+  it.each(['action_required', 'stale', 'algo_novo_do_github'])(
+    'conclusão "%s" não é falha nem sucesso: sem resultado',
+    (conclusao) => {
+      expect(estadoDoCi([ok(), { status: 'completed', conclusion: conclusao }])).toBe(
+        'sem-resultado'
+      )
+    }
+  )
 
-  it('conclusão ausente num check terminado reprova', () => {
-    expect(estadoDoCi([ok(), { status: 'completed' }])).toBe('red')
+  it('conclusão ausente num check terminado: sem resultado', () => {
+    expect(estadoDoCi([ok(), { status: 'completed' }])).toBe('sem-resultado')
   })
 
   it('qualquer job ainda rodando é "pending", não vermelho', () => {
@@ -79,17 +90,19 @@ describe('estadoDoCi', () => {
   // cancelamento SEM culpa (push novo, concorrência — nada falhou de
   // verdade).
   describe('cancelamento — com culpa vs. sem culpa', () => {
-    it('só cancelado, nenhuma falha real ao lado: "cancelado" — não é reprovação, é indefinido', () => {
-      expect(estadoDoCi([ok(), { status: 'completed', conclusion: 'cancelled' }])).toBe('cancelado')
+    it('só cancelado, nenhuma falha real ao lado: "sem-resultado" — não é reprovação, é indefinido', () => {
+      expect(estadoDoCi([ok(), { status: 'completed', conclusion: 'cancelled' }])).toBe(
+        'sem-resultado'
+      )
     })
 
-    it('todos cancelados (nem um sucesso): continua "cancelado", nunca "green"', () => {
+    it('todos cancelados (nem um sucesso): "sem-resultado", nunca "green"', () => {
       expect(
         estadoDoCi([
           { status: 'completed', conclusion: 'cancelled' },
           { status: 'completed', conclusion: 'cancelled' },
         ])
-      ).toBe('cancelado')
+      ).toBe('sem-resultado')
     })
 
     // O caso medido ao vivo: o job de Qualidade aparece "cancelled" no
@@ -115,18 +128,18 @@ describe('estadoDoCi', () => {
 // termina `skipped` na hora, enquanto os jobs reais ainda nem existem como
 // check-run (fila do runner). Aceitar isso como verde mesclou código sem CI.
 describe('estadoDoCi — verde só com pelo menos um sucesso real', () => {
-  it('só [skipped]: NÃO é verde — é "pending" (jobs reais ainda podem chegar)', () => {
-    expect(estadoDoCi([{ status: 'completed', conclusion: 'skipped' }])).toBe('pending')
+  it('só [skipped]: NÃO é verde — é "sem-resultado" (jobs reais ainda podem chegar)', () => {
+    expect(estadoDoCi([{ status: 'completed', conclusion: 'skipped' }])).toBe('sem-resultado')
   })
 
-  it('só skipped/neutral, vários: continua "pending", nunca "green"', () => {
+  it('só skipped/neutral, vários: continua "sem-resultado", nunca "green"', () => {
     expect(
       estadoDoCi([
         { status: 'completed', conclusion: 'skipped' },
         { status: 'completed', conclusion: 'neutral' },
         { status: 'completed', conclusion: 'skipped' },
       ])
-    ).toBe('pending')
+    ).toBe('sem-resultado')
   })
 
   it('[skipped, success]: verde', () => {
@@ -140,10 +153,45 @@ describe('estadoDoCi — verde só com pelo menos um sucesso real', () => {
   })
 })
 
+// A tabela inteira: o que cada combinação de conclusões de job vira. Só falha
+// de verdade (`failure`, `timed_out`, `startup_failure`) reprova; o resto que
+// não passou é "sem resultado".
+describe('estadoDoCi — tabela de conclusões', () => {
+  const j = (conclusion: string, name = 'job') => ({ status: 'completed', conclusion, name })
+  it.each([
+    ['1 cancelado + 1 sucesso', [j('cancelled'), j('success')], 'sem-resultado'],
+    ['todos pulados', [j('skipped'), j('skipped'), j('skipped')], 'sem-resultado'],
+    ['1 falho + 5 cancelados', [j('failure', 'Testes'), ...Array(5).fill(j('cancelled'))], 'red'],
+    ['timed_out + sucesso', [j('timed_out'), j('success')], 'red'],
+    ['stale + sucesso', [j('stale'), j('success')], 'sem-resultado'],
+    ['action_required + sucesso', [j('action_required'), j('success')], 'sem-resultado'],
+    ['sucesso + pulado + neutro', [j('success'), j('skipped'), j('neutral')], 'green'],
+    ['falho + em andamento', [j('failure'), { status: 'in_progress' }], 'pending'],
+  ] as const)('%s', (_nome, jobs, esperado) => {
+    expect(estadoDoCi([...jobs])).toBe(esperado)
+  })
+
+  it('o nome do job que falhou acompanha o estado: 1 falho + 5 cancelados cita o falho', () => {
+    const jobs = [
+      { status: 'completed', conclusion: 'failure', name: 'Testes Backend' },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        status: 'completed',
+        conclusion: 'cancelled',
+        name: `Outro ${i}`,
+      })),
+    ]
+    expect(nomesDosJobsComFalha(jobs)).toEqual(['Testes Backend'])
+  })
+})
+
 /** Um GitHub de mentira só com as duas leituras que o estado do CI precisa. */
 function githubDoHead(opcoes: {
   checkRuns: Array<{ id?: number; name?: string; status?: string; conclusion?: string }>
-  workflowRuns?: Array<{ status?: string; conclusion?: string | null }> | 'falha'
+  workflowRuns?:
+    | Array<{ id?: number; status?: string; conclusion?: string | null; run_attempt?: number }>
+    | 'falha'
+  /** Workflows registrados no repositório. Default: nenhum. 'falha' = a leitura quebra. */
+  workflows?: Array<{ path: string; state: string }> | 'falha'
 }) {
   const caminhos: string[] = []
   const ghGet = async (caminho: string): Promise<unknown> => {
@@ -152,6 +200,10 @@ function githubDoHead(opcoes: {
     if (caminho.includes('/actions/runs?')) {
       if (opcoes.workflowRuns === 'falha') throw new Error('GitHub 502')
       return { workflow_runs: opcoes.workflowRuns ?? [] }
+    }
+    if (caminho.includes('/actions/workflows')) {
+      if (opcoes.workflows === 'falha') throw new Error('GitHub 502')
+      return { workflows: opcoes.workflows ?? [] }
     }
     throw new Error(`caminho inesperado: ${caminho}`)
   }
@@ -211,6 +263,88 @@ describe('lerEstadoDoCiDoHead — check-runs + workflow runs do mesmo commit', (
     expect((await ler(gh)).estado).toBe('pending')
   })
 
+  // O repositório TEM verificação (arquivo de workflow ativo), mas este commit
+  // não gerou execução nenhuma — o caso do PR com conflito de merge, em que o
+  // GitHub não dispara o CI. Dizer "o repositório não tem verificações" seria
+  // falso; reprovar também.
+  it('workflow registrado, zero check-runs e zero execuções: "sem-resultado", não "no checks"', async () => {
+    const gh = githubDoHead({
+      checkRuns: [],
+      workflowRuns: [],
+      workflows: [{ path: '.github/workflows/ci.yml', state: 'active' }],
+    })
+    const leitura = await ler(gh)
+    expect(leitura.estado).toBe('sem-resultado')
+    expect(leitura.execucoes).toEqual([])
+  })
+
+  it('o workflow dinâmico do Dependabot não conta como verificação do repositório', async () => {
+    const gh = githubDoHead({
+      checkRuns: [],
+      workflowRuns: [],
+      workflows: [{ path: 'dynamic/dependabot/dependabot-updates', state: 'active' }],
+    })
+    expect((await ler(gh)).estado).toBe('no checks')
+  })
+
+  it('workflow desativado não conta como verificação: "no checks"', async () => {
+    const gh = githubDoHead({
+      checkRuns: [],
+      workflowRuns: [],
+      workflows: [{ path: '.github/workflows/velho.yml', state: 'disabled_manually' }],
+    })
+    expect((await ler(gh)).estado).toBe('no checks')
+  })
+
+  it('não dá para ler os workflows do repositório: não prova ausência, vira "sem-resultado"', async () => {
+    const gh = githubDoHead({ checkRuns: [], workflowRuns: [], workflows: 'falha' })
+    expect((await ler(gh)).estado).toBe('sem-resultado')
+  })
+
+  it('execução do commit terminou sem criar job nenhum e falhou (workflow inválido): "red"', async () => {
+    const gh = githubDoHead({
+      checkRuns: [],
+      workflowRuns: [{ id: 7, status: 'completed', conclusion: 'startup_failure' }],
+    })
+    expect((await ler(gh)).estado).toBe('red')
+  })
+
+  it('check-runs só cancelados e execução cancelada: "sem-resultado" com a execução para reexecutar', async () => {
+    const gh = githubDoHead({
+      checkRuns: [
+        { id: 1, name: 'Testes', status: 'completed', conclusion: 'cancelled' },
+        { id: 2, name: 'Lint', status: 'completed', conclusion: 'cancelled' },
+      ],
+      workflowRuns: [{ id: 99, status: 'completed', conclusion: 'cancelled', run_attempt: 1 }],
+    })
+    const leitura = await ler(gh)
+    expect(leitura.estado).toBe('sem-resultado')
+    expect(leitura.execucoes).toEqual([
+      { id: 99, status: 'completed', conclusion: 'cancelled', tentativa: 1 },
+    ])
+  })
+
+  it('cancelado e execução ainda na fila (nova tentativa): "pending"', async () => {
+    const gh = githubDoHead({
+      checkRuns: [{ id: 1, name: 'Testes', status: 'completed', conclusion: 'cancelled' }],
+      workflowRuns: [{ id: 99, status: 'queued', run_attempt: 2 }],
+    })
+    expect((await ler(gh)).estado).toBe('pending')
+  })
+
+  it('vermelho traz o nome do job que falhou, e só dele', async () => {
+    const gh = githubDoHead({
+      checkRuns: [
+        { id: 1, name: 'Testes Backend', status: 'completed', conclusion: 'failure' },
+        { id: 2, name: 'Lint', status: 'completed', conclusion: 'cancelled' },
+        { id: 3, name: 'Build', status: 'completed', conclusion: 'success' },
+      ],
+    })
+    const leitura = await ler(gh)
+    expect(leitura.estado).toBe('red')
+    expect(leitura.jobsComFalha).toEqual(['Testes Backend'])
+  })
+
   it('consulta os workflow runs DAQUELE commit, com página cheia', async () => {
     const gh = githubDoHead({ checkRuns: [ok()], workflowRuns: [] })
     await ler(gh)
@@ -258,12 +392,12 @@ describe('investigarEstadoDoCi', () => {
     })
   })
 
-  it('achado 1: cancelado sem falha real em passo nenhum — investiga e CONTINUA cancelado (indefinido), não vira veredito', async () => {
+  it('achado 1: cancelado sem falha real em passo nenhum — investiga e CONTINUA sem resultado (indefinido), não vira veredito', async () => {
     const runs = [{ id: 1, name: 'job', status: 'completed', conclusion: 'cancelled' }]
     const resultado = await investigarEstadoDoCi(runs, async () => [
       { name: 'Rodar', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' },
     ])
-    expect(resultado.estado).toBe('cancelado')
+    expect(resultado.estado).toBe('sem-resultado')
     expect(resultado.culpado).toEqual({ encontrado: false })
   })
 

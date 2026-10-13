@@ -50,8 +50,13 @@ import {
   MARCA_DE_ENTREGA_GRANDE_DEMAIS,
   type EntregaJulgada,
 } from './reprovacao-que-ensina.js'
-import { lerEstadoDoCiDoHead } from './estado-da-verificacao-do-github.js'
-import { frasarCausaDoCancelamento, type ResultadoDoCulpado } from './causa-do-cancelamento.js'
+import { lerEstadoDoCiDoHead, type ExecucaoDoCi } from './estado-da-verificacao-do-github.js'
+import {
+  frasarCausaDoCancelamento,
+  frasarJobsComFalha,
+  type ResultadoDoCulpado,
+} from './causa-do-cancelamento.js'
+import { pedirNovaExecucaoDoCi } from './nova-execucao-do-ci.js'
 import { decidirQuemResolve } from './conflito-de-merge.js'
 import {
   chaveDoResgate,
@@ -784,12 +789,21 @@ async function julgarEntregaViaRails(
     changed_files?: number
     additions?: number
     deletions?: number
+    /** Só a leitura isolada do PR devolve: `dirty` = conflito com a base. */
+    mergeable_state?: string
   }
-  type VerificacaoLida = { estado: EstadoDaVerificacao; culpado: ResultadoDoCulpado | undefined }
+  type VerificacaoLida = {
+    estado: EstadoDaVerificacao
+    culpado: ResultadoDoCulpado | undefined
+    /** Jobs que falharam de verdade (nunca os cancelados). */
+    jobsComFalha?: readonly string[]
+    /** Execuções do commit, quando a leitura as trouxe; `null` = não deu para ler. */
+    execucoes?: readonly ExecucaoDoCi[] | null | undefined
+  }
 
   // L4-T17 — medido AO VIVO em loureng/patinhas-3d-crafts (run 33943490885,
   // PR #3945): quando a verificação está vermelha COM cancelamento no meio
-  // — ou quando ela É `cancelado` (fix-up L4-T17, achado 1 da revisão: ver
+  // — ou quando ela É `sem-resultado` (fix-up L4-T17, achado 1 da revisão: ver
   // o comentário de `investigarEstadoDoCi`, estado-da-verificacao-do-github.ts)
   // —, o job/passo que causou tudo pode estar escondido atrás de um job que o
   // próprio GitHub marcou "cancelled". A API de check-runs não mostra passo
@@ -807,7 +821,59 @@ async function julgarEntregaViaRails(
       sha,
       ghGet: (caminho) => gh('GET', caminho),
     })
-    return { estado: investigado.estado, culpado: investigado.culpado }
+    return {
+      estado: investigado.estado,
+      culpado: investigado.culpado,
+      jobsComFalha: investigado.jobsComFalha ?? [],
+      execucoes: investigado.execucoes,
+    }
+  }
+
+  // Verificação SEM RESULTADO (cancelada, obsoleta, pulada, ou que nem chegou a
+  // existir neste commit) não é reprovação nem aprovação. O sistema pede UMA
+  // nova execução por commit (`nova-execucao-do-ci.ts`: teto no GitHub e na
+  // memória) e devolve, em palavras simples, o que sabe — o motivo da espera
+  // que a missão registra. Nada disso muda o veredito: o commit só é julgado
+  // quando houver resultado de verdade.
+  const detalharSemResultado = async (
+    numeroDoPr: number,
+    headSha: string | undefined,
+    leitura: VerificacaoLida,
+    estadoDeMesclagem: string | undefined
+  ): Promise<string | undefined> => {
+    if (leitura.estado !== 'sem-resultado') return undefined
+    const partes: string[] = []
+    const execucoes = leitura.execucoes
+    if (Array.isArray(execucoes) && execucoes.length === 0) {
+      partes.push('o GitHub não gerou nenhuma execução da verificação neste commit')
+      if (estadoDeMesclagem === 'dirty') {
+        partes.push(
+          'o PR tem conflito com a base e, enquanto houver conflito, o GitHub não roda a verificação'
+        )
+      }
+    } else if (execucoes === null) {
+      partes.push('não consegui ler as execuções da verificação deste commit')
+    }
+    if (headSha) {
+      try {
+        const pedido = await pedirNovaExecucaoDoCi({
+          repositorio: options.repository,
+          sha: headSha,
+          motivo: 'sem-resultado',
+          execucoes,
+          ghGet: (caminho) => gh('GET', caminho),
+          ghEnviar: (metodo, caminho) => gh(metodo, caminho),
+        })
+        if (pedido.primeiraVez) options.onWarn?.(`[qa] PR #${numeroDoPr}: ${pedido.texto}`)
+        // Sem execução nenhuma o pedido não tem o que dizer além do que já foi dito.
+        if (!(Array.isArray(execucoes) && execucoes.length === 0)) partes.push(pedido.texto)
+      } catch (err) {
+        options.onWarn?.(
+          `[qa] PR #${numeroDoPr}: falha ao pedir nova execução da verificação: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+    return partes.length > 0 ? partes.join('; ') : undefined
   }
 
   // Aviso ao dono e pedido de resgate ao dev são ações do laço, antes de
@@ -1139,7 +1205,12 @@ async function julgarEntregaViaRails(
       p.head?.sha
     ) {
       try {
-        reprovadoPeloPortaoComCiVerdeAgora = (await lerVerificacao(p.head.sha)).estado === 'green'
+        const leitura = await lerVerificacao(p.head.sha)
+        reprovadoPeloPortaoComCiVerdeAgora = leitura.estado === 'green'
+        // A reprovação do portão pode ter nascido de uma execução que nunca
+        // produziu resultado; sem resultado agora, pede a nova execução (uma
+        // por commit) para que o julgamento volte quando houver verde.
+        await detalharSemResultado(p.number, p.head.sha, leitura, undefined)
       } catch {
         // Não deu para saber o estado da verificação. Na dúvida, NÃO
         // rejulgar: reabrir um veredito sem saber se o motivo caiu seria
@@ -1165,10 +1236,12 @@ async function julgarEntregaViaRails(
       !foiAprovacao &&
       p.head?.sha
     ) {
-      const { estado, culpado } = await lerVerificacao(p.head.sha).catch(() => ({
-        estado: 'unknown' as const,
-        culpado: { encontrado: false as const },
+      const leituraDoLegado = await lerVerificacao(p.head.sha).catch((): VerificacaoLida => ({
+        estado: 'unknown',
+        culpado: { encontrado: false },
       }))
+      const { estado, culpado } = leituraDoLegado
+      await detalharSemResultado(p.number, p.head.sha, leituraDoLegado, undefined)
       const decisao = decidirSobreLegado({
         numero: p.number,
         headAtual: p.head.sha,
@@ -1357,7 +1430,7 @@ async function julgarEntregaViaRails(
     if (!(veredito.delegado && ehEntregaSemConteudo(prLido))) {
       verificacaoLida = await lerVerificacao(prLido.head?.sha)
       // Só pendente/desconhecido entra no cache; veredito (verde, vermelho,
-      // sem checks) e cancelado nunca — e uma entrada velha some.
+      // sem checks) e sem-resultado nunca — e uma entrada velha some.
       if (prLido.head?.sha) {
         const chaveLida = chaveDaVerificacao(options.repository, p.number, prLido.head.sha)
         if (verificacaoLida.estado === 'pending' || verificacaoLida.estado === 'unknown') {
@@ -1371,6 +1444,12 @@ async function julgarEntregaViaRails(
         estado: verificacaoLida.estado,
         primeiraVezVistoPendenteEm: linhaCandidata?.pendingSince ?? null,
         agora: agoraDaLeitura,
+        detalhe: await detalharSemResultado(
+          p.number,
+          prLido.head?.sha,
+          verificacaoLida,
+          prLido.mergeable_state
+        ),
       })
       if (decisaoDaLeitura.acao !== 'julgar') {
         await agirSobreVerificacaoPendente({
@@ -1768,6 +1847,13 @@ async function julgarEntregaViaRails(
   const verificacao = verificacaoDoAlvo ?? (await lerVerificacao(pr.head?.sha))
   const ciState = verificacao.estado
   const culpadoDoCancelamento = verificacao.culpado
+  // Reprovação por CI só com job que falhou de verdade, e o parecer diz qual.
+  // Quando a investigação de passos já achou o culpado, a frase dele (mais
+  // precisa) é a que vale; este é o recuo para o nome do job.
+  const explicacaoDosJobsComFalha =
+    ciState === 'red' && !culpadoDoCancelamento?.encontrado && verificacao.jobsComFalha?.length
+      ? frasarJobsComFalha(verificacao.jobsComFalha)
+      : ''
 
   // Defeito real de produção (PR #97): o QA julgou este PR ENQUANTO a
   // verificação ainda rodava (`ciState === 'pending'`), reprovou com "CI
@@ -1793,6 +1879,12 @@ async function julgarEntregaViaRails(
     estado: ciState,
     primeiraVezVistoPendenteEm: linhaDaEntrega?.pendingSince ?? null,
     agora,
+    detalhe: await detalharSemResultado(
+      target.number,
+      pr.head?.sha,
+      verificacao,
+      prDoAlvo?.mergeable_state
+    ),
   })
 
   if (decisao.acao !== 'julgar') {
@@ -1895,7 +1987,9 @@ async function julgarEntregaViaRails(
     `CI status: ${ciState}${
       culpadoDoCancelamento && culpadoDoCancelamento.encontrado
         ? ` — ${frasarCausaDoCancelamento(culpadoDoCancelamento)}`
-        : ''
+        : explicacaoDosJobsComFalha
+          ? ` — ${explicacaoDosJobsComFalha}`
+          : ''
     }. (You MUST NOT approve when CI is not green.)`,
     truncado
       ? `Diff: ${arquivos} file(s), TRUNCATED — you are NOT seeing the whole change. ` +
@@ -2029,7 +2123,9 @@ async function julgarEntregaViaRails(
   const explicacaoDoCancelamento =
     culpadoDoCancelamento && culpadoDoCancelamento.encontrado
       ? `\n\n${frasarCausaDoCancelamento(culpadoDoCancelamento)}`
-      : ''
+      : explicacaoDosJobsComFalha
+        ? `\n\n${explicacaoDosJobsComFalha}`
+        : ''
 
   // 4) Executor determinístico posta o veredito. O GitHub PROÍBE
   // aprovar/pedir-mudanças no PRÓPRIO PR (422) — e o Jules abre o PR pela

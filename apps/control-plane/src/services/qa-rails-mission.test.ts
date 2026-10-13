@@ -1205,7 +1205,7 @@ describe('runQaMissionViaRails', () => {
       expect(posted.reviews).toHaveLength(0)
       expect(posted.comments).toHaveLength(0)
       expect(r.noOp).toBe(true)
-      expect(r.output).toContain('cancelado')
+      expect(r.output).toContain('sem resultado de verificação')
     })
 
     // Fix-up L4-T17 (achado 1 da revisão) — a REGRESSÃO medida ao vivo:
@@ -1215,7 +1215,7 @@ describe('runQaMissionViaRails', () => {
     // aparecem 'cancelled' no nível do job (a mesma armadilha: o passo de
     // Prettier falha e o próprio passo de cancelamento em cadeia derruba o
     // job ATÉ ele, terminando 'cancelled', nunca 'failure'). Sem investigar
-    // os passos quando o estado puro já é 'cancelado', o produto nunca
+    // os passos quando o estado puro já é 'sem-resultado', o produto nunca
     // saberia — ficaria esperando para sempre (mesma régua de pending), que
     // foi exatamente o que travou 5 PRs em loureng/patinhas-3d-crafts.
     it('achado 1: TUDO cancelado nos check-runs (nenhum "failure" à vista), mas um passo escondido falhou de verdade — investiga, promove a red e JULGA', async () => {
