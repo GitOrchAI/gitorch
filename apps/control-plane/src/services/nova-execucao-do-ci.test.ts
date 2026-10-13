@@ -61,6 +61,13 @@ describe('decidirNovaExecucao', () => {
     })
   })
 
+  it('action_required não gera pedido de nova execução, em nenhum estado', () => {
+    for (const estado of ['sem-resultado', 'falha-de-infraestrutura'] as const) {
+      const d = decidirNovaExecucao([exec({ conclusion: 'action_required' })], estado)
+      expect(d.acao).toBe('nada')
+    }
+  })
+
   it('falha de infraestrutura: reexecuta só os jobs que falharam', () => {
     expect(
       decidirNovaExecucao([exec({ conclusion: 'failure' })], 'falha-de-infraestrutura')

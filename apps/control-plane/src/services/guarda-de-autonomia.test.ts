@@ -424,3 +424,28 @@ describe('guardaPorRepositorio — o projeto em andamento decide o nível', () =
     )
   })
 })
+
+describe('nova execução do CI — regra explícita, nível "cuidar"', () => {
+  const RERUN = `${REPO}/actions/runs/123/rerun`
+  const RERUN_FALHOS = `${REPO}/actions/runs/123/rerun-failed-jobs`
+
+  it('as duas rotas são da família "mesclar"', () => {
+    expect(classificarRequisicao({ url: RERUN, metodo: 'POST' })).toBe('mesclar')
+    expect(classificarRequisicao({ url: RERUN_FALHOS, metodo: 'POST' })).toBe('mesclar')
+  })
+
+  it('"cuidar" passa; "sugerir" e "só olhar" são barrados sem tocar o fetch', async () => {
+    for (const url of [RERUN, RERUN_FALHOS]) {
+      const livre = fetchFalso()
+      await guardaDeAutonomia(livre, () => 'cuidar')(url, { method: 'POST' })
+      expect(livre).toHaveBeenCalledTimes(1)
+      for (const nivel of ['sugerir', 'so_olhar'] as const) {
+        const f = fetchFalso()
+        await expect(guardaDeAutonomia(f, () => nivel)(url, { method: 'POST' })).rejects.toThrow(
+          EscritaNaoAutorizadaError
+        )
+        expect(f).not.toHaveBeenCalled()
+      }
+    }
+  })
+})

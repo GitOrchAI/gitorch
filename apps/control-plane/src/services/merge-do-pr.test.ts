@@ -56,6 +56,20 @@ describe('mesclarPr', () => {
     expect(r.mesclado).toBe(false)
   })
 
+  it('NÃO mescla com verificação sem resultado', async () => {
+    let chamado = false
+    const r = await mesclarPr({
+      ...base,
+      ciState: 'sem-resultado',
+      merge: async () => {
+        chamado = true
+        return true
+      },
+    })
+    expect(r.mesclado).toBe(false)
+    expect(chamado).toBe(false)
+  })
+
   // O estado do CI do julgamento foi lido minutos antes (o motor demora).
   // Na porta do merge ele é relido para o commit que vai entrar.
   it('CI verde no julgamento, mas "pending" na leitura fresca do merge: NÃO mescla', async () => {
