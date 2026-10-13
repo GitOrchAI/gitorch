@@ -25,6 +25,8 @@
 #                                         componentes com tamanho;
 #   - apps/control-plane/dist/commit-publicado.txt  o commit que o serviço informa em
 #                                         /api/v1/version.
+# Antes de gerar o tar, confere que todo pacote que o código compilado importa
+# resolve dentro da árvore do pacote (conferir-resolucao-do-pacote.mjs).
 # Fica de fora: .env*, .git, testes, relatórios, caches e as ferramentas de
 # desenvolvimento (teste, lint, compilador).
 #
@@ -75,6 +77,12 @@ trap 'rm -rf "$TMP"' EXIT
 #    obrigatório, se houver .env* dentro de componente ou link quebrado).
 node "$AQUI/empacotar-versao-lista.mjs" "$RAIZ" "$TMP/lista.txt" "$TMP/componentes.json" \
   || falhar "não foi possível montar a lista do pacote (veja a mensagem acima)"
+
+# 1b. Confere que todo pacote importado pelo código compilado resolve DENTRO da
+#     árvore que vai para o pacote (sem carregar nada). Faltando algum, falha
+#     listando todos e não gera tar.
+node "$AQUI/conferir-resolucao-do-pacote.mjs" "$RAIZ" "$TMP/lista.txt" \
+  || falhar "o pacote não levaria tudo o que o serviço importa (veja a lista acima)"
 
 # 2. Arquivos gerados: commit publicado e manifesto.
 PARTE="$TMP/gerado"

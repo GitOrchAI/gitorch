@@ -254,6 +254,70 @@ if [ "$rc" -ne 0 ]; then ok "falha (exit $rc) com a lista final vazia"; else nok
 confere "mensagem em português diz que a lista ficou vazia" grep -q 'lista final do pacote ficou vazia' "$TMP/vazia.log"
 confere_nao "não diz 'pacote pronto' com a lista vazia" grep -q 'pacote pronto' "$TMP/vazia.log"
 
+echo "== caso 8: importação sem pacote correspondente no pacote da versão =="
+# O serviço compilado importa 'pacote-ausente', que não está em nenhum node_modules
+# da lista: subir o pacote daria ERR_MODULE_NOT_FOUND. O empacotador tem de barrar.
+R8="$TMP/arvore-importa-ausente"
+monta_arvore "$R8"
+printf 'import x from "pacote-ausente"\nconsole.log(x)\n' >"$R8/apps/control-plane/dist/index.js"
+rc=0
+roda "$R8" "$COMMIT" "$TMP/saida-ausente" >"$TMP/ausente.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then ok "falha (exit $rc) quando o dist importa pacote ausente"; else nok "deveria falhar quando o dist importa pacote ausente"; fi
+confere "mensagem cita o pacote ausente" grep -q 'pacote-ausente' "$TMP/ausente.log"
+confere "mensagem cita o arquivo que importa" grep -q 'apps/control-plane/dist/index.js' "$TMP/ausente.log"
+confere_nao "nenhum tar deixado para trás com pacote ausente" test -e "$TMP/saida-ausente/gitorch-$COMMIT.tar.gz"
+
+echo "== caso 9: dois pacotes ausentes são listados na mesma execução =="
+R9="$TMP/arvore-dois-ausentes"
+monta_arvore "$R9"
+printf 'import "pacote-ausente-um"\n' >"$R9/apps/control-plane/dist/index.js"
+printf 'import "@escopo/pacote-ausente-dois/sub.js"\n' >"$R9/packages/agents/dist/index.js"
+rc=0
+roda "$R9" "$COMMIT" "$TMP/saida-dois" >"$TMP/dois.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then ok "falha (exit $rc) com dois pacotes ausentes"; else nok "deveria falhar com dois pacotes ausentes"; fi
+confere "cita o primeiro ausente" grep -q 'pacote-ausente-um' "$TMP/dois.log"
+confere "cita o segundo ausente (nome com escopo, sem subcaminho)" grep -q '@escopo/pacote-ausente-dois' "$TMP/dois.log"
+confere "cita o arquivo do pacote do monorepo" grep -q 'packages/agents/dist/index.js' "$TMP/dois.log"
+confere_nao "nenhum tar deixado para trás com dois ausentes" test -e "$TMP/saida-dois/gitorch-$COMMIT.tar.gz"
+
+echo "== caso 10: pacote presente (inclusive por link do pnpm) passa =="
+R10="$TMP/arvore-importa-presente"
+monta_arvore "$R10"
+# fastify: link do pnpm em apps/control-plane/node_modules; zod: link em packages/agents/node_modules.
+printf 'import f from "fastify"\nimport "fastify/index.js"\nconsole.log(f)\n' >"$R10/apps/control-plane/dist/index.js"
+printf 'import { z } from "zod"\nexport { z }\n' >"$R10/packages/agents/dist/index.js"
+if roda "$R10" "$COMMIT" "$TMP/saida-presente" >"$TMP/presente.log" 2>&1; then ok "passa com os pacotes presentes"; else nok "deveria passar com os pacotes presentes (log em seguida)"; cat "$TMP/presente.log" >&2; fi
+confere "tar criado com os pacotes presentes" test -s "$TMP/saida-presente/gitorch-$COMMIT.tar.gz"
+
+echo "== caso 11: node:, embutidos e relativos não contam; dinâmica com expressão é só informada =="
+R11="$TMP/arvore-nao-contam"
+monta_arvore "$R11"
+cat >"$R11/apps/control-plane/dist/index.js" <<'JS'
+import fs from 'node:fs'
+import { readFile } from 'fs/promises'
+import path from 'path'
+import { a } from './services/a.js'
+const nome = process.argv[2]
+const dinamico = await import(`./plugins/${nome}.js`)
+const outro = await import(nome)
+export { fs, readFile, path, a, dinamico, outro }
+JS
+if roda "$R11" "$COMMIT" "$TMP/saida-nao-contam" >"$TMP/nao-contam.log" 2>&1; then ok "node:fs, fs, relativo e dinâmica com expressão não barram"; else nok "node:fs, fs, relativo e dinâmica não deveriam barrar (log em seguida)"; cat "$TMP/nao-contam.log" >&2; fi
+confere "informa quantas importações dinâmicas ficaram sem conferir" grep -q 'importações dinâmicas com expressão (não conferidas): 2' "$TMP/nao-contam.log"
+
+echo "== caso 12: pacote que só resolveria na raiz do checkout (içamento) não vale =="
+# 'zod' existe em node_modules/.pnpm/node_modules (içado) mas não está na cadeia de
+# node_modules do arquivo do control-plane: é exatamente o defeito do prom-client.
+R12="$TMP/arvore-so-na-raiz"
+monta_arvore "$R12"
+printf 'import "zod"\n' >"$R12/apps/control-plane/dist/index.js"
+mkdir -p "$R12/node_modules/zod"
+echo 'raiz' >"$R12/node_modules/zod/index.js"
+rc=0
+roda "$R12" "$COMMIT" "$TMP/saida-raiz" >"$TMP/raiz.log" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then ok "falha (exit $rc) quando o pacote só existe na raiz do checkout"; else nok "deveria falhar quando o pacote só existe na raiz do checkout"; fi
+confere "mensagem cita zod" grep -q 'zod' "$TMP/raiz.log"
+
 echo
 echo "passos ok: $PASSOS, falhas: $FALHAS"
 [ "$FALHAS" -eq 0 ]
