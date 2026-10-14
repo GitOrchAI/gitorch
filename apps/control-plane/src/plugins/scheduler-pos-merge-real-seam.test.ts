@@ -2,25 +2,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import Fastify from 'fastify'
 import { schedulerPlugin } from './scheduler.js'
 
-vi.mock('../config/env.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../config/env.js')>()
-  const mockEnv = {
-    NODE_ENV: 'production',
-    GITORCH_SCHEDULER_TICK_MS: '15',
-    TELEGRAM_BOT_TOKEN: 'fake-token',
-    JULES_API_URL: 'https://jules.fake',
-    JULES_API_KEY: 'jules-key',
-    DATABASE_URL: 'postgres://fake:fake@fake:5432/fake',
-    REDIS_URL: 'redis://fake:6379',
-    JWT_SECRET: 'fake-jwt-secret',
-    GITORCH_CREDENTIAL_KEY: '1234567890123456789012345678901234567890123456789012345678901234',
-    GITHUB_APP_ID: 'fake',
-    GITHUB_APP_PRIVATE_KEY: 'fake',
-    GITORCH_TELEGRAM_BOT_TOKEN: 'fake',
-  }
-  return { ...actual, env: mockEnv, loadEnv: () => mockEnv }
-})
-
 // Tarefa 17 — "a esteira vai até o ar".
 //
 // O RISCO central desta tarefa (nomeado no brief): `varrerPublicacoes` só
@@ -121,11 +102,6 @@ function buildFakePrisma() {
 }
 
 const ENV_KEYS = [
-  'GITHUB_WEBHOOK_SECRET',
-  'DATABASE_URL',
-  'REDIS_URL',
-  'JWT_SECRET',
-  'GITORCH_CREDENTIAL_KEY',
   'NODE_ENV',
   'GITORCH_SCHEDULER_TICK_MS',
   'GITORCH_GITHUB_TOKEN',
@@ -158,12 +134,6 @@ describe('varrerPublicacoes wiring em schedulerPlugin (real seam)', () => {
     // Achado 3: canal de Telegram real (mockado na rede), para o aviso de
     // fechamento por `sem-publicacao` disparar de verdade.
     process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = 'bot-token-de-teste'
-    process.env['GITHUB_WEBHOOK_SECRET'] = 'fake'
-    process.env['DATABASE_URL'] = 'postgres://fake:fake@fake:5432/fake'
-    process.env['REDIS_URL'] = 'redis://fake:6379'
-    process.env['JWT_SECRET'] = 'fake-secret-that-must-be-at-least-32-chars-long'
-    process.env['GITORCH_CREDENTIAL_KEY'] =
-      '1234567890123456789012345678901234567890123456789012345678901234'
   })
 
   afterEach(async () => {
