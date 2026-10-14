@@ -5,7 +5,7 @@ import Fastify from 'fastify'
 vi.mock('@prisma/client', async () => ({
   PrismaClient: class {
     constructor() {}
-    $transaction(cb: any) {
+    $transaction(cb: unknown) {
       return cb(this)
     }
     $use() {}
@@ -35,8 +35,8 @@ vi.mock('node-fetch', () => ({
 }))
 
 import fetch from 'node-fetch'
-// @ts-expect-error missing type
-type RequestInit = any
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type RequestInit = unknown
 
 //
 
@@ -56,7 +56,7 @@ describe('schedulerPlugin - entrega-voltou-fila', () => {
     const createCalls: unknown[] = []
 
     const prismaMock = {
-      $transaction: vi.fn(async (cb: any) => (cb as unknown)(prismaMock)),
+      $transaction: vi.fn(async (cb: unknown) => (cb as unknown)(prismaMock)),
       repository: {
         findUnique: vi.fn(async () => ({
           id: 'repo-1',
@@ -84,14 +84,15 @@ describe('schedulerPlugin - entrega-voltou-fila', () => {
       agentMission: { findMany: vi.fn(async () => []) },
       agentMissionLog: { create: vi.fn() },
       event: {
-        create: vi.fn(async (args: any) => {
+        create: vi.fn(async (args: unknown) => {
           createCalls.push(args)
           return { id: 'ev-1' }
         }),
         findMany: vi.fn(async () => []),
-        findFirst: vi.fn(async (args: any) =>
+        findFirst: vi.fn(async (args: unknown) =>
           createCalls.find(
-            (c) => (c as unknown).data?.payload?.chave === (args as unknown).where?.payload?.path[1]
+            (c: unknown) =>
+              (c as unknown).data?.payload?.chave === (args as unknown).where?.payload?.path[1]
           )
             ? { id: 'ev-1' }
             : null
