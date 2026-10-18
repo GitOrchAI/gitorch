@@ -62,7 +62,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "22.20.5",
     "eslint": "^8.0.0",
-    "fast-uri": "4.2.1",
+    "fast-uri": "4.2.2",
     "prisma": "^5.22.0",
     "tsx": "^4.23.15",
     "typescript": "^5.4.0",
