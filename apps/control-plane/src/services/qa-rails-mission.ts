@@ -27,6 +27,8 @@ import { baseDoPrDe, branchPadraoDoRepositorio } from './base-do-dev.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 import { hashDaMensagem } from './session-watch.js'
 import { fetchComTeto } from './fetch-com-teto.js'
+import { ABERTURA_DO_AVISO_AO_PARTICIPANTE, lerEsperaDoDonoMs } from './assumir-pedido-do-dono.js'
+import { descreverTempoParado } from './vigia-do-pr.js'
 import {
   acharParecerNesteHead,
   ehAprovacao,
@@ -101,10 +103,12 @@ const FRASE_DA_MESCLA_DO_DONO = 'A mescla é do dono do repositório'
 function avisoAoParticipante(
   veredito: 'approve' | 'request_changes',
   /** O produto pode mesclar este PR sozinho (só a conta do dono)? */
-  mesclaSozinho: boolean
+  mesclaSozinho: boolean,
+  /** Como tratar o PR da conta do dono na reprovação (o dono não olha PR). */
+  modoDoDono: ModoDoAvisoAoDono = null
 ): string {
   const abertura =
-    'GitOrch analisou este PR porque você é participante do repositório (o GitHub informa ' +
+    `${ABERTURA_DO_AVISO_AO_PARTICIPANTE} (o GitHub informa ` +
     'a sua relação com ele; texto do PR não conta).'
   if (veredito === 'approve' && !mesclaSozinho) {
     return (
@@ -120,6 +124,21 @@ function avisoAoParticipante(
       'travas passam: aprovação neste commit exato, verificação automática verde, diff lido por ' +
       'inteiro, PR apontando para a branch principal e sem conflito (o GitHub recusa a mescla ' +
       'se houver). Um commit novo reabre o julgamento.'
+    )
+  }
+  if (modoDoDono === 'assume') {
+    return (
+      `${abertura} Parecer: pedir mudanças — veja os pontos acima. Nada é preciso da sua parte: ` +
+      `se ninguém mexer neste PR em ${descreverTempoParado(lerEsperaDoDonoMs())}, o GitOrch assume o ajuste, ` +
+      'pede ao dev automático que refaça o trabalho a partir da branch principal e abre uma ' +
+      'entrega nova que substitui esta.'
+    )
+  }
+  if (modoDoDono === 'sem-tarefa') {
+    return (
+      `${abertura} Parecer: pedir mudanças — veja os pontos acima. Este PR não está ligado a ` +
+      'nenhuma tarefa do projeto, então o GitOrch não consegue passar o ajuste ao dev ' +
+      'automático por conta própria; um commit novo neste PR reabre o julgamento.'
     )
   }
   return (
@@ -326,7 +345,27 @@ export interface VigiliaDoJulgamentoOptions {
     headSha: string | undefined
     entendimento: QaVerdictForm['entendimento']
   }) => Promise<void>
+  /**
+   * Como o aviso da reprovação fala com o autor de um PR de participante.
+   * `'assume'`: a conta é a do dono e o projeto é `cuidar`, então o produto
+   * passa o ajuste ao dev automático se ninguém mexer (o dono não precisa fazer
+   * nada); `'sem-tarefa'`: o mesmo caso, mas o PR não está ligado a nenhuma
+   * tarefa e o produto não consegue assumir; `null`: texto de sempre.
+   *
+   * Gancho obrigatório pelo mesmo motivo dos demais: quem sabe a autonomia do
+   * projeto e quem é o dono é o scheduler, e esquecer de ligá-lo faria o
+   * parecer continuar dizendo que o trabalho é de quem nunca vai olhar.
+   */
+  avisoParaPrDoDono?: (args: {
+    numeroDoPr: number
+    autor: string | undefined
+    /** Rótulos do PR; `gitorch:nao-mexer` tira o produto da jogada. */
+    rotulos: string[]
+  }) => Promise<'assume' | 'sem-tarefa' | null>
 }
+
+/** Como o aviso da reprovação trata o PR da conta do dono (ver `avisoParaPrDoDono`). */
+type ModoDoAvisoAoDono = 'assume' | 'sem-tarefa' | null
 
 import type { PrismaClient } from '@prisma/client'
 
@@ -727,6 +766,7 @@ async function julgarEntregaViaRails(
   type PrAberto = {
     number: number
     user?: { login?: string; type?: string }
+    labels?: Array<{ name?: string }>
     /** O que o GITHUB afirma sobre a relação do autor com o repositório (OWNER, MEMBER, NONE…). */
     author_association?: string
     draft?: boolean
@@ -765,6 +805,25 @@ async function julgarEntregaViaRails(
    * (risco de injeção) e uma conta de colaborador pode estar comprometida.
    */
   let associacaoDoParticipante: string | null = null
+  /**
+   * Como o aviso da reprovação trata a conta do dono. Falha em descobrir cai no
+   * texto de sempre: o parecer nunca deixa de sair por isso.
+   */
+  const modoDoAvisoAoDono = async (): Promise<ModoDoAvisoAoDono> => {
+    if (!options.avisoParaPrDoDono || target === undefined) return null
+    try {
+      return await options.avisoParaPrDoDono({
+        numeroDoPr: target.number,
+        autor: target.user?.login,
+        rotulos: (target.labels ?? []).map((l) => l.name ?? ''),
+      })
+    } catch (err) {
+      options.onWarn?.(
+        `qa-rails-mission: não deu para descobrir se o produto assume o PR #${target.number}: ${(err as Error).message}`
+      )
+      return null
+    }
+  }
   // Tarefa 10: true quando o PR escolhido já tinha uma aprovação NOSSA
   // marcada NESTE MESMO head — ou seja, esta passagem está RETOMANDO uma
   // mescla que falhou antes, não abrindo julgamento novo. É o que diferencia
@@ -1786,7 +1845,9 @@ async function julgarEntregaViaRails(
       'REQUEST_CHANGES',
       `${JULES_MARKER}\n${MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA}\n` +
         'GitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.' +
-        (participante ? `\n\n${avisoAoParticipante('request_changes', false)}` : '')
+        (participante
+          ? `\n\n${avisoAoParticipante('request_changes', false, await modoDoAvisoAoDono())}`
+          : '')
     )
     if (cobranca === 'perdeu-a-trava') return resultadoDeQuemPerdeuATrava()
 
@@ -2191,7 +2252,11 @@ async function julgarEntregaViaRails(
   // que lê a review no GitHub precisa saber, sempre, que isto é uma opinião
   // e não um convite a clicar em "merge" esperando o produto terminar.
   const avisoDeNaoMesclar = participante
-    ? `\n\n${avisoAoParticipante(effectiveVerdict, podeMesclarEste)}`
+    ? `\n\n${avisoAoParticipante(
+        effectiveVerdict,
+        podeMesclarEste,
+        effectiveVerdict === 'request_changes' ? await modoDoAvisoAoDono() : null
+      )}`
     : delegado
       ? ''
       : `\n\n${MARCA_SEM_PODER_DE_MESCLAR}\n` +

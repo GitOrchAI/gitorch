@@ -5953,6 +5953,78 @@ describe('PR de participante do repositório', () => {
     expect(lerHistoricoDoProjeto).not.toHaveBeenCalled()
   })
 
+  describe('parecer em PR da conta do dono (projeto cuidar)', () => {
+    it('reprovação: diz o que mudar e que o produto assume em um dia; não diz que o trabalho é do dono', async () => {
+      const avisoParaPrDoDono = vi.fn().mockResolvedValue('assume')
+      const { posted } = await julgar(
+        [{ number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER' }],
+        { sessoes: [], avisoParaPrDoDono },
+        {},
+        REQUEST_CHANGES
+      )
+      expect(avisoParaPrDoDono).toHaveBeenCalledWith({
+        numeroDoPr: 120,
+        autor: 'conta-do-dono',
+        rotulos: [],
+      })
+      const corpo = posted.reviews[0]!.body ?? ''
+      expect(corpo).toContain('pedir mudanças')
+      expect(corpo).not.toContain('O trabalho é seu')
+      expect(corpo).not.toContain('Ajuste e envie um commit novo')
+      expect(corpo).toContain('Nada é preciso da sua parte')
+      expect(corpo).toContain('24 horas')
+      expect(corpo).toContain('GitOrch assume o ajuste')
+    })
+
+    it('reprovação sem tarefa de origem: não promete o que não consegue cumprir', async () => {
+      const avisoParaPrDoDono = vi.fn().mockResolvedValue('sem-tarefa')
+      const { posted } = await julgar(
+        [{ number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER' }],
+        { sessoes: [], avisoParaPrDoDono },
+        {},
+        REQUEST_CHANGES
+      )
+      const corpo = posted.reviews[0]!.body ?? ''
+      expect(corpo).not.toContain('O trabalho é seu')
+      expect(corpo).not.toContain('GitOrch assume o ajuste')
+      expect(corpo).toContain('não está ligado a nenhuma tarefa')
+    })
+
+    it('PR de outra pessoa (ou projeto que não é cuidar) mantém o texto de sempre', async () => {
+      const avisoParaPrDoDono = vi.fn().mockResolvedValue(null)
+      const { posted } = await julgar(
+        [{ number: 120, user: 'colega-da-equipe', authorAssociation: 'MEMBER' }],
+        { sessoes: [], avisoParaPrDoDono },
+        {},
+        REQUEST_CHANGES
+      )
+      const corpo = posted.reviews[0]!.body ?? ''
+      expect(corpo).toContain('O trabalho é seu')
+      expect(corpo).not.toContain('GitOrch assume o ajuste')
+    })
+
+    it('aprovação não muda com o modo do dono', async () => {
+      const avisoParaPrDoDono = vi.fn().mockResolvedValue('assume')
+      const { posted } = await julgar(
+        [{ number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER' }],
+        { sessoes: [], avisoParaPrDoDono }
+      )
+      const corpo = posted.reviews[0]!.body ?? ''
+      expect(corpo).not.toContain('GitOrch assume o ajuste')
+    })
+
+    it('a falha em descobrir o modo não derruba o julgamento e cai no texto de sempre', async () => {
+      const avisoParaPrDoDono = vi.fn().mockRejectedValue(new Error('banco fora'))
+      const { posted } = await julgar(
+        [{ number: 120, user: 'conta-do-dono', authorAssociation: 'OWNER' }],
+        { sessoes: [], avisoParaPrDoDono },
+        {},
+        REQUEST_CHANGES
+      )
+      expect(posted.reviews[0]!.body).toContain('O trabalho é seu')
+    })
+  })
+
   it('"Closes #50" no corpo do PR do participante NÃO escreve rótulo na issue do cliente nem move o card', async () => {
     const moveCard = vi.fn().mockResolvedValue('moved')
     // issue #50 carrega 'jules' e 'gitorch:task' (default do dublê)

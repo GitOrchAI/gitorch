@@ -27,7 +27,7 @@ import { enderecoPermitido } from '../services/endereco-seguro.js'
 import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/dev-session-store.js'
 import { fecharPrsSubstituidos, type SinaisDoPrNovo } from '../services/pr-substituido.js'
 import { baseDoPrDe, branchPadraoDoRepositorio, campoNumero } from '../services/base-do-dev.js'
-import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
+import { ehEntregaDoDevOuAssumida, prsAssumidosDaIssue } from '../services/vigia-do-pr.js'
 import { ehParticipanteDoRepo } from '../services/participante-do-repo.js'
 import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import { nivelDoRepositorio } from '../services/nivel-do-repositorio.js'
@@ -353,6 +353,11 @@ export async function fecharPrsSubstituidosDaEntrega(deps: {
   lerPr: (numeroDoPr: number) => Promise<{ aberto: boolean; ehDoDev: boolean } | null>
   comentariosDoPr: (numeroDoPr: number) => Promise<string[]>
   comentarEFechar: (args: { numeroDoPr: number; comentario: string }) => Promise<void>
+  /**
+   * PRs que o vigia assumiu para esta tarefa (PR da conta do dono, sem sessão
+   * original com o número dele). Soma-se aos de `dev_sessions`.
+   */
+  prsAssumidosDaIssue?: (issueNumber: number) => Promise<number[]>
   onInfo?: (m: string) => void
   onWarn?: (m: string) => void
 }): Promise<number[]> {
@@ -381,11 +386,12 @@ export async function fecharPrsSubstituidosDaEntrega(deps: {
           },
           select: { pullRequestNumber: true },
         })) as unknown as Array<{ pullRequestNumber: number | null }>
+        const assumidos = (await deps.prsAssumidosDaIssue?.(issueNumber)) ?? []
         return [
           ...new Set(
-            linhas
-              .map((l) => l.pullRequestNumber)
-              .filter((n): n is number => n !== null && n !== numeroDoNovoPr)
+            [...linhas.map((l) => l.pullRequestNumber), ...assumidos].filter(
+              (n): n is number => n !== null && n !== numeroDoNovoPr
+            )
           ),
         ]
       },
@@ -860,6 +866,8 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
                     sessionName: ligado.sessionName,
                     numeroDoNovoPr: ligado.numeroDoPr,
                     branchPadrao,
+                    prsAssumidosDaIssue: (issueNumber) =>
+                      prsAssumidosDaIssue(app.prisma, { projectId: project.id, issueNumber }),
                     lerPrNovo: async () => {
                       const resp = await ghSubstituicao(
                         `repos/${project.wingId}/pulls/${ligado.numeroDoPr}`
@@ -884,10 +892,17 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
                       }
                       return {
                         aberto: pr.state === 'open',
-                        ehDoDev: ehPRDaAutomacao({
-                          autor: pr.user?.login ?? null,
-                          labels: (pr.labels ?? []).map((l) => l.name ?? ''),
-                          corpo: pr.body ?? null,
+                        // Entrega do dev, ou PR que o vigia assumiu (aberto pela
+                        // conta do dono e parado): o produto só fecha o que ele
+                        // mesmo encomendou ou assumiu.
+                        ehDoDev: await ehEntregaDoDevOuAssumida(app.prisma, {
+                          projectId: project.id,
+                          numeroDoPr,
+                          sinais: {
+                            autor: pr.user?.login ?? null,
+                            labels: (pr.labels ?? []).map((l) => l.name ?? ''),
+                            corpo: pr.body ?? null,
+                          },
                         }),
                       }
                     },
