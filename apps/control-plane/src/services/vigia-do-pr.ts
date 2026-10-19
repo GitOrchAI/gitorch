@@ -30,6 +30,7 @@ import { pedidoDeRebase } from './conflito-de-merge.js'
 import { instrucaoDePrNovoAPartirDoRamo } from './pedido-de-pr-novo.js'
 import { baseDoDev } from './base-do-dev.js'
 import { ehPrDeSeguranca } from './pr-de-seguranca.js'
+import { lerEsperaDoDonoMs } from './assumir-pedido-do-dono.js'
 import { lerEstadoDoCiDoHead, type EstadoDoCi } from './estado-da-verificacao-do-github.js'
 
 /**
@@ -186,6 +187,79 @@ export async function contarAcoesDoVigia(
   args: { projectId: string; numeroDoPr: number; depoisDe?: Date }
 ): Promise<number> {
   return db.event.count({ where: filtroDeAcoesDoVigia(args) })
+}
+
+/**
+ * O vigia já abriu uma retomada para este PR? É a prova de que o produto o
+ * assumiu: só então o PR da conta do dono pode ser fechado como substituído
+ * quando a entrega nova chega (`pr-substituido.ts` só fecha o que é do dev).
+ * PR de gente que o produto nunca assumiu continua intocável.
+ */
+export async function prFoiAssumidoPeloVigia(
+  db: ContadorDeEventos,
+  args: { projectId: string; numeroDoPr: number }
+): Promise<boolean> {
+  const total = await db.event.count({
+    where: {
+      ...filtroDeAcoesDoVigia(args),
+      AND: [{ payload: { path: ['vigiaDoPr', 'acao'], equals: 'retomar' } }],
+    },
+  })
+  return total > 0
+}
+
+/**
+ * Os PRs que o vigia já retomou para esta tarefa. A retomada de um PR da conta
+ * do dono não tem sessão original com o número dele (ao ligar o PR novo, a
+ * linha da sessão passa a apontar para o novo); o registro do vigia é a pista
+ * que sobra para o PR novo achar o antigo e substituí-lo.
+ */
+export async function prsAssumidosDaIssue(
+  db: {
+    event: {
+      findMany: (args: {
+        where: Prisma.EventWhereInput
+        select: { payload: true }
+      }) => Promise<Array<{ payload: Prisma.JsonValue }>>
+    }
+  },
+  args: { projectId: string; issueNumber: number }
+): Promise<number[]> {
+  const linhas = await db.event.findMany({
+    where: {
+      projectId: args.projectId,
+      type: 'audit',
+      createdAt: { gte: CORTE_DAS_RETOMADAS_COM_DEFEITO },
+      AND: [
+        { payload: { path: ['vigiaDoPr', 'acao'], equals: 'retomar' } },
+        { payload: { path: ['vigiaDoPr', 'issueNumber'], equals: args.issueNumber } },
+      ],
+    },
+    select: { payload: true },
+  })
+  const numeros = new Set<number>()
+  for (const linha of linhas) {
+    const payload = linha.payload
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) continue
+    const vigia = payload['vigiaDoPr']
+    if (vigia === null || typeof vigia !== 'object' || Array.isArray(vigia)) continue
+    const numero = vigia['numeroDoPr']
+    if (typeof numero === 'number') numeros.add(numero)
+  }
+  return [...numeros]
+}
+
+/**
+ * O pull request antigo é coisa que o produto pode fechar como substituído?
+ * Entrega do dev (sinais da automação) ou PR da conta do dono que o vigia
+ * assumiu. PR de gente que o produto nunca assumiu não é: continua intocável.
+ */
+export async function ehEntregaDoDevOuAssumida(
+  db: ContadorDeEventos,
+  args: { projectId: string; numeroDoPr: number; sinais: SinaisDePR }
+): Promise<boolean> {
+  if (ehPRDaAutomacao(args.sinais)) return true
+  return prFoiAssumidoPeloVigia(db, { projectId: args.projectId, numeroDoPr: args.numeroDoPr })
 }
 
 /**
@@ -386,6 +460,8 @@ export type AcaoDoVigia =
       /** O ramo em que a sessão nova nasce e para onde ela devolve o trabalho. */
       branchDoPr: string
       motivo: string
+      /** O pull request é da conta do dono e o produto o assumiu depois da espera. */
+      assumidoDoDono?: true
     }
   /** Fechar o pull request dizendo por quê. */
   | { acao: 'fechar'; motivo: string }
@@ -610,6 +686,23 @@ export interface VigiaDoPrDeps {
   vagasLivres: number
   decidirAcaoNoPrOrfao?: (pr: PrOrfaoObservado, rawPr: PrAberto) => Promise<AcaoDoVigia>
   /**
+   * O pull request foi aberto pela conta do DONO do projeto? Só vale para o que
+   * NÃO é entrega do dev (esse segue o caminho do dev). Sem esta dep e sem
+   * `decidirPedidoDoDono`, PR de gente continua intocado.
+   */
+  ehPrDoDono?: ((pr: PrAberto) => boolean) | undefined
+  /**
+   * O que fazer com um PR da conta do dono (ver `decisao-do-pedido-do-dono.ts`).
+   * Devolve a MESMA ação de retomada dos PRs do dev, ou `ignorar`. Passa pelo
+   * teto desta passada e pela execução dos demais.
+   */
+  decidirPedidoDoDono?:
+    | ((
+        pr: PrAberto,
+        contexto: { issueNumber: number | null; acoesAnteriores: number; podeAbrirSessao: boolean }
+      ) => Promise<AcaoDoVigia>)
+    | undefined
+  /**
    * Fase 5.3: o caminho expresso do Dependabot. Recebe o PR cru e devolve só se
    * mesclou e por quê: o vigia NÃO tem caminho de conserto para o Dependabot
    * (não retoma sessão, não fecha, não escala), então nada daqui vira ação.
@@ -727,6 +820,35 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
   let adiadosPeloTeto = 0
   let falhas = 0
 
+  const decidirDoDono = deps.decidirPedidoDoDono
+
+  // A decisão dos PRs do dev: monta o que a decisão precisa saber e decide.
+  const decidirDoDev = async (pr: PrAberto, issueNumber: number | null): Promise<AcaoDoVigia> => {
+    const prObservado: PrOrfaoObservado = {
+      numero: pr.numero,
+      sinais: pr,
+      temSessaoViva: false,
+      issueNumber,
+      rascunho: pr.rascunho,
+      // Quando não há tarefa de origem, a decisão nem chega a olhar para
+      // isto (o portão 5 vem antes) — e assim não se gasta a leitura.
+      issueAberta: issueNumber === null ? true : await deps.issueAberta(issueNumber),
+      branchDoPr: pr.branchDoPr,
+      branchNoRepoDoProjeto: pr.branchNoRepoDoProjeto,
+      headSha: pr.headSha,
+      mergeable: pr.mergeable,
+      verificacao: pr.verificacao,
+      paradoHaMs: pr.paradoHaMs,
+      acoesAnteriores: await deps.acoesAnteriores(pr.numero),
+      tarefaJaDevolvidaAFila:
+        issueNumber === null ? false : await deps.tarefaJaDevolvidaAFila(issueNumber),
+      podeAbrirSessao: vagas > 0,
+    }
+    return deps.decidirAcaoNoPrOrfao
+      ? deps.decidirAcaoNoPrOrfao(prObservado, pr)
+      : decidirAcaoNoPrOrfao(prObservado)
+  }
+
   for (const pr of prs) {
     try {
       // O pull request do aplicador de segurança é do dono: o vigia não o
@@ -736,7 +858,12 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         deSeguranca += 1
         continue
       }
-      if (!ehPRDaAutomacao(pr)) {
+      // O PR da conta do DONO que não é entrega do dev: o dono não olha PR, então
+      // quem abriu foi outro robô dele. Vai para a decisão própria; PR de
+      // qualquer outra pessoa continua sem ser tocado.
+      const doDono =
+        decidirDoDono !== undefined && !ehPRDaAutomacao(pr) && deps.ehPrDoDono?.(pr) === true
+      if (!doDono && !ehPRDaAutomacao(pr)) {
         deGente += 1
         continue
       }
@@ -763,36 +890,22 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         comSessaoViva += 1
         continue
       }
-      if (pr.paradoHaMs < IDADE_MINIMA_DE_ORFANDADE_MS) {
+      // PR do dono: a espera é medida pelo último movimento de gente, na decisão
+      // dele; a idade do commit sozinha não diz nada.
+      if (!doDono && pr.paradoHaMs < IDADE_MINIMA_DE_ORFANDADE_MS) {
         quietos += 1
         continue
       }
 
       const issueNumber = deps.issueDoPr(pr.numero)
-      const prObservado: PrOrfaoObservado = {
-        numero: pr.numero,
-        sinais: pr,
-        temSessaoViva: false,
-        issueNumber,
-        rascunho: pr.rascunho,
-        // Quando não há tarefa de origem, a decisão nem chega a olhar para
-        // isto (o portão 5 vem antes) — e assim não se gasta a leitura.
-        issueAberta: issueNumber === null ? true : await deps.issueAberta(issueNumber),
-        branchDoPr: pr.branchDoPr,
-        branchNoRepoDoProjeto: pr.branchNoRepoDoProjeto,
-        headSha: pr.headSha,
-        mergeable: pr.mergeable,
-        verificacao: pr.verificacao,
-        paradoHaMs: pr.paradoHaMs,
-        acoesAnteriores: await deps.acoesAnteriores(pr.numero),
-        tarefaJaDevolvidaAFila:
-          issueNumber === null ? false : await deps.tarefaJaDevolvidaAFila(issueNumber),
-        podeAbrirSessao: vagas > 0,
-      }
-
-      const decisao = deps.decidirAcaoNoPrOrfao
-        ? await deps.decidirAcaoNoPrOrfao(prObservado, pr)
-        : decidirAcaoNoPrOrfao(prObservado)
+      const decisao: AcaoDoVigia =
+        doDono && decidirDoDono
+          ? await decidirDoDono(pr, {
+              issueNumber,
+              acoesAnteriores: await deps.acoesAnteriores(pr.numero),
+              podeAbrirSessao: vagas > 0,
+            })
+          : await decidirDoDev(pr, issueNumber)
 
       // O TETO DESTA PASSADA (ACHADO 2 do QA). Fica DEPOIS da decisão e ANTES
       // da execução de propósito: o que ele corta não é "o que olhar", é "o
@@ -841,8 +954,12 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
           await deps.registrarDecisao({
             numeroDoPr: pr.numero,
             acao: 'retomar',
-            texto:
-              decisao.causa === 'conflito'
+            // A tarefa fica no registro: é por ela que o PR novo acha este PR
+            // (o do dono não tem sessão original) para substituí-lo.
+            issueNumber: decisao.issueNumber,
+            texto: decisao.assumidoDoDono
+              ? `O pull request #${pr.numero}, aberto pela conta do dono, ficou ${descreverTempoParado(lerEsperaDoDonoMs())} sem ninguém mexer; passei o ajuste ao dev automático (tarefa #${decisao.issueNumber}), que parte da branch principal e abre uma entrega nova.`
+              : decisao.causa === 'conflito'
                 ? `A entrega #${pr.numero} (tarefa #${decisao.issueNumber}) estava com conflito e sem ninguém atrás dela; abri trabalho novo para resolver.`
                 : `A entrega #${pr.numero} (tarefa #${decisao.issueNumber}) estava com a verificação vermelha e sem ninguém atrás dela; abri trabalho novo para consertar.`,
           })
@@ -1077,6 +1194,12 @@ export async function listarPrsAbertosParaOVigia(args: {
   prsComSessaoViva: Set<number>
   agora: Date
   onWarn: (m: string) => void
+  /**
+   * A conta que abriu o PR é a do dono do projeto? Para esse PR (que não é do
+   * dev) a leitura também traz o estado e a data do último commit, que a
+   * decisão do pedido do dono precisa. Sem esta função, só a automação é lida.
+   */
+  ehContaDoDono?: ((autor: string | null) => boolean) | undefined
 }): Promise<PrAberto[]> {
   type PrCru = {
     number: number
@@ -1122,9 +1245,10 @@ export async function listarPrsAbertosParaOVigia(args: {
       verificacao: 'pendente',
       paradoHaMs: 0,
     }
+    const doDono = !ehPRDaAutomacao(sinais) && args.ehContaDoDono?.(sinais.autor) === true
     if (
       ehPrDeSeguranca({ ramo: base.branchDoPr, corpo: sinais.corpo }) ||
-      !ehPRDaAutomacao(sinais) ||
+      (!doDono && !ehPRDaAutomacao(sinais)) ||
       ehAutomacaoQueOVigiaNaoConserta(sinais) ||
       args.prsComSessaoViva.has(cru.number)
     ) {

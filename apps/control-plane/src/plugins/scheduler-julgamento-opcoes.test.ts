@@ -498,6 +498,85 @@ describe('montarOpcoesDoJulgamento', () => {
     })
   })
 
+  describe('avisoParaPrDoDono devolvido', () => {
+    function prismaComTarefa(tarefaDoPr: Array<{ pr: number; issue: number }>) {
+      const base = prismaFalso() as unknown as Record<string, Record<string, unknown>>
+      base['devSession'] = {
+        ...base['devSession'],
+        findMany: vi.fn(async () =>
+          tarefaDoPr.map((t) => ({
+            pullRequestNumber: t.pr,
+            issueNumber: t.issue,
+            closedAt: new Date('2026-01-01T00:00:00Z'),
+          }))
+        ),
+      }
+      base['repoItem'] = { ...base['repoItem'], findMany: vi.fn(async () => []) }
+      return base as unknown as PrismaDoJulgamento
+    }
+
+    function opcoes(
+      sobrepor: {
+        autonomia?: string
+        loginDoDono?: string | null
+        prisma?: PrismaDoJulgamento
+      } = {}
+    ) {
+      return montarOpcoesDoJulgamento({
+        runtimeConfig: null,
+        cortex: cortexFalso().cortex,
+        prisma: sobrepor.prisma ?? prismaComTarefa([{ pr: 7, issue: 3 }]),
+        projectId: 'proj_1',
+        autonomia: sobrepor.autonomia ?? 'cuidar',
+        loginDoDono: sobrepor.loginDoDono === undefined ? 'dono' : sobrepor.loginDoDono,
+      })
+    }
+
+    test('cuidar, conta do dono, PR ligado a uma tarefa: o produto assume', async () => {
+      expect(await opcoes().avisoParaPrDoDono({ numeroDoPr: 7, autor: 'Dono', rotulos: [] })).toBe(
+        'assume'
+      )
+    })
+
+    test('cuidar, conta do dono, PR sem tarefa: avisa que não consegue assumir', async () => {
+      expect(await opcoes().avisoParaPrDoDono({ numeroDoPr: 8, autor: 'dono', rotulos: [] })).toBe(
+        'sem-tarefa'
+      )
+    })
+
+    test('autor que não é o dono: texto de sempre', async () => {
+      expect(
+        await opcoes().avisoParaPrDoDono({ numeroDoPr: 7, autor: 'colega', rotulos: [] })
+      ).toBeNull()
+    })
+
+    test.each(['sugerir', 'so_olhar'])('autonomia %s: texto de sempre', async (autonomia) => {
+      expect(
+        await opcoes({ autonomia }).avisoParaPrDoDono({ numeroDoPr: 7, autor: 'dono', rotulos: [] })
+      ).toBeNull()
+    })
+
+    test('dono sem login conhecido: texto de sempre', async () => {
+      expect(
+        await opcoes({ loginDoDono: null }).avisoParaPrDoDono({
+          numeroDoPr: 7,
+          autor: 'dono',
+          rotulos: [],
+        })
+      ).toBeNull()
+    })
+
+    test('PR marcado para o produto não mexer: texto de sempre', async () => {
+      expect(
+        await opcoes().avisoParaPrDoDono({
+          numeroDoPr: 7,
+          autor: 'dono',
+          rotulos: ['gitorch:nao-mexer'],
+        })
+      ).toBeNull()
+    })
+  })
+
   test('avisarDono presente no objeto devolvido quando um notificador foi construído', () => {
     const notify = vi.fn(async (_mensagem: string) => true)
     const opcoes = montarOpcoesDoJulgamento({

@@ -1,4 +1,6 @@
 import { decidirAcaoNoPrOrfaoIntegrado } from '../services/decisao-do-vigia.js'
+import { decidirPedidoDoDono } from '../services/decisao-do-pedido-do-dono.js'
+import { ehContaDoDono, temMarcaNaoMexer } from '../services/assumir-pedido-do-dono.js'
 import { decidirDependabotDoVigia } from '../services/dependabot-expresso.js'
 import { MAX_REQUEUE } from '../services/sessao-terminal.js'
 import fp from 'fastify-plugin'
@@ -304,7 +306,7 @@ import {
 import { TASK_LABEL } from '../services/sm-delegation.js'
 import { diagnosticarIssues } from '../services/diagnostico-de-issues.js'
 import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
-import { carregarIssuePorPr } from '../services/issue-por-pr-do-vigia.js'
+import { carregarIssuePorPr, type BancoDoIssuePorPr } from '../services/issue-por-pr-do-vigia.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
 import {
   ambientesDeclaradosPeloProjeto,
@@ -1283,6 +1285,13 @@ export function montarOpcoesDoJulgamento(args: {
    * contaria a reprovação de um dono na conta do outro.
    */
   projectId: string
+  /**
+   * Autonomia do projeto e login do dono no GitHub: com eles o parecer sabe se
+   * o PR da conta do dono será assumido pelo produto (ver `avisoParaPrDoDono`).
+   * Sem eles o texto é o de sempre.
+   */
+  autonomia?: string | null | undefined
+  loginDoDono?: string | null | undefined
   avisarDono?: ((mensagem: string) => Promise<boolean>) | undefined
 }): Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>> &
   Pick<VigiliaDoJulgamentoOptions, 'avisarDono'> {
@@ -1394,6 +1403,20 @@ export function montarOpcoesDoJulgamento(args: {
         runtimeConfig: args.runtimeConfig,
         deps: { cortex: args.cortex, now: () => new Date().toISOString() },
       })
+    },
+    // O parecer ao PR da conta do dono: em projeto `cuidar` o produto assume o
+    // ajuste se ninguém mexer, e o texto diz isso em vez de entregar o trabalho
+    // a quem não olha PR. Sem tarefa de origem ele não consegue assumir, e o
+    // texto diz isso também.
+    avisoParaPrDoDono: async ({ numeroDoPr, autor, rotulos }) => {
+      if (args.autonomia !== 'cuidar') return null
+      if (!ehContaDoDono(autor, args.loginDoDono)) return null
+      if (temMarcaNaoMexer(rotulos)) return null
+      const { issuePorPr } = await carregarIssuePorPr(
+        args.prisma as unknown as BancoDoIssuePorPr,
+        args.projectId
+      )
+      return issuePorPr.has(numeroDoPr) ? 'assume' : 'sem-tarefa'
     },
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
@@ -3842,6 +3865,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
   // para o próximo; erro real encerra em failed. Nunca mascara: o estado final
   // é sempre gravado (completed com o motor que deu certo, ou failed com o erro).
+  /** O login do dono do projeto no GitHub, ou `null` quando não há (ou a leitura falha). */
+  const loginDoDonoDoProjeto = async (userId: string | null): Promise<string | null> => {
+    if (!userId) return null
+    try {
+      const dono = await app.prisma.user.findUnique({
+        where: { id: userId },
+        select: { githubLogin: true },
+      })
+      return dono?.githubLogin ?? null
+    } catch (err) {
+      app.log.warn(err, '[Scheduler] não deu para ler o login do dono do projeto')
+      return null
+    }
+  }
+
   const executeMissionWithFailover = async (
     missionId: string,
     project: ChainProject,
@@ -5138,6 +5176,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                         cortex: app.cortex,
                         runtimeConfig: project.runtimeConfig,
                         projectId: project.id,
+                        autonomia: project.autonomia,
+                        loginDoDono: await loginDoDonoDoProjeto(project.userId),
                         avisarDono,
                       }),
                       // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
@@ -7805,6 +7845,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         devPlan: true,
         devAccountId: true,
         autonomia: true,
+        // O login do dono no GitHub: é por ele que o vigia reconhece o PR aberto
+        // pela conta do dono (ver `assumir-pedido-do-dono.ts`).
+        user: { select: { githubLogin: true } },
       },
     })
 
@@ -7873,9 +7916,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               prsComSessaoViva,
               agora,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+              ehContaDoDono: (autor) => ehContaDoDono(autor, projeto.user?.githubLogin),
             }),
           prsComSessaoViva,
           issueDoPr: (n) => issuePorPr.get(n) ?? null,
+          // O PR aberto pela conta do dono (outro robô dele): depois da espera,
+          // em `cuidar`, o ajuste pedido passa ao dev automático pela mesma
+          // retomada dos PRs do dev.
+          ehPrDoDono: (prAberto) => ehContaDoDono(prAberto.autor, projeto.user?.githubLogin),
+          decidirPedidoDoDono: (prDoDono, contexto) =>
+            decidirPedidoDoDono({
+              agora,
+              projeto: { id: projeto.id, wingId: projeto.wingId, autonomia: projeto.autonomia },
+              token,
+              pr: prDoDono,
+              ...contexto,
+              ghGet,
+              registrarNoPainel: registrarStatusNoPainel,
+              prisma: app.prisma,
+              ...(projeto.userId && perguntadorDoDependabot
+                ? { pergunta: { userId: projeto.userId, agentQuestion: perguntadorDoDependabot } }
+                : {}),
+              onWarn: (msg) => app.log.warn(msg),
+            }),
           issueAberta: async (issueNumber) => {
             const issue = (await ghGet(
               `/repos/${projeto.wingId}/issues/${issueNumber}`,
