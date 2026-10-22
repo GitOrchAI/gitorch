@@ -1,6 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import Fastify from 'fastify'
 import type { RuntimeExecutionRequest, RuntimeExecutionResult } from '@gitorch/agents'
+
+vi.mock('../config/env.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config/env.js')>()
+  const mockEnv = {
+    DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/gitorch',
+    REDIS_URL: 'redis://localhost:6379',
+    JWT_SECRET: '12345678901234567890123456789012',
+    GITORCH_CREDENTIAL_KEY: '1234567890123456789012345678901234567890123456789012345678901234',
+    NODE_ENV: 'test',
+  }
+  return {
+    ...actual,
+    loadEnv: () => mockEnv,
+    getEnv: () => mockEnv,
+    env: mockEnv,
+  }
+})
+
 import { schedulerPlugin } from './scheduler.js'
 
 vi.mock('@gitorch/workspace-engine', async (importOriginal) => {
