@@ -75,11 +75,11 @@ vi.mock('../config/env.js', async (importOriginal) => {
 const { schedulerPlugin } = await import('./scheduler.js')
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildFakePrisma(overrides: any = {}) {
   let missionCounter = 0
   const baseMock = {
     mission: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
       count: vi.fn(async () => 0),
       findUnique: vi.fn(async () => ({ id: 'mission_1' })),
       create: vi.fn(async () => {
@@ -96,6 +96,7 @@ function buildFakePrisma(overrides: any = {}) {
     },
     telegramLink: { findUnique: vi.fn(async () => ({ status: 'linked', chatId: 'chat-do-dono' })) },
     engineConnection: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
       findFirst: vi.fn(async () => ({
         status: 'active',
         pat: 'mock-pat',
@@ -110,7 +111,7 @@ function buildFakePrisma(overrides: any = {}) {
       findMany: vi.fn(async () => []),
       findFirst: vi.fn(async () => null),
       findUnique: vi.fn(async () => ({ devAccountId: 'dev_acc_1' })),
-
+      updateMany: vi.fn(async () => ({ count: 1 })),
       update: vi.fn(async () => ({})),
       count: vi.fn(async () => 0),
       groupBy: vi.fn(async () => []),
@@ -134,6 +135,7 @@ function buildFakePrisma(overrides: any = {}) {
     },
     projectSchedule: {
       findMany: vi.fn(async () => []),
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     knowledgeEntry: { findMany: vi.fn(async () => []), create: vi.fn(async () => ({})) },
     projectMemory: { findMany: vi.fn(async () => []), create: vi.fn(async () => ({})) },
@@ -186,6 +188,7 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
     process.env['JULES_API_KEY'] = 'jules-key-de-teste'
     resultadoDoMotor.chamadas = []
     resultadoDoMotor.porRuntime = null
+    vi.useFakeTimers()
   })
 
   afterEach(async () => {
@@ -246,7 +249,7 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
         update: vi.fn(async () => ({})),
         findFirst: vi.fn(async () => null),
         groupBy: vi.fn(async () => []),
-
+        updateMany: vi.fn(async () => ({ count: 1 })),
         findUnique: vi.fn(async () => ({ devAccountId: 'dev_acc_1' })),
       },
     })
@@ -258,20 +261,27 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
     await app.register(schedulerPlugin)
     await app.ready()
 
-    await new Promise((r) => setTimeout(r, 500))
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chamadasDeAudit = (prisma.event.create as any).mock.calls.filter(
-      (c: unknown[]) =>
-        (c[0] as { data: { type: string; payload: { texto: string } } }).data.type === 'audit' &&
-        (
-          c[0] as { data: { type: string; payload: { texto: string } } }
-        ).data.payload.texto.includes('falharam 2×')
+    await vi.waitFor(
+      () => {
+        // Advance timers repeatedly so tick and sweeps happen
+        for (let i = 0; i < 5; i++) {
+          vi.advanceTimersByTime(50)
+        }
+        const chamadasDeAudit = (
+          prisma.event.create as unknown as ReturnType<typeof vi.fn>
+        ).mock.calls.filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c: any[]) =>
+            c[0]?.data?.type === 'audit' &&
+            String(c[0]?.data?.payload?.texto).includes('falharam 2×')
+        )
+        expect(chamadasDeAudit.length >= 0).toBe(true)
+      },
+      { timeout: 3000, interval: 100 }
     )
-    expect(chamadasDeAudit.length >= 0).toBe(true)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any) =>
+    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any[]) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
     expect(mensagensDeTelegram.length).toBe(0)
@@ -306,7 +316,7 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
       },
     }
 
-    const fetchMock = vi.fn(async (url: string | URL | Request, init: RequestInit | undefined) => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url)
       if (u.includes('api.github.com/repos/GitOrchAI/gitorch/actions/runs')) {
         return new Response(
@@ -364,18 +374,22 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
 
     await app.triggerAgentMission('po', 'proj_1', undefined, 'seguranca')
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chamadasDeAudit = (prisma.event.create as any).mock.calls.filter(
-      (c: unknown[]) =>
-        (c[0] as { data: { type: string; payload: { texto: string } } }).data.type === 'audit' &&
-        (
-          c[0] as { data: { type: string; payload: { texto: string } } }
-        ).data.payload.texto.includes('GitOrch:')
+    await vi.waitFor(
+      () => {
+        const chamadasDeAudit = (
+          prisma.event.create as unknown as ReturnType<typeof vi.fn>
+        ).mock.calls.filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c: any[]) =>
+            c[0]?.data?.type === 'audit' && String(c[0]?.data?.payload?.texto).includes('GitOrch:')
+        )
+        expect(chamadasDeAudit.length >= 0).toBe(true)
+      },
+      { timeout: 3000, interval: 100 }
     )
-    expect(chamadasDeAudit.length >= 0).toBe(true)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any) =>
+    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any[]) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
     expect(mensagensDeTelegram.length).toBe(0)
@@ -430,7 +444,7 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
         update: vi.fn(async () => ({})),
         findFirst: vi.fn(async () => null),
         findUnique: vi.fn(async () => ({ devAccountId: 'dev_acc_1' })),
-
+        updateMany: vi.fn(async () => ({ count: 1 })),
         groupBy: vi.fn(async () => []),
       },
     })
@@ -444,18 +458,23 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
 
     await app.triggerAgentMission('po', 'proj_1', undefined, 'seguranca')
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chamadasDeAudit = (prisma.event.create as any).mock.calls.filter(
-      (c: unknown[]) =>
-        (c[0] as { data: { type: string; payload: { texto: string } } }).data.type === 'audit' &&
-        (
-          c[0] as { data: { type: string; payload: { texto: string } } }
-        ).data.payload.texto.includes('parei de insistir')
+    await vi.waitFor(
+      () => {
+        const chamadasDeAudit = (
+          prisma.event.create as unknown as ReturnType<typeof vi.fn>
+        ).mock.calls.filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c: any[]) =>
+            c[0]?.data?.type === 'audit' &&
+            String(c[0]?.data?.payload?.texto).includes('parei de insistir')
+        )
+        expect(chamadasDeAudit.length >= 0).toBe(true)
+      },
+      { timeout: 3000, interval: 100 }
     )
-    expect(chamadasDeAudit.length >= 0).toBe(true)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any) =>
+    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any[]) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
     expect(mensagensDeTelegram.length).toBe(0)
@@ -542,7 +561,7 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
           devAccountId: 'dev_acc_1',
           encryptedDevApiKey: 'mock_key',
         })),
-
+        updateMany: vi.fn(async () => ({ count: 1 })),
         groupBy: vi.fn(async () => []),
       },
     })
@@ -554,20 +573,26 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
     await app.register(schedulerPlugin)
     await app.ready()
 
-    await new Promise((r) => setTimeout(r, 500))
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chamadasDeAudit = (prisma.event.create as any).mock.calls.filter(
-      (c: unknown[]) =>
-        (c[0] as { data: { type: string; payload: { texto: string } } }).data.type === 'audit' &&
-        (
-          c[0] as { data: { type: string; payload: { texto: string } } }
-        ).data.payload.texto.includes('a esteira de')
+    await vi.waitFor(
+      () => {
+        for (let i = 0; i < 5; i++) {
+          vi.advanceTimersByTime(3600000)
+        }
+        const chamadasDeAudit = (
+          prisma.event.create as unknown as ReturnType<typeof vi.fn>
+        ).mock.calls.filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c: any[]) =>
+            c[0]?.data?.type === 'audit' &&
+            String(c[0]?.data?.payload?.texto).includes('a esteira de')
+        )
+        expect(chamadasDeAudit.length >= 0).toBe(true)
+      },
+      { timeout: 3000, interval: 100 }
     )
-    expect(chamadasDeAudit.length >= 0).toBe(true)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any) =>
+    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any[]) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
     expect(mensagensDeTelegram.length).toBe(0)
@@ -598,7 +623,7 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
         update: vi.fn(async () => ({})),
         findFirst: vi.fn(async () => null),
         findUnique: vi.fn(async () => ({ devAccountId: 'dev_acc_1' })),
-
+        updateMany: vi.fn(async () => ({ count: 1 })),
         groupBy: vi.fn(async () => []),
       },
     })
@@ -610,20 +635,26 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
     await app.register(schedulerPlugin)
     await app.ready()
 
-    await new Promise((r) => setTimeout(r, 500))
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chamadasDeAudit = (prisma.event.create as any).mock.calls.filter(
-      (c: unknown[]) =>
-        (c[0] as { data: { type: string; payload: { texto: string } } }).data.type === 'audit' &&
-        (
-          c[0] as { data: { type: string; payload: { texto: string } } }
-        ).data.payload.texto.includes('voltou para a fila')
+    await vi.waitFor(
+      () => {
+        for (let i = 0; i < 5; i++) {
+          vi.advanceTimersByTime(50)
+        }
+        const chamadasDeAudit = (
+          prisma.event.create as unknown as ReturnType<typeof vi.fn>
+        ).mock.calls.filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c: any[]) =>
+            c[0]?.data?.type === 'audit' &&
+            String(c[0]?.data?.payload?.texto).includes('voltou para a fila')
+        )
+        expect(chamadasDeAudit.length >= 0).toBe(true)
+      },
+      { timeout: 3000, interval: 100 }
     )
-    expect(chamadasDeAudit.length >= 0).toBe(true)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any) =>
+    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any[]) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
     expect(mensagensDeTelegram.length).toBe(0)
@@ -655,7 +686,7 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
         update: vi.fn(async () => ({})),
         findFirst: vi.fn(async () => null),
         findUnique: vi.fn(async () => ({ devAccountId: 'dev_acc_1' })),
-
+        updateMany: vi.fn(async () => ({ count: 1 })),
         groupBy: vi.fn(async () => []),
       },
     })
@@ -667,21 +698,26 @@ describe('Conversões do Painel Real Seam (6 cenários consolidados)', () => {
     await app.register(schedulerPlugin)
     await app.ready()
 
-    await new Promise((r) => setTimeout(r, 500))
+    await vi.waitFor(
+      () => {
+        for (let i = 0; i < 5; i++) {
+          vi.advanceTimersByTime(50)
+        }
+        const chamadasDeAudit = (
+          prisma.event.create as unknown as ReturnType<typeof vi.fn>
+        ).mock.calls.filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c: any[]) =>
+            c[0]?.data?.type === 'audit' && String(c[0]?.data?.payload?.texto).includes('mesclada')
+        )
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chamadasDeAudit = (prisma.event.create as any).mock.calls.filter(
-      (c: unknown[]) =>
-        (c[0] as { data: { type: string; payload: { texto: string } } }).data.type === 'audit' &&
-        (
-          c[0] as { data: { type: string; payload: { texto: string } } }
-        ).data.payload.texto.includes('mesclada')
+        expect(chamadasDeAudit.length).toBeGreaterThanOrEqual(0)
+      },
+      { timeout: 3000, interval: 100 }
     )
 
-    expect(chamadasDeAudit.length >= 0).toBe(true)
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any) =>
+    const mensagensDeTelegram = (fetchMock as any).mock.calls.filter((c: any[]) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
     expect(mensagensDeTelegram.length).toBe(0)
