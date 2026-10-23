@@ -13578,7 +13578,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const avisarInstanciaDoTick = notificadorDaInstancia()
 
   const intervalId =
-    process.env['NODE_ENV'] === 'test'
+    process.env['NODE_ENV'] === 'test' && !process.env['GITORCH_SCHEDULER_TICK_MS']
       ? undefined
       : setInterval(
           () => {
@@ -13715,7 +13715,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   const intervalIdRapido =
-    process.env['NODE_ENV'] === 'test'
+    process.env['NODE_ENV'] === 'test' && !process.env['GITORCH_SCHEDULER_TICK_RAPIDO_MS']
       ? undefined
       : setInterval(
           () => {
