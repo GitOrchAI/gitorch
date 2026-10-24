@@ -377,6 +377,120 @@ describe('processarRespostaDeAutomacao', () => {
     expect((comentario!.body as Record<string, string>)['body']).toMatch(/[Ss]ugerir|[Cc]uidar/)
   })
 
+  // #471: a proposta do Dependabot carrega `.github/dependabot.yml` no
+  // marcador, que S2 recusa — o dono clicava "deletar" e lia "fale com o
+  // suporte". Agora a resposta diz o que fazer, e continua sem escrever nada.
+  describe('#471: deletar na proposta do Dependabot', () => {
+    const DEDUP_DEPENDABOT = 'automacao:acme/api:dependabot:updates'
+
+    function corpoDoDependabot() {
+      return new Response(
+        JSON.stringify({ body: marcador('proposta:arquivo', '.github/dependabot.yml') }),
+        { status: 200 }
+      )
+    }
+
+    it.each(['cuidar', 'sugerir', null])(
+      'autonomia %s → explica que não há workflow, aponta reajustar/manter, NUNCA cria branch, apaga ou abre PR',
+      async (autonomia) => {
+        const { impl, chamadas, respostas } = fakeFetch()
+        respostas.set('GET /repos/acme/api/issues/901', corpoDoDependabot())
+        const marcarIncidenteResolvido = vi.fn(async () => undefined)
+
+        await processarRespostaDeAutomacao(
+          { dedupKey: DEDUP_DEPENDABOT, resposta: 'deletar', projectId: 'proj-1', autonomia },
+          {
+            fetchImpl: impl,
+            token: 'tok',
+            buscarIncidente: buscarIncidenteFake(),
+            marcarIncidenteResolvido,
+          }
+        )
+
+        expect(chamadas.some((c) => c.url.endsWith('/git/refs'))).toBe(false)
+        expect(chamadas.some((c) => c.method === 'DELETE')).toBe(false)
+        expect(chamadas.some((c) => c.method === 'POST' && c.url.endsWith('/pulls'))).toBe(false)
+        expect(chamadas.some((c) => c.method === 'PATCH')).toBe(false)
+        expect(marcarIncidenteResolvido).not.toHaveBeenCalled()
+
+        const comentarios = chamadas.filter(
+          (c) => c.method === 'POST' && c.url.endsWith('/issues/901/comments')
+        )
+        expect(comentarios).toHaveLength(1)
+        const corpo = (comentarios[0]!.body as Record<string, string>)['body']!
+        expect(corpo).toContain('.github/dependabot.yml')
+        expect(corpo).toContain('reajustar')
+        expect(corpo).toContain('manter')
+        // Nem a parede antiga, nem o conselho de subir a autonomia para cair nela.
+        expect(corpo).not.toMatch(/suporte/i)
+        expect(corpo).not.toMatch(/Cuidar/)
+      }
+    )
+
+    it('manter continua encerrando a proposta do Dependabot (o caso novo é só do deletar)', async () => {
+      const { impl, chamadas } = fakeFetch()
+      const marcarIncidenteResolvido = vi.fn(async () => undefined)
+
+      await processarRespostaDeAutomacao(
+        {
+          dedupKey: DEDUP_DEPENDABOT,
+          resposta: 'manter',
+          projectId: 'proj-1',
+          autonomia: 'cuidar',
+        },
+        {
+          fetchImpl: impl,
+          token: 'tok',
+          buscarIncidente: buscarIncidenteFake(),
+          marcarIncidenteResolvido,
+        }
+      )
+
+      expect(marcarIncidenteResolvido).toHaveBeenCalledWith({
+        projectId: 'proj-1',
+        identidadeEstavel: 'dependabot:updates',
+      })
+      expect(chamadas.some((c) => c.method === 'PATCH' && c.url.endsWith('/issues/901'))).toBe(true)
+    })
+
+    it('um workflow de verdade cujo nome lembra o Dependabot ainda segue o caminho normal do deletar', async () => {
+      const { impl, chamadas, respostas } = fakeFetch()
+      respostas.set(
+        'GET /repos/acme/api/issues/901',
+        new Response(
+          JSON.stringify({
+            body: marcador('proposta:arquivo', '.github/workflows/dependabot-auto.yml'),
+          }),
+          { status: 200 }
+        )
+      )
+
+      await processarRespostaDeAutomacao(
+        {
+          dedupKey: 'automacao:acme/api:wf:77',
+          resposta: 'deletar',
+          projectId: 'proj-1',
+          autonomia: 'cuidar',
+        },
+        {
+          fetchImpl: impl,
+          token: 'tok',
+          buscarIncidente: buscarIncidenteFake(),
+          marcarIncidenteResolvido: vi.fn(async () => undefined),
+        }
+      )
+
+      expect(
+        chamadas.some(
+          (c) =>
+            c.method === 'DELETE' &&
+            c.url.includes('/contents/.github%2Fworkflows%2Fdependabot-auto.yml')
+        )
+      ).toBe(true)
+      expect(chamadas.some((c) => c.method === 'POST' && c.url.endsWith('/pulls'))).toBe(true)
+    })
+  })
+
   // C1 (fix-up L4-T2): POST gitorch:incident ANTES de DELETE gitorch:proposal.
   it('reajustar → adiciona gitorch:incident ANTES de remover gitorch:proposal, + comentário', async () => {
     const { impl, chamadas } = fakeFetch()

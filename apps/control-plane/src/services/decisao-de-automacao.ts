@@ -12,6 +12,7 @@ import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
 import { lerMarcador } from './marcador-de-issue.js'
 import { ghJson } from './github-json.js'
 import { buildFreeTextOption } from './telegram-bot.js'
+import { IDENTIDADE_DO_DEPENDABOT } from './classificar-falha-de-infra.js'
 
 /** Prefixo do dedupKey de toda pergunta de decisão de automação. */
 export const DEDUP_PREFIXO_AUTOMACAO = 'automacao:'
@@ -388,6 +389,31 @@ export async function processarRespostaDeAutomacao(
 
   switch (args.resposta) {
     case 'deletar': {
+      // #471: a proposta do Dependabot oferece as mesmas três opções, mas o
+      // updater do Dependabot não é um workflow — o "arquivo" da proposta é
+      // `.github/dependabot.yml`, que S2 (corretamente) nunca apaga. Antes
+      // deste caso o dono clicava "deletar" e lia "fale com o suporte", sem
+      // saber o que fazer. Vem ANTES da checagem de autonomia: mandar o dono
+      // subir para "Cuidar" só para cair na mesma parede seria pior.
+      if (identidade === IDENTIDADE_DO_DEPENDABOT) {
+        await comentarNaProposta(
+          deps.fetchImpl,
+          deps.token,
+          repo,
+          numeroProposta,
+          'O Dependabot não tem um workflow para apagar: o updater é do próprio GitHub e só é ' +
+            'configurado por `.github/dependabot.yml`. Nada foi alterado.\n\n' +
+            'Para seguir, responda **reajustar** (vira tarefa para consertar a configuração) ou ' +
+            '**manter** (encerra esta proposta). Se a intenção é desligar as atualizações de ' +
+            'versão do Dependabot, apague `.github/dependabot.yml` à mão — o GitOrch não remove ' +
+            'configuração do repositório sozinho.'
+        )
+        info(
+          `decisao-de-automacao: deletar não se aplica ao Dependabot — comentário em #${numeroProposta}`
+        )
+        return
+      }
+
       const nivel = normalizarNivel(args.autonomia)
       if (nivel !== 'cuidar') {
         await comentarNaProposta(

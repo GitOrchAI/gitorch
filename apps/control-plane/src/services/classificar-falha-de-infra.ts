@@ -37,6 +37,11 @@ export interface MetaDoWorkflow {
 /** Além de quantos dias sem rodar um workflow ainda-`active` conta como morto. */
 export const DIAS_SEM_RODAR_ATE_MORTO = 30
 
+/** A identidade estável do achado `dependabot-travado` (incidente-ci.ts). O
+ *  updater do Dependabot não tem arquivo em `.github/workflows/` — quem lê
+ *  esta identidade sabe que não existe workflow para apagar. */
+export const IDENTIDADE_DO_DEPENDABOT = 'dependabot:updates'
+
 /**
  * D63 (medido: 97 de 193 sessões do dev assíncrono em 14 dias foram para
  * incidente de automação — Dependabot→Jules, Jules PR Monitor, auto-merge
