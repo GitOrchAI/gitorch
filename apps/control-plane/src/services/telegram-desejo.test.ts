@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   ehPedidoDeDesejoSemTexto,
+  interpretarComandoWishlist,
   interpretarPedidoDeDesejo,
   tratarPedidoDeDesejo,
   type ProjetoParaDesejo,
@@ -147,6 +148,61 @@ function deps(over: Partial<TelegramDesejoDeps> = {}): TelegramDesejoDeps {
     ...over,
   }
 }
+
+describe('interpretarComandoWishlist', () => {
+  const BOT = 'GitOrchAI_bot'
+  const ler = (texto: string) => interpretarComandoWishlist(texto, BOT)
+
+  it('/wishlist sozinho lista', () => {
+    expect(ler('/wishlist')).toEqual({ nosso: true, acao: 'listar' })
+  })
+
+  it('/wishlist add guarda o item', () => {
+    expect(ler('/wishlist add cafe especial')).toEqual({
+      nosso: true,
+      acao: 'adicionar',
+      item: 'cafe especial',
+    })
+  })
+
+  it('aceita o nome do NOSSO bot colado, que é como o comando chega em grupo', () => {
+    expect(ler('/wishlist@gitorchai_BOT add cafe')).toEqual({
+      nosso: true,
+      acao: 'adicionar',
+      item: 'cafe',
+    })
+    expect(ler('/wishlist@GitOrchAI_bot')).toEqual({ nosso: true, acao: 'listar' })
+  })
+
+  it('o subcomando não diferencia maiúscula', () => {
+    expect(ler('/wishlist ADD cafe')).toEqual({ nosso: true, acao: 'adicionar', item: 'cafe' })
+  })
+
+  it('item com quebra de linha é guardado inteiro', () => {
+    expect(ler('/wishlist add cafe\ncom leite')).toEqual({
+      nosso: true,
+      acao: 'adicionar',
+      item: 'cafe\ncom leite',
+    })
+  })
+
+  // Comando que não é nosso não recebe resposta: responder seria falar por cima
+  // de outro bot no mesmo grupo.
+  it('não é nosso: plural, outro bot, mensagem solta', () => {
+    expect(ler('/wishlists add cafe')).toEqual({ nosso: false })
+    expect(ler('/wishlist@OutroBot add cafe')).toEqual({ nosso: false })
+    expect(ler('/wishlist@OutroBot')).toEqual({ nosso: false })
+    expect(ler('quero /wishlist add cafe')).toEqual({ nosso: false })
+  })
+
+  it('é nosso mas não é um item: recebe a orientação de uso', () => {
+    expect(ler('/wishlist add')).toEqual({ nosso: true, acao: 'uso' })
+    expect(ler('/wishlist add    ')).toEqual({ nosso: true, acao: 'uso' })
+    expect(ler('/wishlist addendo do contrato')).toEqual({ nosso: true, acao: 'uso' })
+    expect(ler('/wishlist remove cafe')).toEqual({ nosso: true, acao: 'uso' })
+    expect(ler('/wishlist comprar um carro')).toEqual({ nosso: true, acao: 'uso' })
+  })
+})
 
 describe('tratarPedidoDeDesejo', () => {
   it('mensagem que não é desejo não é assunto nosso e não toca no GitHub', async () => {
