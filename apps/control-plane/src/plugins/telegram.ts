@@ -181,6 +181,11 @@ export function acordarSmComSeguranca(
   }
 }
 
+// Textos do /wishlist list e do botão de remover. Ficam juntos porque saem por dois
+// caminhos (o comando e o clique que reedita a lista) e não podem divergir.
+export const WISHLIST_VAZIA = 'Sua wishlist está vazia.'
+export const BOTAO_REMOVER_DA_WISHLIST = '❌ Remover'
+
 export async function processarComandoWishlistList(
   dono: { userId: string },
   app: { prisma: FastifyInstance['prisma']; log: { error: (err: unknown, msg: string) => void } },
@@ -193,7 +198,7 @@ export async function processarComandoWishlistList(
     })
 
     if (items.length === 0) {
-      await sendMsg('Your wishlist is empty.')
+      await sendMsg(WISHLIST_VAZIA)
       return
     }
 
@@ -201,7 +206,7 @@ export async function processarComandoWishlistList(
     const teclado = {
       inline_keyboard: items.map((item) => [
         {
-          text: `❌ Delete`,
+          text: BOTAO_REMOVER_DA_WISHLIST,
           callback_data: `del_wishlist_${item.id}`,
         },
       ]),
@@ -1491,7 +1496,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                       botToken,
                       chatId,
                       messageId,
-                      text: 'Your wishlist is empty.',
+                      text: WISHLIST_VAZIA,
                       teclado: { inline_keyboard: [] },
                     })
                   } else {
@@ -1499,7 +1504,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                     const teclado = {
                       inline_keyboard: updatedItems.map((it) => [
                         {
-                          text: `❌ Delete`,
+                          text: BOTAO_REMOVER_DA_WISHLIST,
                           callback_data: `del_wishlist_${it.id}`,
                         },
                       ]),
