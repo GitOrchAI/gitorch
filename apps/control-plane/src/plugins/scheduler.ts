@@ -227,6 +227,7 @@ import {
   notaDeConserto,
   type EvidenciaDeConserto,
 } from '../services/conserto-de-publicacao.js'
+import { recadoDeFalhaDePublicacao } from '../services/recado-de-falha-de-publicacao.js'
 import { runDuvidaMissionViaRails } from '../services/duvida-rails-mission.js'
 import {
   escalarDuvidaAoDono,
@@ -11597,10 +11598,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // leitura é nova) ou quando o conserto acabou de virar tarefa (o
           // dono precisa do número da issue) — nunca a cada varredura.
           if (estadoAnterior !== veredito.estado || numeroDoConserto !== null) {
-            const etapasTexto = veredito.etapas.map((e) => `${e.nome}: ${e.resultado}`).join('; ')
             await avisarDonoDoProjeto(
               projeto,
-              `GitOrch: a publicação de ${projeto.wingId} (commit ${shaDaMescla}) precisa de atenção — ${veredito.motivo}${etapasTexto ? ` Etapas: ${etapasTexto}.` : ''}${numeroDoConserto === null ? '' : notaDeConserto(numeroDoConserto)}`
+              recadoDeFalhaDePublicacao({
+                wingId: projeto.wingId,
+                shaDaMescla,
+                motivo: veredito.motivo,
+                etapas: veredito.etapas,
+                numeroDoConserto,
+              })
             )
           }
         } else if (veredito.estado === 'sem-publicacao') {
