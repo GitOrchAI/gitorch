@@ -16,6 +16,7 @@ import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { GithubExecutionError } from './github-errors.js'
 import {
   classificarFalhaDeInfra,
+  IDENTIDADE_DO_DEPENDABOT,
   type ClasseDeFalha,
   type MetaDoWorkflow,
 } from './classificar-falha-de-infra.js'
@@ -477,7 +478,7 @@ export async function coletarAchadosDeInfra(
         )
         achados.push({
           classe: 'dependabot-travado',
-          identidadeEstavel: 'dependabot:updates',
+          identidadeEstavel: IDENTIDADE_DO_DEPENDABOT,
           titulo: 'O Dependabot está falhando ao atualizar dependências',
           travaMerge: false,
           evidencia: [
