@@ -270,6 +270,7 @@ import { esperarAVezDeDevolver } from '../services/devolucao-de-credencial.js'
 import { varrerArvoreDoPlano } from '../services/fechar-o-pai.js'
 import {
   jaTemRegistroDeEntrega,
+  textoDeEntregaMesclada,
   textoDePublicacaoNaoConfirmada,
 } from '../services/registro-de-entrega.js'
 import {
@@ -593,6 +594,12 @@ const STALE_RUNNING_MS = Number(
 const PENDING_TIMEOUT_MS = Number(
   process.env['GITORCH_PENDING_TIMEOUT_MS'] ?? String(10 * 60 * 1000)
 )
+
+/** As duas datas do lead time (desejo #270), como o fechamento as leu do GitHub. */
+interface DatasDoLeadTime {
+  wishCreatedAt: Date | null
+  mergedAt: Date | null
+}
 
 interface TriggerResult {
   triggered: boolean
@@ -9589,7 +9596,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     motivo: string
     githubToken: string | undefined
   }): Promise<void> => {
-    await registrarPublicacaoEIncremento({
+    const datas = await registrarPublicacaoEIncremento({
       sessao: args.sessao,
       estado: args.estado,
       agora: args.agora,
@@ -9607,8 +9614,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await registrarStatusNoPainel(
       args.projeto.id,
       `entrega-mesclada:${args.projeto.wingId}:${args.sessao.mergeCommitSha}`,
-      `GitOrch: a entrega de ${args.projeto.wingId} (commit ${args.sessao.mergeCommitSha}) foi ` +
-        `mesclada. ${args.motivo}`
+      textoDeEntregaMesclada({
+        wingId: args.projeto.wingId,
+        mergeCommitSha: args.sessao.mergeCommitSha,
+        motivo: args.motivo,
+        ...datas,
+      })
     )
     await resolverEntregaDoBoard({
       projeto: args.projeto,
@@ -9682,7 +9693,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     /** Para os seis campos do desenho (D3) — sprint, título, peso, origem. */
     projeto: { wingId: string }
     githubToken: string | undefined
-  }): Promise<void> => {
+  }): Promise<DatasDoLeadTime> => {
     await registrarEstadoDaPublicacao({
       prisma: app.prisma as unknown as PrismaDevSession,
       sessionName: args.sessao.sessionName,
@@ -9761,11 +9772,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           mergedAt: campos.mergedAt,
         }
       )
+      return { wishCreatedAt: campos.wishCreatedAt, mergedAt: campos.mergedAt }
     } catch (err) {
       app.log.warn(
         err,
         `[Scheduler] não consegui registrar o incremento de ${args.sessao.sessionName} — o estado da publicação foi gravado`
       )
+      return { wishCreatedAt: null, mergedAt: null }
     }
   }
 
@@ -9779,7 +9792,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }): Promise<void> => {
     const { projeto, sessao, agora, desdeAMescla, ultimaObservacao, githubToken } = args
     const veredito = fecharPorTetoAbsoluto({ desdeAMescla, ultimaObservacao })
-    await registrarPublicacaoEIncremento({
+    const datas = await registrarPublicacaoEIncremento({
       sessao,
       estado: veredito.estado,
       agora,
@@ -9796,7 +9809,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await registrarStatusNoPainel(
       projeto.id,
       `entrega-mesclada:${projeto.wingId}:${sessao.mergeCommitSha}`,
-      `GitOrch: a entrega de ${projeto.wingId} (commit ${sessao.mergeCommitSha}) foi mesclada. ${veredito.motivo}`
+      textoDeEntregaMesclada({
+        wingId: projeto.wingId,
+        mergeCommitSha: sessao.mergeCommitSha,
+        motivo: veredito.motivo,
+        ...datas,
+      })
     )
     await resolverEntregaDoBoard({
       projeto,

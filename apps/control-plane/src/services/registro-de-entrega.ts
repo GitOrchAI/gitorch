@@ -2,6 +2,8 @@
 // dela já entrou. É só o fato e como desfazer: não diz quem mesclou e não pede
 // nada a ninguém (o dono não acompanha o GitHub; dúvida real vai pelo painel).
 
+import { calcularTempoDeResolucao } from '@gitorch/cadence'
+
 /** Quantos PRs o registro cita; passando disso ficam os mais novos. */
 const MAX_PRS_CITADOS = 5
 
@@ -39,4 +41,27 @@ export function jaTemRegistroDeEntrega(
  */
 export function textoDePublicacaoNaoConfirmada(numeroDoPr: number, motivo: string): string {
   return `A entrega desta tarefa (PR #${numeroDoPr}) foi mesclada, mas o GitOrch não conseguiu confirmar que a publicação dela foi ao ar: ${motivo}`
+}
+
+/**
+ * O status de "a entrega foi mesclada" que vai para o painel (DJ-T15, D76).
+ *
+ * Desejo #270 / #344: o dono quer ver quanto tempo a entrega levou desde que
+ * o desejo foi escrito até o merge, sem somar datas na mão. O lead time só
+ * aparece quando as DUAS datas existem e fazem sentido — sem uma delas (GitHub
+ * fora do ar no fechamento, projeto sem credencial, issue sem desejo de
+ * origem), a frase some inteira; nunca sai "Lead time: null" nem um número
+ * inventado.
+ */
+export function textoDeEntregaMesclada(args: {
+  wingId: string
+  mergeCommitSha: string | null | undefined
+  motivo: string
+  wishCreatedAt: Date | string | null | undefined
+  mergedAt: Date | string | null | undefined
+}): string {
+  const base = `GitOrch: a entrega de ${args.wingId} (commit ${args.mergeCommitSha}) foi mesclada. ${args.motivo}`
+  const leadTime = calcularTempoDeResolucao(args.wishCreatedAt, args.mergedAt)
+  if (!leadTime) return base
+  return `${base} Lead time, do desejo ao merge: ${leadTime}.`
 }

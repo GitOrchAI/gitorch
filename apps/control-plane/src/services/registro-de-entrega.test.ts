@@ -10,6 +10,7 @@ import {
   corpoDoRegistroDeEntrega,
   jaTemRegistroDeEntrega,
   MARCADOR_DO_REGISTRO_DE_ENTREGA,
+  textoDeEntregaMesclada,
   textoDePublicacaoNaoConfirmada,
   textoDoRegistroDeEntrega,
 } from './registro-de-entrega.js'
@@ -220,5 +221,82 @@ describe('o comentário de publicação não confirmada, para todo motivo possí
       'o GitOrch acompanhou por 24h sem confirmação de que a publicação chegou ao ar. ' +
         'Última coisa que vimos: publicando — a etapa "Deploy" ainda não terminou.'
     )
+  })
+})
+
+describe('o status de entrega mesclada no painel (desejo #270 / #344)', () => {
+  const base = {
+    wingId: 'acme/loja',
+    mergeCommitSha: 'abc1234',
+    motivo: 'A publicação foi confirmada.',
+  }
+
+  it('com as duas datas: o lead time vem por extenso no fim', () => {
+    expect(
+      textoDeEntregaMesclada({
+        ...base,
+        wishCreatedAt: new Date('2026-10-20T10:00:00Z'),
+        mergedAt: new Date('2026-10-22T13:30:00Z'),
+      })
+    ).toBe(
+      'GitOrch: a entrega de acme/loja (commit abc1234) foi mesclada. A publicação foi confirmada. ' +
+        'Lead time, do desejo ao merge: 2 dias e 3 horas.'
+    )
+  })
+
+  it('sem a data do desejo: a frase some inteira, nunca "null" nem número inventado', () => {
+    const texto = textoDeEntregaMesclada({
+      ...base,
+      wishCreatedAt: null,
+      mergedAt: new Date('2026-10-22T13:30:00Z'),
+    })
+    expect(texto).toBe(
+      'GitOrch: a entrega de acme/loja (commit abc1234) foi mesclada. A publicação foi confirmada.'
+    )
+    expect(texto).not.toMatch(/lead time|null|undefined|NaN/i)
+  })
+
+  it('sem a data do merge (GitHub fora do ar no fechamento): sem lead time', () => {
+    const texto = textoDeEntregaMesclada({
+      ...base,
+      wishCreatedAt: new Date('2026-10-20T10:00:00Z'),
+      mergedAt: undefined,
+    })
+    expect(texto).not.toMatch(/lead time|null|undefined|NaN/i)
+  })
+
+  it('merge "antes" do desejo (relógio torto): não publica tempo negativo', () => {
+    const texto = textoDeEntregaMesclada({
+      ...base,
+      wishCreatedAt: new Date('2026-10-22T13:30:00Z'),
+      mergedAt: new Date('2026-10-20T10:00:00Z'),
+    })
+    expect(texto).not.toMatch(/lead time|-\d/i)
+  })
+
+  it('data que não é data: não vira "NaN dias"', () => {
+    const texto = textoDeEntregaMesclada({
+      ...base,
+      wishCreatedAt: 'não é uma data',
+      mergedAt: new Date('2026-10-22T13:30:00Z'),
+    })
+    expect(texto).not.toMatch(/lead time|NaN/i)
+  })
+
+  it('o motivo e o commit seguem intactos com ou sem lead time', () => {
+    for (const datas of [
+      { wishCreatedAt: null, mergedAt: null },
+      {
+        wishCreatedAt: new Date('2026-10-22T13:00:00Z'),
+        mergedAt: new Date('2026-10-22T13:10:00Z'),
+      },
+    ]) {
+      const texto = textoDeEntregaMesclada({ ...base, ...datas })
+      expect(
+        texto.startsWith(
+          'GitOrch: a entrega de acme/loja (commit abc1234) foi mesclada. A publicação foi confirmada.'
+        )
+      ).toBe(true)
+    }
   })
 })
