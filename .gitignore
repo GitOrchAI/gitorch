@@ -12,7 +12,6 @@ dist/
 .DS_Store
 playwright-report/
 test-results/
-docs/
 .gstack/
 .hermes/
 
