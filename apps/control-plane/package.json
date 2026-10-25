@@ -62,11 +62,11 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "22.20.5",
     "eslint": "^8.0.0",
-    "fast-uri": "4.2.2",
+    "fast-uri": "4.2.3",
     "prisma": "^5.22.0",
     "tsx": "^4.23.15",
     "typescript": "^5.4.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "engines": {
     "node": ">=20.0.0"
