@@ -130,15 +130,31 @@ function casarComandoDeDesejo(
   texto: string,
   nomeDoBot: string
 ): { nosso: false } | { nosso: true; pedido: string } {
-  const casado = /^\/(desejo|quero)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec(texto.trim())
+  const casado = casarNossoComando(texto, 'desejo|quero', nomeDoBot)
+  return casado.nosso ? { nosso: true, pedido: casado.resto } : { nosso: false }
+}
+
+/**
+ * O delimitador e a checagem do nome do bot, num lugar só, para todo comando
+ * que precise deles. `comandos` é uma alternância de regex ("desejo|quero").
+ */
+function casarNossoComando(
+  texto: string,
+  comandos: string,
+  nomeDoBot: string
+): { nosso: false } | { nosso: true; resto: string } {
+  const casado = new RegExp(
+    `^\\/(?:${comandos})(?:@([A-Za-z0-9_]+))?(?:\\s+([\\s\\S]*))?$`,
+    'i'
+  ).exec(texto.trim())
   if (!casado) return { nosso: false }
 
-  const enderecadoA = casado[2]
+  const enderecadoA = casado[1]
   if (enderecadoA !== undefined && enderecadoA.toLowerCase() !== nomeDoBot.trim().toLowerCase()) {
     return { nosso: false }
   }
 
-  return { nosso: true, pedido: (casado[3] ?? '').trim() }
+  return { nosso: true, resto: (casado[2] ?? '').trim() }
 }
 
 export function interpretarPedidoDeDesejo(
@@ -170,6 +186,38 @@ export function ehPedidoDeDesejoSemTexto(
 ): boolean {
   const comando = casarComandoDeDesejo(texto, nomeDoBot)
   return comando.nosso && comando.pedido === ''
+}
+
+export type ComandoWishlist =
+  | { nosso: false }
+  | { nosso: true; acao: 'listar' }
+  | { nosso: true; acao: 'adicionar'; item: string }
+  | { nosso: true; acao: 'uso' }
+
+/**
+ * Lê o `/wishlist` com o mesmo delimitador do `/desejo`.
+ *
+ * Antes era `startsWith('/wishlist')` seguido de uma regex própria, e isso
+ * errava dos dois lados. Respondia "Use /wishlist add <item>" por cima de
+ * "/wishlists" e de "/wishlist@OutroBot", que não eram nossos. E recusava
+ * "/wishlist@NossoBot add cafe", que é como o Telegram entrega o comando em
+ * grupo, e o item com quebra de linha, que o `.+` não casava.
+ *
+ * "/wishlist addendo" não é "add": o subcomando é a primeira palavra inteira.
+ */
+export function interpretarComandoWishlist(
+  texto: string,
+  nomeDoBot: string = telegramBotUsername()
+): ComandoWishlist {
+  const comando = casarNossoComando(texto, 'wishlist', nomeDoBot)
+  if (!comando.nosso) return { nosso: false }
+  if (comando.resto === '') return { nosso: true, acao: 'listar' }
+
+  const [, subcomando = '', item = ''] = /^(\S+)(?:\s+([\s\S]*))?$/.exec(comando.resto) ?? []
+  if (subcomando.toLowerCase() === 'add' && item.trim() !== '') {
+    return { nosso: true, acao: 'adicionar', item: item.trim() }
+  }
+  return { nosso: true, acao: 'uso' }
 }
 
 /**

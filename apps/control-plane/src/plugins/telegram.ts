@@ -9,6 +9,7 @@ import {
   sendTelegramQuestion,
   tratarPedidoDeDesejo,
   tratarCliqueDeProjeto,
+  interpretarComandoWishlist,
   answerTelegramCallback,
   zerarTecladoDaMensagem,
   editTelegramMessageText,
@@ -1751,11 +1752,12 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             continue
           }
 
-          // `/wishlist` continua com a resposta de orientação que já existia na
-          // linha principal. Fica DEPOIS do desejo porque são coisas diferentes:
-          // aqui só se explica a sintaxe, enquanto `/desejo` e `/quero` abrem o
-          // pedido de verdade.
-          if (update.message?.text?.trim().startsWith('/wishlist')) {
+          // `/wishlist` lista e guarda itens na wishlist do dono. Fica DEPOIS do
+          // desejo porque são coisas diferentes: `/desejo` e `/quero` abrem o
+          // pedido de verdade. "/wishlists" e "/wishlist@OutroBot" não são nossos
+          // e seguem adiante sem resposta.
+          const comandoWishlist = interpretarComandoWishlist(update.message?.text ?? '')
+          if (comandoWishlist.nosso) {
             const chatId = update.message?.chat?.id
             if (chatId !== undefined && chatId !== null) {
               const strChatId = String(chatId)
@@ -1770,9 +1772,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                 continue
               }
 
-              const text = update.message.text.trim()
-
-              if (text === '/wishlist') {
+              if (comandoWishlist.acao === 'listar') {
                 await processarComandoWishlistList(
                   dono,
                   app as unknown as Parameters<typeof processarComandoWishlistList>[1],
@@ -1788,41 +1788,27 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                 continue
               }
 
-              const match = text.match(/^\/wishlist\s+(\w+)(?:\s+(.+))?$/)
-
-              if (!match) {
-                await sendTelegramMessage({
-                  botToken,
-                  chatId: strChatId,
-                  text: 'Use /wishlist add <item>',
-                })
+              if (comandoWishlist.acao === 'adicionar') {
+                await processarComandoWishlistAdd(
+                  dono,
+                  comandoWishlist.item,
+                  app as unknown as Parameters<typeof processarComandoWishlistAdd>[2],
+                  async (text) => {
+                    await sendTelegramMessage({
+                      botToken,
+                      chatId: strChatId,
+                      text,
+                    })
+                  }
+                )
                 continue
               }
 
-              const [, action, payload] = match
-
-              switch (action?.toLowerCase()) {
-                case 'add':
-                  await processarComandoWishlistAdd(
-                    dono,
-                    payload || '',
-                    app as unknown as Parameters<typeof processarComandoWishlistAdd>[2],
-                    async (text) => {
-                      await sendTelegramMessage({
-                        botToken,
-                        chatId: strChatId,
-                        text,
-                      })
-                    }
-                  )
-                  break
-                default:
-                  await sendTelegramMessage({
-                    botToken,
-                    chatId: strChatId,
-                    text: 'Use /wishlist add <item>',
-                  })
-              }
+              await sendTelegramMessage({
+                botToken,
+                chatId: strChatId,
+                text: 'Use /wishlist add <item>',
+              })
             }
             continue
           }
